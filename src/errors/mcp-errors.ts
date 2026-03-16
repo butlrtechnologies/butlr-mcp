@@ -32,7 +32,7 @@ export enum MCPErrorCode {
 export interface MCPError {
   code: MCPErrorCode;
   message: string;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
   retryable?: boolean;
   retryAfter?: number; // seconds
 }
@@ -163,13 +163,28 @@ export function formatMCPError(error: MCPError): string {
 }
 
 /**
- * Create a validation error
+ * Error subclass for MCP errors — provides stack traces and works with instanceof checks.
  */
-export function createValidationError(message: string, details?: Record<string, any>): MCPError {
-  return {
-    code: MCPErrorCode.VALIDATION_FAILED,
-    message,
-    details,
-    retryable: false,
-  };
+export class MCPValidationError extends Error {
+  code: MCPErrorCode;
+  details?: Record<string, unknown>;
+  retryable: boolean;
+
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "MCPValidationError";
+    this.code = MCPErrorCode.VALIDATION_FAILED;
+    this.details = details;
+    this.retryable = false;
+  }
+}
+
+/**
+ * Create a validation error (throws a proper Error subclass with stack trace)
+ */
+export function createValidationError(
+  message: string,
+  details?: Record<string, unknown>
+): MCPValidationError {
+  return new MCPValidationError(message, details);
 }

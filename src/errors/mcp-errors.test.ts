@@ -3,6 +3,7 @@ import {
   translateGraphQLError,
   formatMCPError,
   createValidationError,
+  MCPValidationError,
   MCPErrorCode,
 } from "./mcp-errors.js";
 
@@ -135,5 +136,25 @@ describe("createValidationError", () => {
   it("includes details when provided", () => {
     const error = createValidationError("bad input", { field: "query" });
     expect(error.details).toEqual({ field: "query" });
+  });
+
+  it("is an instance of Error", () => {
+    const error = createValidationError("bad input");
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(MCPValidationError);
+  });
+
+  it("has a stack trace", () => {
+    const error = createValidationError("bad input");
+    expect(error.stack).toBeDefined();
+  });
+
+  it("works with instanceof in catch blocks", () => {
+    try {
+      throw createValidationError("test error");
+    } catch (e) {
+      expect(e instanceof Error).toBe(true);
+      expect(e instanceof MCPValidationError).toBe(true);
+    }
   });
 });
