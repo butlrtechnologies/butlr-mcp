@@ -1,0 +1,27 @@
+name: Bot Developer
+on:
+  issues:
+    types: [labeled]
+  workflow_run:
+    workflows: ["Bot Issue Enrichment", "Bot Maintainer"]
+    types: [completed]
+
+jobs:
+  develop:
+    uses: butlrtechnologies/github-automations/.github/workflows/bot-developer.yml@main
+    with:
+      language: 'node'
+      node-version: '18'
+      issue-label: 'bot-developer'
+      max-parallel: 2
+      verification-commands: '["npm run typecheck", "npm run lint", "npm run build", "npm test"]'
+      developer-prompt-append: |
+        This is a Model Context Protocol (MCP) server. Key patterns:
+        - Tools are defined in src/tools/ using @modelcontextprotocol/sdk
+        - Input validation uses Zod schemas
+        - API clients in src/clients/ handle GraphQL and REST calls
+        - Caching in src/cache/ with configurable TTL
+        - All access is read-only — never add mutation operations
+        - Error codes follow MCP conventions (AUTH_EXPIRED, RATE_LIMITED, VALIDATION_FAILED)
+        - Tests use Vitest with mock API fixtures in src/__fixtures__/
+    secrets: inherit

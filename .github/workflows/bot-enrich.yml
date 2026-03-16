@@ -1,0 +1,18 @@
+name: Bot Issue Enrichment
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  enrich:
+    if: |
+      github.event.label.name == 'user-feedback' ||
+      github.event.label.name == 'bot-enrich'
+    uses: butlrtechnologies/github-automations/.github/workflows/bot-enrich.yml@main
+    with:
+      language: 'node'
+      area-labels: '["tools", "clients", "cache", "errors", "auth"]'
+      model: 'opus'
+      max-turns: 50
+      auto-label-developer: true
+    secrets: inherit

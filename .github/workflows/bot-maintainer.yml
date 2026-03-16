@@ -1,0 +1,43 @@
+name: Bot Maintainer
+on:
+  workflow_dispatch:
+    inputs:
+      max_findings:
+        description: 'Maximum findings to report'
+        required: true
+        default: '5'
+        type: choice
+        options: ['1', '2', '3', '5', '8', '13']
+      components:
+        description: 'Components to scan'
+        required: true
+        default: 'all'
+        type: choice
+        options: ['all', 'tools', 'clients', 'cache', 'errors', 'utils']
+      dry_run:
+        description: 'Preview without creating issues'
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: '0 10 * * 1'  # Monday 2am PST
+
+jobs:
+  maintain:
+    uses: butlrtechnologies/github-automations/.github/workflows/bot-maintainer.yml@main
+    with:
+      language: 'node'
+      max-findings: ${{ inputs.max_findings || '5' }}
+      components: ${{ inputs.components || 'all' }}
+      dry-run: ${{ inputs.dry_run || false }}
+      maintainer-prompt-append: |
+        This is a Model Context Protocol (MCP) server. Focus areas:
+        - src/tools/ — MCP tool definitions and handlers
+        - src/clients/ — GraphQL and REST API clients
+        - src/cache/ — Caching layer with TTL
+        - src/errors/ — MCP error translation
+        - src/utils/ — Shared utilities
+        Check for: missing Zod validation, unhandled API errors, cache
+        invalidation issues, token refresh edge cases, and TypeScript
+        type safety (no `any` usage).
+    secrets: inherit
