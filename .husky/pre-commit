@@ -1,0 +1,73 @@
+#!/bin/sh
+
+# Full validation BEFORE lint-staged (doesn't modify files)
+npm run typecheck || exit 1
+npm test || exit 1
+
+# Secret file detection (by extension)
+if git diff --cached --name-only | grep -E '\.(env|pem|key|p12|pfx)$'; then
+  echo "⚠️  Error: Attempting to commit secret files (.env, .pem, .key, .p12, .pfx)"
+  exit 1
+fi
+
+# Secret pattern detection (AWS keys, tokens, JWTs, etc.)
+SECRET_FOUND=0
+git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|js|json|md|txt|sh)$' | while IFS= read -r FILE; do
+  # AWS Access Key ID pattern
+  if git diff --cached "$FILE" | grep -E 'AKIA[0-9A-Z]{16}'; then
+    echo "⚠️  Error: Potential AWS Access Key detected in $FILE"
+    SECRET_FOUND=1
+  fi
+  # Generic API key/token patterns (fixed: use ["'] instead of \x27)
+  if git diff --cached "$FILE" | grep -iE '(api[_-]?key|api[_-]?secret|access[_-]?token|bearer\s+[a-zA-Z0-9_-]{20,})[\s]*[:=][\s]*["'"'"'][a-zA-Z0-9_-]{20,}'; then
+    echo "⚠️  Error: Potential API key/token detected in $FILE"
+    SECRET_FOUND=1
+  fi
+  # Exit if secrets found (exit subshell won't work, so we track and exit after loop)
+  if [ "$SECRET_FOUND" -eq 1 ]; then
+    exit 1
+  fi
+done
+# Check loop exit status
+if [ $? -ne 0 ]; then
+  exit 1
+fi
+
+# Large file detection (500KB limit) - fixed to handle spaces in filenames
+# Whitelist: __fixtures__/ directory (test data)
+MAX_SIZE=512000  # 500KB in bytes
+LARGE_FILES=""
+git diff --cached --name-only --diff-filter=ACM | while IFS= read -r FILE; do
+  # Skip whitelisted paths
+  case "$FILE" in
+    */__fixtures__/*) continue ;;
+  esac
+
+  if [ -f "$FILE" ]; then
+    SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE" 2>/dev/null)
+    if [ "$SIZE" -gt "$MAX_SIZE" ]; then
+      echo "$FILE ($((SIZE / 1024))KB)"
+    fi
+  fi
+done | {
+  FOUND_LARGE=0
+  while IFS= read -r LINE; do
+    if [ "$FOUND_LARGE" -eq 0 ]; then
+      echo "⚠️  Error: Large files detected (>500KB). Consider Git LFS or add to .gitignore:"
+      FOUND_LARGE=1
+    fi
+    echo "$LINE"
+  done
+  if [ "$FOUND_LARGE" -eq 1 ]; then
+    echo ""
+    echo "To bypass this check (if intentional): git commit --no-verify"
+    exit 1
+  fi
+}
+# Check pipe exit status
+if [ $? -ne 0 ]; then
+  exit 1
+fi
+
+# Format/lint staged files LAST (modifies + restages)
+npx lint-staged
