@@ -330,10 +330,10 @@ export function calculateStatistics(values: number[]): AssetStatistics {
     count: values.length,
     first: values[0],
     last: values[values.length - 1],
-    max: Math.max(...values),
+    max: values.reduce((a, b) => (b > a ? b : a), values[0]),
     mean: parseFloat(mean.toFixed(2)),
     median: parseFloat(median.toFixed(2)),
-    min: Math.min(...values),
+    min: values.reduce((a, b) => (b < a ? b : a), values[0]),
     stdev: parseFloat(stdev.toFixed(2)),
     sum,
   };

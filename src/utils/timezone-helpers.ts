@@ -109,7 +109,6 @@ export function getUTCOffset(timezone: string, date: Date = new Date()): string 
  */
 export function isDSTActive(timezone: string, date: Date = new Date()): boolean {
   try {
-    // Compare offset in summer vs winter to detect DST
     const jan = new Date(date.getFullYear(), 0, 1);
     const jul = new Date(date.getFullYear(), 6, 1);
 
@@ -117,8 +116,15 @@ export function isDSTActive(timezone: string, date: Date = new Date()): boolean 
     const julOffset = getUTCOffset(timezone, jul);
     const currentOffset = getUTCOffset(timezone, date);
 
-    // DST is active if current offset differs from standard (winter) offset
-    return currentOffset !== janOffset && currentOffset === julOffset;
+    // If Jan and Jul offsets are the same, timezone has no DST
+    if (janOffset === julOffset) return false;
+
+    // Standard time has the smaller (more negative) UTC offset string.
+    // This works for both hemispheres:
+    // - Northern: Jan is standard (e.g., "-08:00"), Jul is DST ("-07:00")
+    // - Southern: Jul is standard (e.g., "+10:00"), Jan is DST ("+11:00")
+    const standardOffset = janOffset < julOffset ? janOffset : julOffset;
+    return currentOffset !== standardOffset;
   } catch (error) {
     return false;
   }

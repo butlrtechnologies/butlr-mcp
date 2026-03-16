@@ -35,16 +35,47 @@ const authLink = setContext(async (_, { headers }) => {
 /**
  * Error handling link - logs errors and provides debugging info
  */
-const errorLink = onError(({ error, operation }) => {
-  console.error(`[graphql-client] Error in ${operation.operationName}:`, error.message);
+const errorLink = onError((errorResponse) => {
+  const { operation } = errorResponse;
+  // Apollo 4.x ErrorHandlerOptions has a single 'error' field.
+  // Cast to access graphQLErrors/networkError which may exist at runtime
+  // depending on the Apollo version's actual implementation.
+  const resp = errorResponse as unknown as Record<string, unknown>;
+  const graphQLErrors = resp.graphQLErrors as
+    | Array<{ message: string; extensions?: Record<string, unknown> }>
+    | undefined;
+  const networkError = resp.networkError as { statusCode?: number; message?: string } | undefined;
+  const topError = resp.error as { message?: string } | undefined;
 
-  // Clear cached token on auth errors
-  if (
-    error.message?.includes("UNAUTHENTICATED") ||
-    error.message?.includes("401") ||
-    error.message?.includes("403")
-  ) {
-    authClient.clearToken();
+  if (graphQLErrors) {
+    for (const err of graphQLErrors) {
+      console.error(`[graphql-client] GraphQL error in ${operation.operationName}:`, err.message);
+      if (err.extensions?.code === "UNAUTHENTICATED") {
+        authClient.clearToken();
+      }
+    }
+  }
+
+  if (networkError) {
+    console.error(
+      `[graphql-client] Network error in ${operation.operationName}:`,
+      networkError.message
+    );
+    if (networkError.statusCode === 401 || networkError.statusCode === 403) {
+      authClient.clearToken();
+    }
+  }
+
+  // Fallback for Apollo 4.x single error field
+  if (!graphQLErrors && !networkError && topError) {
+    console.error(`[graphql-client] Error in ${operation.operationName}:`, topError.message);
+    if (
+      topError.message?.includes("UNAUTHENTICATED") ||
+      topError.message?.includes("401") ||
+      topError.message?.includes("403")
+    ) {
+      authClient.clearToken();
+    }
   }
 });
 
