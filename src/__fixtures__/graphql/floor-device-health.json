@@ -1,0 +1,168 @@
+{
+  "floor": {
+    "__typename": "Floor",
+    "id": "space_000001",
+    "name": "Floor 1",
+    "building_id": "building_000001",
+    "rooms": [
+      {
+        "__typename": "Room",
+        "id": "room_000001",
+        "name": "Conference Room A",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000002",
+        "name": "Conference Room B",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000003",
+        "name": "Meeting Room 1",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000004",
+        "name": "Meeting Room 2",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000005",
+        "name": "Open Area",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000006",
+        "name": "Focus Room",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000007",
+        "name": "Phone Booth 1",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000008",
+        "name": "Phone Booth 2",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000009",
+        "name": "Cafe Area",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000010",
+        "name": "Kitchen",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000011",
+        "name": "Lobby",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_000012",
+        "name": "Reception",
+        "floorID": "space_000001",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      }
+    ],
+    "sensors": null,
+    "hives": []
+  }
+}
