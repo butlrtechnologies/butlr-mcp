@@ -24,16 +24,20 @@ class ButlrAuthClient {
   constructor() {
     this.clientId = process.env.BUTLR_CLIENT_ID || "";
     this.clientSecret = process.env.BUTLR_CLIENT_SECRET || "";
-
-    if (!this.clientId || !this.clientSecret) {
-      throw new Error("BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET environment variables are required");
-    }
   }
 
   /**
    * Get a valid access token, fetching a new one if needed
    */
   async getToken(): Promise<string> {
+    // Validate credentials on first use (deferred from constructor)
+    if (!this.clientId || !this.clientSecret) {
+      throw new Error(
+        "BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET environment variables are required. " +
+          "See README.md for configuration instructions."
+      );
+    }
+
     // Return cached token if still valid (with 5 minute buffer)
     if (this.token && this.tokenExpiry && Date.now() < this.tokenExpiry.getTime() - 5 * 60 * 1000) {
       if (process.env.DEBUG) {

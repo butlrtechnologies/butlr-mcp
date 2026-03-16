@@ -174,16 +174,20 @@ export function getMeasurement(assetType: string): string {
  * Normalize RFC3339 timestamp to ISO-8601
  */
 export function normalizeTimestamp(rfc3339: string): string {
+  if (!rfc3339) {
+    console.error(`[reporting-client] Invalid timestamp received: ${rfc3339}`);
+    return "";
+  }
   try {
     const date = new Date(rfc3339);
     if (isNaN(date.getTime())) {
       console.error(`[reporting-client] Invalid timestamp received: ${rfc3339}`);
-      return rfc3339;
+      return "";
     }
     return date.toISOString();
   } catch (error) {
     console.error(`[reporting-client] Failed to normalize timestamp ${rfc3339}:`, error);
-    return rfc3339;
+    return "";
   }
 }
 
@@ -214,9 +218,12 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
 
     if (response.statusCode !== 200) {
       const errorBody = await response.body.text();
+      if (process.env.DEBUG) {
+        console.error(`[reporting-client] API error body: ${errorBody}`);
+      }
       throw new ApiError(
         response.statusCode,
-        `Reporting API error (${response.statusCode}): ${errorBody}`
+        `Butlr API error (${response.statusCode}). Enable DEBUG=butlr-mcp for details.`
       );
     }
 
@@ -233,17 +240,18 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
     // Translate common errors using structured ApiError
     if (error instanceof ApiError) {
       if (error.statusCode === 401 || error.statusCode === 403) {
-        throw new Error("Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET.");
+        throw new ApiError(
+          error.statusCode,
+          "Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET."
+        );
       }
 
       if (error.statusCode === 429) {
-        throw new Error("Rate limit exceeded. Please retry after a few seconds.");
+        throw new ApiError(429, "Rate limit exceeded. Please retry after a few seconds.");
       }
 
       if (error.statusCode === 400) {
-        throw new Error(
-          `Invalid request parameters: ${error.message}. Check your filter configuration.`
-        );
+        throw new ApiError(400, "Invalid request parameters. Check your filter configuration.");
       }
     }
 

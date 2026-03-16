@@ -97,11 +97,11 @@ describe("reporting-client", () => {
       expect(new Date(iso8601).toISOString()).toBe(iso8601);
     });
 
-    it("returns original string if parsing fails", () => {
+    it("returns empty string if parsing fails", () => {
       const invalid = "not-a-date";
       const result = normalizeTimestamp(invalid);
 
-      expect(result).toBe("not-a-date");
+      expect(result).toBe("");
     });
 
     it("handles empty string", () => {

@@ -92,9 +92,12 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
         );
       }
 
+      if (process.env.DEBUG) {
+        console.error(`[stats-client] API error body: ${errorBody}`);
+      }
       throw new ApiError(
         response.statusCode,
-        `Stats API error (${response.statusCode}): ${errorBody}`
+        `Butlr API error (${response.statusCode}). Enable DEBUG=butlr-mcp for details.`
       );
     }
 
@@ -113,17 +116,18 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
     // Translate common errors using structured ApiError
     if (error instanceof ApiError) {
       if (error.statusCode === 401 || error.statusCode === 403) {
-        throw new Error("Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET.");
+        throw new ApiError(
+          error.statusCode,
+          "Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET."
+        );
       }
 
       if (error.statusCode === 429) {
-        throw new Error("Rate limit exceeded. Please retry after a few seconds.");
+        throw new ApiError(429, "Rate limit exceeded. Please retry after a few seconds.");
       }
 
       if (error.statusCode === 400) {
-        throw new Error(
-          `Invalid request parameters: ${error.message}. Check measurements and items.`
-        );
+        throw new ApiError(400, "Invalid request parameters. Check measurements and items.");
       }
     }
 
