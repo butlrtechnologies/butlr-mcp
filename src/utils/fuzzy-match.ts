@@ -6,7 +6,7 @@ export interface SearchableAsset {
   id: string;
   name: string;
   type: "site" | "building" | "floor" | "room" | "zone" | "sensor" | "hive";
-  [key: string]: any; // Additional fields
+  [key: string]: unknown;
 }
 
 export interface MatchResult<T extends SearchableAsset> {

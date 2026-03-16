@@ -240,6 +240,7 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
     // Translate common errors using structured ApiError
     if (error instanceof ApiError) {
       if (error.statusCode === 401 || error.statusCode === 403) {
+        authClient.clearToken();
         throw new ApiError(
           error.statusCode,
           "Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET."

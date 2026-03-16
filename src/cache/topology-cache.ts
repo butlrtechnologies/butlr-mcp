@@ -61,7 +61,7 @@ export function getCachedTopology(key: string): CacheEntry | undefined {
 /**
  * Store topology data in cache
  */
-export function setCachedTopology(key: string, data: any): void {
+export function setCachedTopology(key: string, data: Record<string, unknown>): void {
   const entry: CacheEntry = {
     data,
     timestamp: new Date().toISOString(),
