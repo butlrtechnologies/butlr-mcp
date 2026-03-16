@@ -1,0 +1,772 @@
+{
+  "data": [
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000070"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000058"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000059"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000134"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000135"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000136"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000137"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000133"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000087"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000139"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000138"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000088"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000140"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000099"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000106"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000103"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000086"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000120"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000091"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000090"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000092"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000081"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000082"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000094"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000083"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000089"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000093"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000095"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000079"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000085"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000028"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000030"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000031"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000044"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000033"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000032"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000045"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000046"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000047"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000034"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000021"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000035"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000036"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000037"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000038"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000039"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000096"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000042"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000097"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000098"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000117"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000043"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000041"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000057"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000055"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000029"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000131"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000100"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000078"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000077"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000101"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000102"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000105"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000104"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000108"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000107"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000022"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000048"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000049"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000050"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000051"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000052"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000110"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000109"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000111"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000112"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000113"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000114"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000115"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000116"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000075"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000132"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000076"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000080"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000014"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000016"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000015"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000017"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000018"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000019"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000020"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000074"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000056"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000024"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000026"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000025"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000013"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000053"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000054"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000118"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000128"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000129"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000130"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000123"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000072"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000069"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000121"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000023"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000071"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000122"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000060"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000124"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000061"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000062"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000063"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000065"
+    },
+    {
+      "start": "2025-10-14T15:22:00.000Z",
+      "measurement": "traffic_room_occupancy",
+      "value": 2,
+      "asset_id": "room_000064"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000066"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000084"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000027"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000067"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000127"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000125"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000068"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000073"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000126"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_000159",
+      "value": 0,
+      "asset_id": "room_000040"
+    }
+  ],
+  "page_info": {
+    "page": 1,
+    "page_item_count": 127,
+    "total_item_count": 127,
+    "total_pages": 1
+  }
+}
