@@ -82,9 +82,7 @@ class ButlrAuthClient {
 
       return this.token;
     } catch (error) {
-      if (process.env.DEBUG) {
-        console.error("[auth-client] Token fetch failed:", error);
-      }
+      console.error("[auth-client] Token fetch failed:", error);
       throw new Error(
         `Failed to authenticate with Butlr API: ${error instanceof Error ? error.message : String(error)}`
       );

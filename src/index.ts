@@ -2,17 +2,18 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 import { validateToolArgs } from "./utils/validation.js";
 import {
   searchAssetsTool,
   executeSearchAssets,
   SearchAssetsArgsSchema,
-} from "./tools/search-assets.js";
+} from "./tools/butlr-search-assets.js";
 import {
   getAssetDetailsTool,
   executeGetAssetDetails,
   GetAssetDetailsArgsSchema,
-} from "./tools/get-asset-details.js";
+} from "./tools/butlr-get-asset-details.js";
 import {
   hardwareSnapshotTool,
   executeHardwareSnapshot,
@@ -33,49 +34,85 @@ import {
   executeTrafficFlow,
   TrafficFlowArgsSchema,
 } from "./tools/butlr-traffic-flow.js";
-import {
-  listTopologyTool,
-  executeListTopology,
-  type ListTopologyArgs,
-} from "./tools/butlr-list-topology.js";
+import { listTopologyTool, executeListTopology } from "./tools/butlr-list-topology.js";
 import {
   fetchEntityDetailsTool,
   executeFetchEntityDetails,
-  type FetchEntityDetailsArgs,
 } from "./tools/butlr-fetch-entity-details.js";
-// Legacy occupancy tools (temporarily disabled for testing)
-// import {
-//   trafficOccupancyTimeseriesToolTool,
-//   executeTrafficOccupancyTimeseries,
-//   type TrafficOccupancyTimeseriesArgs,
-// } from "./tools/butlr-fetch-traffic-occupancy-timeseries.js";
-// import {
-//   presenceOccupancyTimeseriesToolTool,
-//   executePresenceOccupancyTimeseries,
-//   type PresenceOccupancyTimeseriesArgs,
-// } from "./tools/butlr-fetch-presence-occupancy-timeseries.js";
-// import {
-//   currentTrafficOccupancyTool,
-//   executeCurrentTrafficOccupancy,
-//   type CurrentTrafficOccupancyArgs,
-// } from "./tools/butlr-fetch-current-traffic-occupancy.js";
-// import {
-//   currentPresenceOccupancyTool,
-//   executeCurrentPresenceOccupancy,
-//   type CurrentPresenceOccupancyArgs,
-// } from "./tools/butlr-fetch-current-presence-occupancy.js";
-
-// NEW: Unified occupancy tools with timezone support
 import {
   getOccupancyTimeseriesTool,
   executeGetOccupancyTimeseries,
-  type GetOccupancyTimeseriesArgs,
 } from "./tools/butlr-get-occupancy-timeseries.js";
 import {
   getCurrentOccupancyTool,
   executeGetCurrentOccupancy,
-  type GetCurrentOccupancyArgs,
 } from "./tools/butlr-get-current-occupancy.js";
+
+/**
+ * Zod schemas for Tier 3 foundation tools
+ */
+const ListTopologyArgsSchema = z
+  .object({
+    asset_ids: z
+      .array(z.string())
+      .optional()
+      .describe("Optional: Parent asset IDs to show tree for. If empty, shows all sites."),
+    starting_depth: z
+      .number()
+      .int()
+      .min(0)
+      .max(5)
+      .default(0)
+      .describe(
+        "Depth level to start showing assets. 0=sites, 1=buildings, 2=floors, 3=rooms/zones, 4=hives, 5=sensors."
+      ),
+    traversal_depth: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe("How many levels below starting_depth to traverse. 0=starting level only."),
+  })
+  .strict();
+
+const FetchEntityDetailsArgsSchema = z
+  .object({
+    ids: z
+      .array(z.string().min(1))
+      .min(1, "ids must contain at least 1 entity ID")
+      .describe("Entity IDs (mixed types supported)"),
+    site_fields: z.array(z.string()).optional().describe("Fields to fetch for sites"),
+    building_fields: z.array(z.string()).optional().describe("Fields to fetch for buildings"),
+    floor_fields: z.array(z.string()).optional().describe("Fields to fetch for floors"),
+    room_fields: z.array(z.string()).optional().describe("Fields to fetch for rooms"),
+    zone_fields: z.array(z.string()).optional().describe("Fields to fetch for zones"),
+    sensor_fields: z.array(z.string()).optional().describe("Fields to fetch for sensors"),
+    hive_fields: z.array(z.string()).optional().describe("Fields to fetch for hives"),
+  })
+  .strict();
+
+const GetOccupancyTimeseriesArgsSchema = z
+  .object({
+    asset_ids: z
+      .array(z.string().min(1))
+      .min(1, "asset_ids must contain at least 1 ID")
+      .describe("Floor, room, or zone IDs"),
+    interval: z
+      .enum(["1m", "1h", "1d"])
+      .describe("Aggregation interval (1m=max 1hr range, 1h=max 48hrs, 1d=max 60 days)"),
+    start: z.string().min(1).describe("ISO-8601 timestamp or relative time (e.g., '-24h')"),
+    stop: z.string().min(1).describe("ISO-8601 timestamp or relative time (e.g., 'now')"),
+  })
+  .strict();
+
+const GetCurrentOccupancyArgsSchema = z
+  .object({
+    asset_ids: z
+      .array(z.string().min(1))
+      .min(1, "asset_ids must contain at least 1 ID")
+      .describe("Floor, room, or zone IDs"),
+  })
+  .strict();
 
 const SERVER_NAME = "butlr-mcp-server";
 const SERVER_VERSION = "0.1.0";
@@ -96,31 +133,30 @@ const server = new Server(
 );
 
 /**
+ * All registered tools
+ */
+const allTools = [
+  // Tier 1: Conversational Tools
+  hardwareSnapshotTool,
+  availableRoomsTool,
+  spaceBusynessTool,
+  trafficFlowTool,
+  // Tier 2: Data Tools
+  searchAssetsTool,
+  getAssetDetailsTool,
+  // Tier 3: Foundation Tools (validation/debugging)
+  listTopologyTool,
+  fetchEntityDetailsTool,
+  getOccupancyTimeseriesTool,
+  getCurrentOccupancyTool,
+];
+
+/**
  * Handler for listing available tools
  */
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
-    tools: [
-      // Tier 1: Conversational Tools
-      hardwareSnapshotTool,
-      availableRoomsTool,
-      spaceBusynessTool,
-      trafficFlowTool,
-      // Tier 2: Data Tools
-      searchAssetsTool,
-      getAssetDetailsTool,
-      // Tier 3: Foundation Tools (validation/debugging)
-      listTopologyTool,
-      fetchEntityDetailsTool,
-      // NEW: Unified occupancy tools with timezone support
-      getOccupancyTimeseriesTool,
-      getCurrentOccupancyTool,
-      // Legacy occupancy tools (temporarily unregistered for testing)
-      // trafficOccupancyTimeseriesToolTool,
-      // presenceOccupancyTimeseriesToolTool,
-      // currentTrafficOccupancyTool,
-      // currentPresenceOccupancyTool,
-    ],
+    tools: allTools,
   };
 });
 
@@ -133,60 +169,65 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     let result: any;
 
-    // Tier 1: Conversational Tools
-    if (name === "butlr_hardware_snapshot") {
-      const validated = validateToolArgs(HardwareSnapshotArgsSchema, args) as any;
-      result = await executeHardwareSnapshot(validated);
-    } else if (name === "butlr_available_rooms") {
-      const validated = validateToolArgs(AvailableRoomsArgsSchema, args) as any;
-      result = await executeAvailableRooms(validated);
-    } else if (name === "butlr_space_busyness") {
-      const validated = validateToolArgs(SpaceBusynessArgsSchema, args) as any;
-      result = await executeSpaceBusyness(validated);
-    } else if (name === "butlr_traffic_flow") {
-      const validated = validateToolArgs(TrafficFlowArgsSchema, args) as any;
-      result = await executeTrafficFlow(validated);
-    }
-    // Tier 2: Data Tools
-    else if (name === "search_assets") {
-      const validated = validateToolArgs(SearchAssetsArgsSchema, args) as any;
-      result = await executeSearchAssets(validated);
-    } else if (name === "get_asset_details") {
-      const validated = validateToolArgs(GetAssetDetailsArgsSchema, args) as any;
-      result = await executeGetAssetDetails(validated);
-    }
-    // Tier 3: Foundation Tools
-    else if (name === "butlr_list_topology") {
-      result = await executeListTopology(args as any as ListTopologyArgs);
-    } else if (name === "butlr_fetch_entity_details") {
-      result = await executeFetchEntityDetails(args as any as FetchEntityDetailsArgs);
-    }
-    // NEW: Unified occupancy tools
-    else if (name === "butlr_get_occupancy_timeseries") {
-      result = await executeGetOccupancyTimeseries(args as any as GetOccupancyTimeseriesArgs);
-    } else if (name === "butlr_get_current_occupancy") {
-      result = await executeGetCurrentOccupancy(args as any as GetCurrentOccupancyArgs);
-    }
-    // Legacy occupancy tools (temporarily disabled)
-    // else if (name === "butlr_fetch_traffic_occupancy_timeseries") {
-    //   result = await executeTrafficOccupancyTimeseries(
-    //     args as any as TrafficOccupancyTimeseriesArgs
-    //   );
-    // } else if (name === "butlr_fetch_presence_occupancy_timeseries") {
-    //   result = await executePresenceOccupancyTimeseries(
-    //     args as any as PresenceOccupancyTimeseriesArgs
-    //   );
-    // } else if (name === "butlr_fetch_current_traffic_occupancy") {
-    //   result = await executeCurrentTrafficOccupancy(
-    //     args as any as CurrentTrafficOccupancyArgs
-    //   );
-    // } else if (name === "butlr_fetch_current_presence_occupancy") {
-    //   result = await executeCurrentPresenceOccupancy(
-    //     args as any as CurrentPresenceOccupancyArgs
-    //   );
-    // }
-    else {
-      throw new Error(`Unknown tool: ${name}`);
+    switch (name) {
+      // Tier 1: Conversational Tools
+      case "butlr_hardware_snapshot": {
+        const validated = validateToolArgs(HardwareSnapshotArgsSchema, args);
+        result = await executeHardwareSnapshot(validated);
+        break;
+      }
+      case "butlr_available_rooms": {
+        const validated = validateToolArgs(AvailableRoomsArgsSchema, args);
+        result = await executeAvailableRooms(validated);
+        break;
+      }
+      case "butlr_space_busyness": {
+        const validated = validateToolArgs(SpaceBusynessArgsSchema, args);
+        result = await executeSpaceBusyness(validated);
+        break;
+      }
+      case "butlr_traffic_flow": {
+        const validated = validateToolArgs(TrafficFlowArgsSchema, args);
+        result = await executeTrafficFlow(validated);
+        break;
+      }
+
+      // Tier 2: Data Tools
+      case "butlr_search_assets": {
+        const validated = validateToolArgs(SearchAssetsArgsSchema, args);
+        result = await executeSearchAssets(validated);
+        break;
+      }
+      case "butlr_get_asset_details": {
+        const validated = validateToolArgs(GetAssetDetailsArgsSchema, args);
+        result = await executeGetAssetDetails(validated);
+        break;
+      }
+
+      // Tier 3: Foundation Tools
+      case "butlr_list_topology": {
+        const validated = validateToolArgs(ListTopologyArgsSchema, args);
+        result = await executeListTopology(validated);
+        break;
+      }
+      case "butlr_fetch_entity_details": {
+        const validated = validateToolArgs(FetchEntityDetailsArgsSchema, args);
+        result = await executeFetchEntityDetails(validated);
+        break;
+      }
+      case "butlr_get_occupancy_timeseries": {
+        const validated = validateToolArgs(GetOccupancyTimeseriesArgsSchema, args);
+        result = await executeGetOccupancyTimeseries(validated);
+        break;
+      }
+      case "butlr_get_current_occupancy": {
+        const validated = validateToolArgs(GetCurrentOccupancyArgsSchema, args);
+        result = await executeGetCurrentOccupancy(validated);
+        break;
+      }
+
+      default:
+        throw new Error(`Unknown tool: ${name}`);
     }
 
     return {
@@ -227,18 +268,13 @@ async function main() {
   if (process.env.DEBUG === "butlr-mcp" || process.env.DEBUG === "*") {
     console.error(`[${SERVER_NAME}] Server started on stdio transport`);
     console.error(`[${SERVER_NAME}] Version: ${SERVER_VERSION}`);
-    console.error(
-      `[${SERVER_NAME}] Available tools: 10 total (4 conversational + 2 data + 4 foundation)`
-    );
+    console.error(`[${SERVER_NAME}] Available tools: ${allTools.length} total`);
     console.error(
       `[${SERVER_NAME}] - Tier 1 (Conversational): butlr_hardware_snapshot, butlr_available_rooms, butlr_space_busyness, butlr_traffic_flow`
     );
-    console.error(`[${SERVER_NAME}] - Tier 2 (Data): search_assets, get_asset_details`);
+    console.error(`[${SERVER_NAME}] - Tier 2 (Data): butlr_search_assets, butlr_get_asset_details`);
     console.error(
       `[${SERVER_NAME}] - Tier 3 (Foundation): butlr_list_topology, butlr_fetch_entity_details, butlr_get_occupancy_timeseries, butlr_get_current_occupancy`
-    );
-    console.error(
-      `[${SERVER_NAME}] - Legacy tools temporarily disabled: 4 separate occupancy tools`
     );
   }
 }

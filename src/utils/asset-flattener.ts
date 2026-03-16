@@ -19,8 +19,36 @@ export interface FlattenedAsset {
   room_id?: string;
   room_name?: string;
 
-  // Type-specific fields (kept as-is)
-  [key: string]: any;
+  // Site fields
+  timezone?: string;
+  siteNumber?: number;
+  customID?: string;
+  org_id?: string;
+
+  // Building fields
+  building_number?: number;
+  capacity?: { max?: number; mid?: number };
+  address?: { lines?: string[]; country?: string };
+
+  // Floor fields
+  floorNumber?: number;
+  installation_date?: number;
+  area?: { value?: number; unit?: string };
+
+  // Room fields
+  roomType?: string;
+  coordinates?: number[][] | number[];
+
+  // Sensor fields
+  mac_address?: string;
+  mode?: "presence" | "traffic";
+  model?: string;
+  hive_serial?: string;
+  is_online?: boolean;
+
+  // Hive fields
+  serialNumber?: string;
+  hiveVersion?: string;
 }
 
 /**
@@ -157,15 +185,4 @@ export function flattenTopology(sites: Site[]): FlattenedAsset[] {
   }
 
   return flattened;
-}
-
-/**
- * Filter flattened assets by type
- */
-export function filterFlattenedByType(assets: FlattenedAsset[], types: string[]): FlattenedAsset[] {
-  if (!types || types.length === 0) {
-    return assets;
-  }
-
-  return assets.filter((asset) => types.includes(asset.type));
 }

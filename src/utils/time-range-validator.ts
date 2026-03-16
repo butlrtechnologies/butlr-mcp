@@ -81,19 +81,3 @@ function parseTime(timeStr: string): Date {
 
   return parsed;
 }
-
-/**
- * Get human-readable description of time range limits for an interval
- */
-export function getTimeRangeLimits(interval: string): string {
-  switch (interval) {
-    case "1m":
-      return "1 hour maximum";
-    case "1h":
-      return "48 hours maximum";
-    case "1d":
-      return "60 days maximum";
-    default:
-      return "unknown";
-  }
-}

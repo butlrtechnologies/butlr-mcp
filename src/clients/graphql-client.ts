@@ -27,9 +27,7 @@ const authLink = setContext(async (_, { headers }) => {
       },
     };
   } catch (error) {
-    if (process.env.DEBUG) {
-      console.error("[graphql-client] Failed to get auth token:", error);
-    }
+    console.error("[graphql-client] Failed to get auth token:", error);
     throw error;
   }
 });
@@ -42,9 +40,7 @@ const errorLink = onError((errorResponse: any) => {
 
   if (graphQLErrors) {
     for (const err of graphQLErrors) {
-      if (process.env.DEBUG) {
-        console.error(`[graphql-client] GraphQL error in ${operation.operationName}:`, err.message);
-      }
+      console.error(`[graphql-client] GraphQL error in ${operation.operationName}:`, err.message);
       // Handle specific error codes
       if (err.extensions?.code === "UNAUTHENTICATED") {
         // Clear cached token on auth errors
@@ -54,12 +50,10 @@ const errorLink = onError((errorResponse: any) => {
   }
 
   if (networkError) {
-    if (process.env.DEBUG) {
-      console.error(
-        `[graphql-client] Network error in ${operation.operationName}:`,
-        networkError.message
-      );
-    }
+    console.error(
+      `[graphql-client] Network error in ${operation.operationName}:`,
+      networkError.message
+    );
   }
 });
 

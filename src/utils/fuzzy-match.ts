@@ -101,14 +101,3 @@ export function searchAssets<T extends SearchableAsset>(
   // Sort by score (highest first) and limit results
   return scored.sort((a, b) => b.score - a.score).slice(0, maxResults);
 }
-
-/**
- * Filter assets by type
- */
-export function filterByType<T extends SearchableAsset>(assets: T[], types: string[]): T[] {
-  if (!types || types.length === 0) {
-    return assets;
-  }
-
-  return assets.filter((asset) => types.includes(asset.type));
-}

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the **Butlr MCP Server** - a Model Context Protocol (MCP) adapter that will provide secure, read-only access to Butlr occupancy and asset data through natural-language interfaces. The server will translate high-level queries into parameterized API calls against Butlr's GraphQL and REST endpoints, handling authentication, rate limiting, caching, and response normalization.
 
-**Current Status:** ✅ 10 active tools (4 conversational + 2 data + 4 foundation) with full infrastructure (v3 API clients, caching, natural language utilities). See `VISION.md` for architecture.
+**Current Status:** ✅ 10 active tools (4 conversational + 2 data + 4 foundation) with full infrastructure (v3 API clients, caching, natural language utilities).
 
 ## Planned Architecture
 
@@ -43,8 +43,8 @@ Question-driven design: tools answer user questions, not map to API endpoints.
 8. **`butlr_space_insights`** 📋 PLANNED - "Tell me something interesting about my office"
 
 **Tier 2: Data Tools** - Raw data access for power users
-9. **`search_assets`** ✅ - Fuzzy asset search
-10. **`get_asset_details`** ✅ - Full asset details by ID
+9. **`butlr_search_assets`** ✅ - Fuzzy asset search
+10. **`butlr_get_asset_details`** ✅ - Full asset details by ID
 
 **Tier 3: Foundation Tools** - Validation/debugging for developers
 11. **`butlr_list_topology`** ✅ - Tree view of org hierarchy
@@ -63,7 +63,7 @@ See `docs/MCP_TOOLS_DESIGN.md` for complete specifications.
 - **Read-only access**: All tools enforce read-only scopes to protect customer data
 - **Response normalization**: Convert GraphQL and REST responses to stable JSON shapes with ISO-8601 timestamps
 - **Error translation**: Map HTTP/GraphQL to structured MCP errors (`AUTH_EXPIRED`, `RATE_LIMITED`, `VALIDATION_FAILED`)
-- **Selective toolsets**: Support `BUTLR_TOOLSETS` to enable/disable tool groups (conversational, data)
+- **Selective toolsets**: (Planned) Support `BUTLR_TOOLSETS` to enable/disable tool groups (conversational, data)
 
 ## Planned Technical Stack
 
@@ -90,7 +90,6 @@ butlr-mcp-server/
 ├── bin/
 │   └── cli.js             # CLI entry point for npx
 ├── .claude/tasks/         # Task tracking (not in git)
-├── VISION.md              # Full design document
 └── CLAUDE.md              # Agent instructions for Claude Code
 ```
 
@@ -128,7 +127,8 @@ All configuration will use environment variables or CLI flags (flags override en
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `BUTLR_TOKEN` | Yes | Long-lived API token for Butlr API |
+| `BUTLR_CLIENT_ID` | Yes | OAuth2 client ID for Butlr API |
+| `BUTLR_CLIENT_SECRET` | Yes | OAuth2 client secret for Butlr API |
 | `BUTLR_ORG_ID` | Yes* | Organization ID (*or provide via `--org-id` flag) |
 | `BUTLR_BASE_URL` | No | API base URL (default: `https://api.butlr.io`) |
 | `BUTLR_TIMEZONE` | No | Default timezone for reports (default: `UTC`) |
@@ -137,19 +137,20 @@ All configuration will use environment variables or CLI flags (flags override en
 | `MCP_MAX_LOOKBACK_DAYS` | No | Max days for timeseries queries |
 | `MCP_CONCURRENCY` | No | Max concurrent upstream API calls |
 | `DEBUG` | No | Set to `butlr-mcp` for verbose logging |
-| `BUTLR_TOOLSETS` | No | Comma-separated list: `"occupancy,topology,devices"` |
+| `BUTLR_TOOLSETS` | No | Planned - not yet implemented. Comma-separated list: `"occupancy,topology,devices"` |
 
-**Security**: Never commit tokens. Store in `.env` file (add to `.gitignore`) or shell environment.
+**Security**: Never commit credentials. Store in `.env` file (add to `.gitignore`) or shell environment.
 
 ## Planned CLI Flags
 
-The CLI should support:
+The CLI supports:
 - `--org-id` - Organization ID
-- `--token` - API token
+- `--client-id` - OAuth2 client ID
+- `--client-secret` - OAuth2 client secret
 - `--base-url` - Base URL for Butlr APIs
 - `--cache-ttl` - Cache TTL in seconds
 - `--max-ids` - Maximum IDs per call
-- `--toolsets` - Enabled tool groups
+- `--toolsets` - Enabled tool groups (planned - not yet implemented)
 
 ## Testing Approach
 

@@ -1,5 +1,20 @@
-// Using any for Apollo error due to type export issues
-type ApolloError = any;
+/**
+ * Structural type for Apollo-like errors (ApolloError was removed in Apollo Client 4.0)
+ * Narrowed from `any` to `unknown` with runtime property checks inside translateGraphQLError.
+ */
+interface GraphQLClientError {
+  networkError?: {
+    statusCode?: number;
+    message?: string;
+    result?: unknown;
+    response?: { headers?: { get(name: string): string | null } };
+  };
+  graphQLErrors?: Array<{
+    message: string;
+    extensions?: Record<string, unknown>;
+  }>;
+  message?: string;
+}
 
 /**
  * MCP Error Codes
@@ -25,10 +40,10 @@ export interface MCPError {
 /**
  * Translate GraphQL/Apollo errors to MCP error format
  */
-export function translateGraphQLError(error: ApolloError): MCPError {
+export function translateGraphQLError(error: GraphQLClientError): MCPError {
   // Check for network errors
   if (error.networkError) {
-    const networkError = error.networkError as any;
+    const networkError = error.networkError;
 
     // Authentication errors
     if (networkError.statusCode === 401 || networkError.statusCode === 403) {

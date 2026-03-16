@@ -6,19 +6,6 @@
 import type { Site, Building, Floor } from "../clients/types.js";
 
 /**
- * Build a map of site IDs to their timezones for quick lookups
- */
-export function buildSiteTimezoneMap(sites: Site[]): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const site of sites) {
-    if (site.timezone) {
-      map.set(site.id, site.timezone);
-    }
-  }
-  return map;
-}
-
-/**
  * Get the site timezone for any asset (floor, room, zone)
  * Traverses hierarchy to find parent site
  */
@@ -175,65 +162,57 @@ export function getCurrentLocalTime(timezone: string): string {
  */
 export function getLocalMidnight(date: Date, timezone: string): Date {
   try {
-    // Simple approach: Get offset, calculate midnight
-    // Start from current time, round down to start of UTC day, then adjust by offset
-
-    // Get current offset in milliseconds
-    const utcMidnight = new Date(date);
-    utcMidnight.setUTCHours(0, 0, 0, 0);
-
-    // Format midnight UTC in the target timezone to see what time it is there
-    const midnightLocal = utcMidnight.toLocaleString("en-US", {
+    // Get the local date in the target timezone using Intl.DateTimeFormat
+    const localDate = new Intl.DateTimeFormat("en-CA", {
       timeZone: timezone,
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date);
+    // localDate is "YYYY-MM-DD" in the target timezone
 
-    // Parse "HH:mm" format
-    const [hourStr, minStr] = midnightLocal.split(":");
-    const localHourAtUTCMidnight = parseInt(hourStr);
-    const localMinAtUTCMidnight = parseInt(minStr);
+    const [year, month, day] = localDate.split("-").map(Number);
 
-    // Calculate how many milliseconds to subtract to get to local midnight
-    // If it's 05:30 at UTC midnight, we need to go back 5.5 hours
-    const offsetMs = localHourAtUTCMidnight * 60 * 60 * 1000 + localMinAtUTCMidnight * 60 * 1000;
+    // Start with a rough estimate: UTC midnight on that date
+    let estimate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
 
-    const localMidnight = new Date(utcMidnight.getTime() - offsetMs);
+    // Iteratively adjust to find the UTC time that corresponds to midnight local time
+    for (let i = 0; i < 3; i++) {
+      const localAtEstimate = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).formatToParts(estimate);
 
-    return localMidnight;
-  } catch (error) {
-    if (process.env.DEBUG) {
-      console.error(`[timezone-helpers] Failed to get local midnight for ${timezone}:`, error);
+      const h = parseInt(localAtEstimate.find((p) => p.type === "hour")?.value || "0");
+      const m = parseInt(localAtEstimate.find((p) => p.type === "minute")?.value || "0");
+      const d = parseInt(localAtEstimate.find((p) => p.type === "day")?.value || "0");
+
+      if (h === 0 && m === 0 && d === day) break; // Found it
+
+      // Adjust: we want local to be 00:00 on `day`
+      let diffMinutes = h * 60 + m;
+      if (d !== day) {
+        // Day is wrong, big adjustment needed
+        if (d < day)
+          diffMinutes -= 24 * 60; // We're a day behind
+        else diffMinutes += 24 * 60; // We're a day ahead
+      }
+      estimate = new Date(estimate.getTime() - diffMinutes * 60 * 1000);
     }
+
+    return estimate;
+  } catch (error) {
+    console.error(`[timezone] Failed to calculate local midnight for ${timezone}:`, error);
+    // Fallback to UTC midnight
     const utcMidnight = new Date(date);
     utcMidnight.setUTCHours(0, 0, 0, 0);
     return utcMidnight;
-  }
-}
-
-/**
- * Format UTC timestamp as local hour
- * Returns: "09:30 AM IST" for display in hourly breakdowns
- */
-export function formatHourInTimezone(utcTimestamp: string | Date, timezone: string): string {
-  try {
-    const date = typeof utcTimestamp === "string" ? new Date(utcTimestamp) : utcTimestamp;
-
-    const formatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
-
-    const tzAbbr = getTimezoneAbbreviation(timezone, date);
-    return `${formatter.format(date)} ${tzAbbr}`;
-  } catch (error) {
-    if (process.env.DEBUG) {
-      console.error(`[timezone-helpers] Failed to format hour for ${timezone}:`, error);
-    }
-    return typeof utcTimestamp === "string" ? utcTimestamp : utcTimestamp.toISOString();
   }
 }
 

@@ -3,7 +3,7 @@ import { executeSpaceBusyness } from "../../butlr-space-busyness.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
 import * as statsClient from "../../../clients/stats-client.js";
-import * as searchAssets from "../../search-assets.js";
+import * as searchAssets from "../../butlr-search-assets.js";
 import { clearOccupancyCache } from "../../../cache/occupancy-cache.js";
 
 // Mock all the clients
@@ -33,9 +33,10 @@ vi.mock("../../../clients/stats-client.js", async () => {
   };
 });
 
-vi.mock("../../search-assets.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../search-assets.js")>("../../search-assets.js");
+vi.mock("../../butlr-search-assets.js", async () => {
+  const actual = await vi.importActual<typeof import("../../butlr-search-assets.js")>(
+    "../../butlr-search-assets.js"
+  );
   return {
     ...actual,
     executeSearchAssets: vi.fn(),

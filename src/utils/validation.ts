@@ -5,7 +5,7 @@ import { createValidationError } from "../errors/mcp-errors.js";
  * Validate tool arguments using a Zod schema
  * @throws Error with user-friendly validation messages
  */
-export function validateToolArgs<T>(schema: z.ZodSchema<T>, args: unknown): T {
+export function validateToolArgs<T extends z.ZodTypeAny>(schema: T, args: unknown): z.output<T> {
   try {
     return schema.parse(args);
   } catch (error) {

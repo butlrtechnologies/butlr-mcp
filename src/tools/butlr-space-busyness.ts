@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Room, Zone } from "../clients/types.js";
 import { getCurrentOccupancy } from "../clients/reporting-client.js";
 import { getSingleAssetStats } from "../clients/stats-client.js";
-import { executeSearchAssets } from "./search-assets.js";
+import { executeSearchAssets } from "./butlr-search-assets.js";
 import {
   buildBusynessSummary,
   getOccupancyLabel,
@@ -65,9 +65,9 @@ export const spaceBusynessTool = {
     "- Precise occupancy counts for capacity planning → use butlr_get_current_occupancy for exact numbers\n" +
     "- Historical utilization patterns → use butlr_get_occupancy_timeseries for time series data\n" +
     "- Entry/exit traffic counts (lobby, building entrance) → use butlr_traffic_flow instead\n" +
-    "- Searching for a space first → use search_assets to find room/zone ID by name\n\n" +
+    "- Searching for a space first → use butlr_search_assets to find room/zone ID by name\n\n" +
     "Qualitative Labels: Quiet (<30% utilized), Moderate (30-70%), Busy (70-90%), Very Busy (>90%)\n\n" +
-    "See Also: butlr_get_current_occupancy, butlr_traffic_flow, search_assets, butlr_get_occupancy_timeseries",
+    "See Also: butlr_get_current_occupancy, butlr_traffic_flow, butlr_search_assets, butlr_get_occupancy_timeseries",
   inputSchema: {
     type: "object",
     properties: {
@@ -250,9 +250,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
         setCachedOccupancy(spaceId, currentOccupancy, spaceType, now);
       }
     } catch (error: any) {
-      if (process.env.DEBUG) {
-        console.error(`[space-busyness] Failed to get occupancy:`, error);
-      }
+      console.error(`[space-busyness] Failed to get occupancy:`, error);
       throw new Error(
         `Failed to get current occupancy for ${space.name}. The space may not have active sensors.`
       );
@@ -303,10 +301,9 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
         };
       }
     } catch (error: any) {
-      if (process.env.DEBUG) {
-        console.error(`[space-busyness] Failed to get trend data:`, error);
-      }
-      // Continue without trend data
+      console.error(`[space-busyness] Failed to get trend data:`, error);
+      response.warning =
+        "Could not retrieve historical trend data. Trend comparison is unavailable.";
     }
   }
 

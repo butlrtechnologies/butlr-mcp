@@ -70,7 +70,7 @@ export const SearchAssetsArgsSchema = z
  * Tool definition for search_assets
  */
 export const searchAssetsTool = {
-  name: "search_assets",
+  name: "butlr_search_assets",
   description:
     "Search for Butlr assets (sites, buildings, floors, rooms, zones, sensors, hives) by name using fuzzy matching. Essential prerequisite tool for finding asset IDs before calling other tools. Returns minimal matched results with breadcrumb paths, match scores, and parent context. Searches across all asset types by default, with optional filters.\n\n" +
     "Primary Users:\n" +
@@ -94,12 +94,12 @@ export const searchAssetsTool = {
     "- Exploring org topology and don't know exact asset names\n" +
     "- Want to find spaces with partial/fuzzy names (e.g., 'cafe' matches 'Café Barista')\n\n" +
     "When NOT to Use:\n" +
-    "- Already have asset IDs and need detailed info → use get_asset_details directly\n" +
+    "- Already have asset IDs and need detailed info → use butlr_get_asset_details directly\n" +
     "- Want to browse full organizational hierarchy → use butlr_list_topology instead\n" +
     "- Need to analyze occupancy or sensor data → use this tool first to find IDs, then use data tools\n\n" +
     "Search Features: Fuzzy matching (handles typos), multi-field search (name, MAC, serial), score threshold (≥70), type filtering, result limiting (default 20, max 100)\n\n" +
-    "Example Workflow: search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +
-    "See Also: get_asset_details, butlr_list_topology, butlr_fetch_entity_details",
+    "Example Workflow: butlr_search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +
+    "See Also: butlr_get_asset_details, butlr_list_topology, butlr_fetch_entity_details",
   inputSchema: {
     type: "object",
     properties: {

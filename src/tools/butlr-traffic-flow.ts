@@ -4,8 +4,7 @@ import { z } from "zod";
 import type { Room, Site, Sensor } from "../clients/types.js";
 import { ReportingRequestBuilder } from "../clients/reporting-client.js";
 import { GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
-import { executeSearchAssets } from "./search-assets.js";
-// import { buildTrafficSummary } from "../utils/natural-language.js";  // No longer needed
+import { executeSearchAssets } from "./butlr-search-assets.js";
 import {
   getTimezoneForAsset,
   buildTimezoneMetadata,
@@ -91,7 +90,7 @@ export const trafficFlowTool = {
     "- Rooms without traffic-mode sensors → use butlr_get_current_occupancy (presence mode)\n" +
     "- Spaces that don't have entry/exit chokepoints → traffic mode requires defined entrances\n\n" +
     "CRE Context: Traffic counts are movements, not unique people - one person exiting/re-entering counts as 2 movements. Net flow helps detect sensor calibration issues (large negative net flow might indicate misconfigured entry/exit sensors).\n\n" +
-    "See Also: butlr_get_current_occupancy, butlr_space_busyness, search_assets, get_asset_details",
+    "See Also: butlr_get_current_occupancy, butlr_space_busyness, butlr_search_assets, butlr_get_asset_details",
   inputSchema: {
     type: "object",
     properties: {

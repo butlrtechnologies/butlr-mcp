@@ -94,7 +94,7 @@ export const availableRoomsTool = {
     "- Analyzing utilization patterns over time → use butlr_get_occupancy_timeseries\n" +
     "- Booking/reserving rooms → this is read-only; integrate with your booking system\n\n" +
     "CRE Context: Meeting rooms are expensive real estate (avg $150-300/sqft in Class A offices). This tool helps validate booking system accuracy and identify 'ghost bookings' (booked but unused).\n\n" +
-    "See Also: butlr_space_busyness, butlr_get_occupancy_timeseries, search_assets",
+    "See Also: butlr_space_busyness, butlr_get_occupancy_timeseries, butlr_search_assets",
   inputSchema: {
     type: "object",
     properties: {
@@ -431,6 +431,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
   // Query uncached rooms
   const uncachedRoomIds = roomIds.filter((id) => !(id in occupancyMap));
+  let occupancyFetchFailed = false;
 
   if (uncachedRoomIds.length > 0) {
     if (process.env.DEBUG) {
@@ -458,10 +459,8 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
       setBulkCachedOccupancy(cacheEntries);
     } catch (error: any) {
-      if (process.env.DEBUG) {
-        console.error(`[available-rooms] Failed to get occupancy:`, error);
-      }
-      // Continue with empty occupancy data (assume all unavailable to be safe)
+      console.error(`[available-rooms] Failed to get occupancy data:`, error);
+      occupancyFetchFailed = true;
     }
   }
 
@@ -551,6 +550,11 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
   if (buildingContext) {
     response.building_context = buildingContext;
+  }
+
+  if (occupancyFetchFailed) {
+    response.warning =
+      "Could not retrieve real-time occupancy data. Room availability may be inaccurate.";
   }
 
   return response;

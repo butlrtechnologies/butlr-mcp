@@ -5,6 +5,7 @@ import type { Sensor, Site } from "../clients/types.js";
 import { detectAssetType } from "../utils/asset-helpers.js";
 import { validateTimeRange } from "../utils/time-range-validator.js";
 import { buildTimezoneMetadata, getTimezoneForAsset } from "../utils/timezone-helpers.js";
+import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
 
 /**
  * Tool definition for unified butlr_get_occupancy_timeseries
@@ -66,6 +67,7 @@ interface MeasurementData {
   sensor_count?: number;
   entrance_sensor_count?: number;
   coverage_note?: string;
+  warning?: string;
   timeseries: any[];
 }
 
@@ -112,16 +114,26 @@ export async function executeGetOccupancyTimeseries(args: GetOccupancyTimeseries
   }
 
   // Query topology and sensors
-  const [topoResult, sensorsResult] = await Promise.all([
-    apolloClient.query<{ sites: { data: Site[] } }>({
-      query: GET_FULL_TOPOLOGY,
-      fetchPolicy: "network-only",
-    }),
-    apolloClient.query<{ sensors: { data: Sensor[] } }>({
-      query: GET_ALL_SENSORS,
-      fetchPolicy: "network-only",
-    }),
-  ]);
+  let topoResult, sensorsResult;
+  try {
+    [topoResult, sensorsResult] = await Promise.all([
+      apolloClient.query<{ sites: { data: Site[] } }>({
+        query: GET_FULL_TOPOLOGY,
+        fetchPolicy: "network-only",
+      }),
+      apolloClient.query<{ sensors: { data: Sensor[] } }>({
+        query: GET_ALL_SENSORS,
+        fetchPolicy: "network-only",
+      }),
+    ]);
+  } catch (error: any) {
+    if (error && (error.graphQLErrors || error.networkError)) {
+      const mcpError = translateGraphQLError(error);
+      const errorMessage = formatMCPError(mcpError);
+      throw new Error(errorMessage);
+    }
+    throw error;
+  }
 
   const sites = topoResult.data?.sites?.data || [];
   const buildings = sites.flatMap((s) => s.buildings || []);
@@ -251,10 +263,9 @@ export async function executeGetOccupancyTimeseries(args: GetOccupancyTimeseries
           }));
         }
       } catch (error: any) {
-        if (process.env.DEBUG) {
-          console.error(`[occupancy-timeseries] Presence query failed:`, error);
-        }
-        // Continue even if query fails
+        console.error(`[occupancy-timeseries] Presence query failed:`, error);
+        presenceData.warning =
+          "Failed to retrieve presence timeseries data. Results may be incomplete.";
       }
     } else {
       presenceData.coverage_note =
@@ -295,10 +306,9 @@ export async function executeGetOccupancyTimeseries(args: GetOccupancyTimeseries
           }));
         }
       } catch (error: any) {
-        if (process.env.DEBUG) {
-          console.error(`[occupancy-timeseries] Traffic query failed:`, error);
-        }
-        // Continue even if query fails
+        console.error(`[occupancy-timeseries] Traffic query failed:`, error);
+        trafficData.warning =
+          "Failed to retrieve traffic timeseries data. Results may be incomplete.";
       }
     } else {
       if (assetType === "zone") {

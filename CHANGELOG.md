@@ -4,13 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2025-10-15
+## [0.1.0] - 2026-03-16
 
 ### Added
 
 **MCP Tools (10 active, 4 legacy disabled):**
 - 4 conversational tools: `butlr_hardware_snapshot`, `butlr_available_rooms`, `butlr_space_busyness`, `butlr_traffic_flow`
-- 2 data tools: `search_assets`, `get_asset_details`
+- 2 data tools: `butlr_search_assets`, `butlr_get_asset_details`
 - 4 foundation tools: `butlr_list_topology`, `butlr_fetch_entity_details`, `butlr_get_occupancy_timeseries`, `butlr_get_current_occupancy`
 - 4 legacy tools (disabled, replaced by unified occupancy tools): `butlr_fetch_traffic_occupancy_timeseries`, `butlr_fetch_presence_occupancy_timeseries`, `butlr_fetch_current_traffic_occupancy`, `butlr_fetch_current_presence_occupancy`
 
@@ -71,7 +71,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Known Limitations
 - CLI entry point incomplete (bin/cli.js checks NODE_ENV but doesn't start server)
 - Large fixture excluded from git (`current-occupancy-presence.json` 2MB)
-- Auth model uses client credentials (docs specify long-lived token - needs alignment)
+- Auth model uses OAuth2 client credentials (BUTLR_CLIENT_ID / BUTLR_CLIENT_SECRET)
 - 4 remaining conversational tools not yet implemented (summary, top_used, usage_trend, insights)
 
 ---

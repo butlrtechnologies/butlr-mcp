@@ -54,37 +54,6 @@ export function getTrendLabel(deltaPercent: number): "lighter" | "typical" | "bu
 }
 
 /**
- * Get significance of change
- * @param deltaPercent - Absolute change percentage
- * @returns "notable" | "slight" | "minimal"
- */
-export function getSignificance(deltaPercent: number): "notable" | "slight" | "minimal" {
-  const abs = Math.abs(deltaPercent);
-
-  if (abs > 15) {
-    return "notable";
-  }
-  if (abs > 5) {
-    return "slight";
-  }
-  return "minimal";
-}
-
-/**
- * Get trend direction
- * @param delta - Numeric change (positive or negative)
- * @returns "increasing" | "decreasing" | "stable"
- */
-export function getTrendDirection(delta: number): "increasing" | "decreasing" | "stable" {
-  const STABILITY_THRESHOLD = 0.05; // Within 5% = stable
-
-  if (Math.abs(delta) < STABILITY_THRESHOLD) {
-    return "stable";
-  }
-  return delta > 0 ? "increasing" : "decreasing";
-}
-
-/**
  * Build a busyness summary string
  * @example "Café: Moderate (12 people, 45% capacity, typical for Thursday 2pm)"
  */
@@ -149,30 +118,6 @@ export function buildAvailableRoomsSummary(params: {
 }
 
 /**
- * Build a traffic flow summary
- * @example "Lobby: 47 entries today, 23% higher than typical Monday"
- */
-export function buildTrafficSummary(params: {
-  spaceName: string;
-  entries: number;
-  period: string; // e.g., "today", "last hour"
-  vsTypicalPercent?: number;
-  dayOfWeek?: string;
-}): string {
-  const parts = [`${params.spaceName}: ${params.entries} entries ${params.period}`];
-
-  if (params.vsTypicalPercent !== undefined) {
-    const abs = Math.abs(params.vsTypicalPercent);
-    const direction = params.vsTypicalPercent > 0 ? "higher" : "lower";
-    const day = params.dayOfWeek ? ` ${params.dayOfWeek}` : "";
-
-    parts.push(`, ${Math.round(abs)}% ${direction} than typical${day}`);
-  }
-
-  return parts.join("");
-}
-
-/**
  * Build a hardware health summary
  * @example "45 of 52 sensors online (87%), 8 of 8 hives online (100%). 3 batteries critical, 7 due within 30 days."
  */
@@ -184,8 +129,10 @@ export function buildHardwareSummary(params: {
   batteriesCritical: number;
   batteriesDueSoon: number;
 }): string {
-  const sensorsPercent = Math.round((params.sensorsOnline / params.sensorsTotal) * 100);
-  const hivesPercent = Math.round((params.hivesOnline / params.hivesTotal) * 100);
+  const sensorsPercent =
+    params.sensorsTotal > 0 ? Math.round((params.sensorsOnline / params.sensorsTotal) * 100) : 0;
+  const hivesPercent =
+    params.hivesTotal > 0 ? Math.round((params.hivesOnline / params.hivesTotal) * 100) : 0;
 
   const parts = [
     `${params.sensorsOnline} of ${params.sensorsTotal} sensors online (${sensorsPercent}%)`,
@@ -205,55 +152,6 @@ export function buildHardwareSummary(params: {
   }
 
   return parts.join(", ") + ".";
-}
-
-/**
- * Build a building summary
- * @example "Building HQ: 60% occupied. Floor 3 busiest (85%). 23 rooms available."
- */
-export function buildBuildingSummary(params: {
-  buildingName: string;
-  utilizationPercent: number;
-  busiestFloor?: { name: string; utilization: number };
-  availableRooms?: number;
-}): string {
-  const parts = [`${params.buildingName}: ${Math.round(params.utilizationPercent)}% occupied`];
-
-  if (params.busiestFloor) {
-    parts.push(
-      `Floor ${params.busiestFloor.name} busiest (${Math.round(params.busiestFloor.utilization)}%)`
-    );
-  }
-
-  if (params.availableRooms !== undefined) {
-    parts.push(`${params.availableRooms} rooms available`);
-  }
-
-  return parts.join(". ") + ".";
-}
-
-/**
- * Build a usage trend summary
- * @example "Room 5A: 23% more utilized this week (67% vs 54%)"
- */
-export function buildUsageTrendSummary(params: {
-  spaceName: string;
-  currentUtilization: number;
-  previousUtilization: number;
-  period1Label: string; // "this week"
-  period2Label?: string; // "last week"
-}): string {
-  const delta = params.currentUtilization - params.previousUtilization;
-  const deltaPercent = Math.abs(delta);
-  const direction = delta > 0 ? "more" : "less";
-
-  const significance = getSignificance(deltaPercent);
-
-  if (significance === "minimal") {
-    return `${params.spaceName}: Similar utilization ${params.period1Label} (${Math.round(params.currentUtilization)}% vs ${Math.round(params.previousUtilization)}%)`;
-  }
-
-  return `${params.spaceName}: ${Math.round(deltaPercent)}% ${direction} utilized ${params.period1Label} (${Math.round(params.currentUtilization)}% vs ${Math.round(params.previousUtilization)}%)`;
 }
 
 /**
@@ -283,56 +181,6 @@ export function formatDayAndTime(date: Date = new Date()): string {
   hours = hours % 12 || 12; // Convert to 12-hour format
 
   return `${dayName} ${hours}${ampm}`;
-}
-
-/**
- * Format period description
- * @example "today", "this week", "last 7 days"
- */
-export function formatPeriodDescription(start: Date, stop: Date): string {
-  const now = new Date();
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-
-  const startOfYesterday = new Date(startOfToday);
-  startOfYesterday.setDate(startOfYesterday.getDate() - 1);
-
-  const startOfWeek = new Date(now);
-  startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
-  startOfWeek.setHours(0, 0, 0, 0);
-
-  // Check if it's today
-  if (start >= startOfToday && stop <= now) {
-    return "today";
-  }
-
-  // Check if it's yesterday
-  if (start >= startOfYesterday && stop < startOfToday) {
-    return "yesterday";
-  }
-
-  // Check if it's this week
-  if (start >= startOfWeek && stop <= now) {
-    return "this week";
-  }
-
-  // Calculate days difference
-  const diffMs = stop.getTime() - start.getTime();
-  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 1) {
-    return "last 24 hours";
-  }
-
-  if (diffDays === 7) {
-    return "last 7 days";
-  }
-
-  if (diffDays === 30) {
-    return "last 30 days";
-  }
-
-  return `${diffDays} days`;
 }
 
 /**

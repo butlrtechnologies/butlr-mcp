@@ -2,17 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   getOccupancyLabel,
   getTrendLabel,
-  getSignificance,
-  getTrendDirection,
   buildBusynessSummary,
   buildAvailableRoomsSummary,
-  buildTrafficSummary,
   buildHardwareSummary,
-  buildBuildingSummary,
-  buildUsageTrendSummary,
   getBusinessRecommendation,
   formatDayAndTime,
-  formatPeriodDescription,
   daysBetween,
   hoursBetween,
 } from "./natural-language.js";
@@ -73,65 +67,6 @@ describe("getTrendLabel", () => {
     expect(getTrendLabel(-15)).toBe("typical");
     expect(getTrendLabel(15)).toBe("typical");
     expect(getTrendLabel(15.01)).toBe("busier");
-  });
-});
-
-describe("getSignificance", () => {
-  it('returns "notable" for |delta| > 15%', () => {
-    expect(getSignificance(20)).toBe("notable");
-    expect(getSignificance(15.1)).toBe("notable");
-    expect(getSignificance(-20)).toBe("notable");
-    expect(getSignificance(-15.1)).toBe("notable");
-  });
-
-  it('returns "slight" for 5% < |delta| <= 15%', () => {
-    expect(getSignificance(10)).toBe("slight");
-    expect(getSignificance(5.1)).toBe("slight");
-    expect(getSignificance(-10)).toBe("slight");
-    expect(getSignificance(-5.1)).toBe("slight");
-  });
-
-  it('returns "minimal" for |delta| <= 5%', () => {
-    expect(getSignificance(5)).toBe("minimal");
-    expect(getSignificance(3)).toBe("minimal");
-    expect(getSignificance(0)).toBe("minimal");
-    expect(getSignificance(-3)).toBe("minimal");
-    expect(getSignificance(-5)).toBe("minimal");
-  });
-
-  it("handles negative deltas correctly", () => {
-    expect(getSignificance(-20)).toBe("notable");
-    expect(getSignificance(-10)).toBe("slight");
-    expect(getSignificance(-3)).toBe("minimal");
-  });
-});
-
-describe("getTrendDirection", () => {
-  it('returns "increasing" for positive delta', () => {
-    expect(getTrendDirection(10)).toBe("increasing");
-    expect(getTrendDirection(0.1)).toBe("increasing");
-    expect(getTrendDirection(100)).toBe("increasing");
-  });
-
-  it('returns "decreasing" for negative delta', () => {
-    expect(getTrendDirection(-10)).toBe("decreasing");
-    expect(getTrendDirection(-0.1)).toBe("decreasing");
-    expect(getTrendDirection(-100)).toBe("decreasing");
-  });
-
-  it('returns "stable" for very small delta (< 5%)', () => {
-    expect(getTrendDirection(0)).toBe("stable");
-    expect(getTrendDirection(0.03)).toBe("stable");
-    expect(getTrendDirection(-0.03)).toBe("stable");
-    expect(getTrendDirection(0.04)).toBe("stable");
-    expect(getTrendDirection(-0.04)).toBe("stable");
-  });
-
-  it("handles boundary values (5% threshold)", () => {
-    expect(getTrendDirection(0.049)).toBe("stable");
-    expect(getTrendDirection(0.05)).toBe("increasing");
-    expect(getTrendDirection(-0.049)).toBe("stable");
-    expect(getTrendDirection(-0.05)).toBe("decreasing");
   });
 });
 
@@ -262,54 +197,6 @@ describe("buildAvailableRoomsSummary", () => {
   });
 });
 
-describe("buildTrafficSummary", () => {
-  it("formats basic traffic summary", () => {
-    const summary = buildTrafficSummary({
-      spaceName: "Lobby",
-      entries: 47,
-      period: "today",
-    });
-
-    expect(summary).toContain("Lobby: 47 entries today");
-  });
-
-  it("includes comparison to typical when provided", () => {
-    const summary = buildTrafficSummary({
-      spaceName: "Entrance",
-      entries: 120,
-      period: "last hour",
-      vsTypicalPercent: 23,
-      dayOfWeek: "Monday",
-    });
-
-    expect(summary).toContain("120 entries last hour");
-    expect(summary).toContain("23% higher than typical Monday");
-  });
-
-  it("handles negative comparison (lower than typical)", () => {
-    const summary = buildTrafficSummary({
-      spaceName: "Exit",
-      entries: 30,
-      period: "this morning",
-      vsTypicalPercent: -15,
-    });
-
-    expect(summary).toContain("15% lower than typical");
-  });
-
-  it("handles comparison without day of week", () => {
-    const summary = buildTrafficSummary({
-      spaceName: "Door",
-      entries: 50,
-      period: "today",
-      vsTypicalPercent: 10,
-    });
-
-    expect(summary).toContain("10% higher than typical");
-    expect(summary).not.toContain("Monday");
-  });
-});
-
 describe("buildHardwareSummary", () => {
   it("formats sensor and hive counts correctly", () => {
     const summary = buildHardwareSummary({
@@ -371,106 +258,6 @@ describe("buildHardwareSummary", () => {
   });
 });
 
-describe("buildBuildingSummary", () => {
-  it("formats complete building summary", () => {
-    const summary = buildBuildingSummary({
-      buildingName: "HQ Tower",
-      utilizationPercent: 60,
-      busiestFloor: { name: "Floor 3", utilization: 85 },
-      availableRooms: 23,
-    });
-
-    expect(summary).toContain("HQ Tower: 60% occupied");
-    expect(summary).toContain("Floor Floor 3 busiest (85%)");
-    expect(summary).toContain("23 rooms available");
-  });
-
-  it("handles summary without busiest floor", () => {
-    const summary = buildBuildingSummary({
-      buildingName: "East Wing",
-      utilizationPercent: 45,
-      availableRooms: 10,
-    });
-
-    expect(summary).toContain("East Wing: 45% occupied");
-    expect(summary).not.toContain("busiest");
-    expect(summary).toContain("10 rooms available");
-  });
-
-  it("handles summary without available rooms", () => {
-    const summary = buildBuildingSummary({
-      buildingName: "West Wing",
-      utilizationPercent: 75,
-      busiestFloor: { name: "2", utilization: 90 },
-    });
-
-    expect(summary).toContain("West Wing: 75% occupied");
-    expect(summary).toContain("Floor 2 busiest (90%)");
-    expect(summary).not.toContain("rooms available");
-  });
-
-  it("handles minimal summary (only utilization)", () => {
-    const summary = buildBuildingSummary({
-      buildingName: "Annex",
-      utilizationPercent: 30,
-    });
-
-    expect(summary).toBe("Annex: 30% occupied.");
-  });
-});
-
-describe("buildUsageTrendSummary", () => {
-  it("formats notable increase correctly", () => {
-    const summary = buildUsageTrendSummary({
-      spaceName: "Room 5A",
-      currentUtilization: 67,
-      previousUtilization: 54,
-      period1Label: "this week",
-    });
-
-    expect(summary).toContain("Room 5A");
-    expect(summary).toContain("more utilized this week");
-    expect(summary).toContain("67% vs 54%");
-  });
-
-  it("formats notable decrease correctly", () => {
-    const summary = buildUsageTrendSummary({
-      spaceName: "Meeting Room",
-      currentUtilization: 40,
-      previousUtilization: 60,
-      period1Label: "this month",
-    });
-
-    expect(summary).toContain("less utilized this month");
-    expect(summary).toContain("40% vs 60%");
-  });
-
-  it("formats minimal change as similar", () => {
-    const summary = buildUsageTrendSummary({
-      spaceName: "Lounge",
-      currentUtilization: 52,
-      previousUtilization: 50,
-      period1Label: "today",
-    });
-
-    expect(summary).toContain("Similar utilization today");
-    expect(summary).toContain("52% vs 50%");
-  });
-
-  it("includes period2Label when provided", () => {
-    const summary = buildUsageTrendSummary({
-      spaceName: "Café",
-      currentUtilization: 70,
-      previousUtilization: 55,
-      period1Label: "this week",
-      period2Label: "last week",
-    });
-
-    expect(summary).toContain("this week");
-    // Note: period2Label is not currently used in the function, but we test the current behavior
-  });
-});
-
 describe("getBusinessRecommendation", () => {
   it('returns positive recommendation for "quiet"', () => {
     const rec = getBusinessRecommendation("quiet");
@@ -521,67 +308,6 @@ describe("formatDayAndTime", () => {
     expect(formatted).toMatch(
       /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) \d{1,2}(am|pm)$/
     );
-  });
-});
-
-describe("formatPeriodDescription", () => {
-  it('returns "today" for current day', () => {
-    const now = new Date();
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
-
-    const description = formatPeriodDescription(startOfToday, now);
-    expect(description).toBe("today");
-  });
-
-  it('returns "yesterday" for previous day', () => {
-    const now = new Date();
-    const startOfYesterday = new Date(now);
-    startOfYesterday.setDate(startOfYesterday.getDate() - 1);
-    startOfYesterday.setHours(0, 0, 0, 0);
-
-    const endOfYesterday = new Date(startOfYesterday);
-    endOfYesterday.setHours(23, 59, 59, 999);
-
-    const description = formatPeriodDescription(startOfYesterday, endOfYesterday);
-    expect(description).toBe("yesterday");
-  });
-
-  it('returns "last 24 hours" for 24-hour period', () => {
-    // Create a date that's guaranteed to not be "this week"
-    const stop = new Date("2025-01-20T15:00:00Z"); // Monday afternoon
-    const start = new Date(stop);
-    start.setDate(start.getDate() - 1); // Sunday afternoon
-
-    const description = formatPeriodDescription(start, stop);
-    expect(description).toBe("last 24 hours");
-  });
-
-  it('returns "last 7 days" for 7-day period', () => {
-    const stop = new Date();
-    const start = new Date(stop);
-    start.setDate(start.getDate() - 7);
-
-    const description = formatPeriodDescription(start, stop);
-    expect(description).toBe("last 7 days");
-  });
-
-  it('returns "last 30 days" for 30-day period', () => {
-    const stop = new Date();
-    const start = new Date(stop);
-    start.setDate(start.getDate() - 30);
-
-    const description = formatPeriodDescription(start, stop);
-    expect(description).toBe("last 30 days");
-  });
-
-  it("returns day count for other periods", () => {
-    const stop = new Date();
-    const start = new Date(stop);
-    start.setDate(start.getDate() - 14);
-
-    const description = formatPeriodDescription(start, stop);
-    expect(description).toBe("14 days");
   });
 });
 

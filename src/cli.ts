@@ -19,7 +19,8 @@ function getPackageVersion(): string {
     const packagePath = resolve(__dirname, "../package.json");
     const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
     return packageJson.version;
-  } catch {
+  } catch (error) {
+    console.error("[cli] Failed to read package.json version:", error);
     return "unknown";
   }
 }
@@ -94,7 +95,6 @@ program
     console.error("CLI parsed successfully. In production, this would start the MCP server.");
     console.error("Configuration:", {
       orgId: options.orgId,
-      clientId: options.clientId,
       baseUrl: options.baseUrl,
       cacheTtl: options.cacheTtl,
       maxIds: options.maxIds,

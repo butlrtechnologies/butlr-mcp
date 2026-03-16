@@ -140,10 +140,8 @@ You should see 10 tools listed. Try a query:
 
 | Tool | Description | Example Usage |
 |------|-------------|---------------|
-| **butlr_get_occupancy_timeseries** | Retrieve timeseries occupancy data (traffic + presence) for analysis | "Get hourly occupancy for Floor 2 this week" |
-| **butlr_get_current_occupancy** | Current occupancy snapshot (last 5 minutes median) | "What's the current occupancy of room_123?" |
-| **search_assets** | Fuzzy search for facilities, rooms, sensors by name | "Find all sensors with 'lobby' in the name" |
-| **get_asset_details** | Detailed information for specific assets by ID | "Show full details for room_abc123" |
+| **butlr_search_assets** | Fuzzy search for facilities, rooms, sensors by name | "Find all sensors with 'lobby' in the name" |
+| **butlr_get_asset_details** | Detailed information for specific assets by ID | "Show full details for room_abc123" |
 
 ### Foundation Tools (Validation & Debugging)
 
@@ -151,6 +149,8 @@ You should see 10 tools listed. Try a query:
 |------|-------------|-------------|
 | **butlr_list_topology** | Tree view of organizational hierarchy (sites → sensors) | Exploring asset structure, validation |
 | **butlr_fetch_entity_details** | Selective field fetching for specific entities | Minimizing token usage, targeted queries |
+| **butlr_get_occupancy_timeseries** | Retrieve timeseries occupancy data (traffic + presence) | Data export, custom analysis |
+| **butlr_get_current_occupancy** | Current occupancy snapshot (last 5 minutes median) | Real-time monitoring, debugging |
 
 ---
 
@@ -170,10 +170,12 @@ You should see 10 tools listed. Try a query:
 
 ### CLI Flags
 
+> **Note:** The CLI entry point is a work in progress. Currently, the server starts via `npm run dev` or direct stdio connection.
+
 When running as a standalone command:
 
 ```bash
-butlr-mcp --org-id=<id> --token=<token>
+butlr-mcp --org-id=<id> --client-id=<client_id> --client-secret=<secret>
 ```
 
 | Flag | Environment Variable | Description |
@@ -183,6 +185,8 @@ butlr-mcp --org-id=<id> --token=<token>
 | `--client-secret` | `BUTLR_CLIENT_SECRET` | OAuth2 client secret |
 | `--base-url` | `BUTLR_BASE_URL` | API base URL |
 | `--cache-ttl` | `MCP_CACHE_TOPO_TTL` | Cache TTL in seconds |
+| `--max-ids` | `MCP_MAX_IDS` | Maximum IDs per request |
+| `--toolsets` | `BUTLR_TOOLSETS` | Enabled tool groups |
 
 ---
 
@@ -314,7 +318,7 @@ DEBUG=butlr-mcp npx @butlr/butlr-mcp-server
 **Cause**: Using incorrect asset ID or searching wrong scope
 
 **Solution**:
-1. Use `search_assets` to find correct IDs
+1. Use `butlr_search_assets` to find correct IDs
 2. Use `butlr_list_topology` to explore hierarchy
 3. Check asset IDs start with correct prefix (room_, floor_, etc.)
 

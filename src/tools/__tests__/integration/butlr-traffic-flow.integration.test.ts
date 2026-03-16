@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeTrafficFlow } from "../../butlr-traffic-flow.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
-import * as searchAssets from "../../search-assets.js";
+import * as searchAssets from "../../butlr-search-assets.js";
 import { loadReportingFixture } from "../../../__mocks__/reporting-client.js";
 
 // Mock the clients
@@ -22,9 +22,10 @@ vi.mock("../../../clients/reporting-client.js", async () => {
   };
 });
 
-vi.mock("../../search-assets.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../search-assets.js")>("../../search-assets.js");
+vi.mock("../../butlr-search-assets.js", async () => {
+  const actual = await vi.importActual<typeof import("../../butlr-search-assets.js")>(
+    "../../butlr-search-assets.js"
+  );
   return {
     ...actual,
     executeSearchAssets: vi.fn(),

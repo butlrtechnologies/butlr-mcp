@@ -74,11 +74,11 @@ export const hardwareSnapshotTool = {
     "- Reporting uptime metrics or system reliability to leadership\n" +
     "- Troubleshooting missing data issues (check if sensors are online)\n\n" +
     "When NOT to Use:\n" +
-    "- Need detailed config for specific sensor → use get_asset_details with include_devices: true\n" +
-    "- Searching for sensor by name/MAC → use search_assets first with asset_types: ['sensor']\n" +
+    "- Need detailed config for specific sensor → use butlr_get_asset_details with include_devices: true\n" +
+    "- Searching for sensor by name/MAC → use butlr_search_assets first with asset_types: ['sensor']\n" +
     "- Historical device uptime trends → this tool shows current snapshot only\n\n" +
     "CRE Context: Battery-powered sensors typically last 1-2 years depending on mode. Proactive battery management prevents data gaps that could impact space utilization reporting and right-sizing decisions.\n\n" +
-    "See Also: search_assets, get_asset_details, butlr_list_topology",
+    "See Also: butlr_search_assets, butlr_get_asset_details, butlr_list_topology",
   inputSchema: {
     type: "object",
     properties: {

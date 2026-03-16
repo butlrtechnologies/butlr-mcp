@@ -6,6 +6,7 @@ import {
   formatMCPError,
   createValidationError,
 } from "../errors/mcp-errors.js";
+import { detectAssetType } from "../utils/asset-helpers.js";
 
 /**
  * Zod validation schema for get_asset_details
@@ -63,7 +64,7 @@ export const GetAssetDetailsArgsSchema = z
  * Tool definition for get_asset_details
  */
 export const getAssetDetailsTool = {
-  name: "get_asset_details",
+  name: "butlr_get_asset_details",
   description:
     "Get comprehensive details for specific assets by ID (sites, buildings, floors, rooms, zones, sensors, hives). Automatically detects asset type from ID prefix and returns appropriate fields. Supports batch queries (multiple IDs), optional child/parent context, and device inclusion. Essential for configuration validation, integration development, and detailed asset inspection.\n\n" +
     "Primary Users:\n" +
@@ -87,13 +88,13 @@ export const getAssetDetailsTool = {
     "- Preparing for field technician site visit (need device identifiers: MACs, serials)\n" +
     "- Building integrations and need to fetch parent context (room → floor → building → site)\n\n" +
     "When NOT to Use:\n" +
-    "- Don't have asset IDs yet → use search_assets first to find IDs by name\n" +
+    "- Don't have asset IDs yet → use butlr_search_assets first to find IDs by name\n" +
     "- Need real-time occupancy or sensor data → use occupancy/traffic tools instead\n" +
     "- Want to browse organizational hierarchy → use butlr_list_topology for tree view\n" +
     "- Need to update/configure assets → this is read-only; use Butlr Dashboard for changes\n\n" +
     "Options: include_children (default true), include_devices (default false), include_parent_context (default true)\n\n" +
     "Batch Query: Supports multiple IDs in single call - mixed asset types supported\n\n" +
-    "See Also: search_assets, butlr_list_topology, butlr_fetch_entity_details, butlr_hardware_snapshot",
+    "See Also: butlr_search_assets, butlr_list_topology, butlr_fetch_entity_details, butlr_hardware_snapshot",
   inputSchema: {
     type: "object",
     properties: {
@@ -133,20 +134,6 @@ export const getAssetDetailsTool = {
  * Input arguments for get_asset_details (output type from Zod schema after defaults applied)
  */
 export type GetAssetDetailsArgs = z.output<typeof GetAssetDetailsArgsSchema>;
-
-/**
- * Detect asset type from ID prefix
- */
-function detectAssetType(id: string): string {
-  if (id.startsWith("site_")) return "site";
-  if (id.startsWith("building_")) return "building";
-  if (id.startsWith("space_") || id.startsWith("floor_")) return "floor";
-  if (id.startsWith("room_")) return "room";
-  if (id.startsWith("zone_")) return "zone";
-  if (id.startsWith("sensor_")) return "sensor";
-  if (id.startsWith("hive_")) return "hive";
-  return "unknown";
-}
 
 /**
  * Build GraphQL query based on asset type and options

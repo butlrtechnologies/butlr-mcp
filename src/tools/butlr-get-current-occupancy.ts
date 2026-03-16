@@ -4,6 +4,7 @@ import { ReportingRequestBuilder } from "../clients/reporting-client.js";
 import type { Sensor, Site } from "../clients/types.js";
 import { detectAssetType } from "../utils/asset-helpers.js";
 import { buildTimezoneMetadata, getTimezoneForAsset } from "../utils/timezone-helpers.js";
+import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
 
 /**
  * Tool definition for unified butlr_get_current_occupancy
@@ -49,6 +50,7 @@ interface CurrentMeasurementData {
   sensor_count?: number;
   entrance_sensor_count?: number;
   coverage_note?: string;
+  warning?: string;
   current_occupancy?: number;
   timestamp?: string;
 }
@@ -85,16 +87,26 @@ export async function executeGetCurrentOccupancy(args: GetCurrentOccupancyArgs) 
   }
 
   // Query topology and sensors
-  const [topoResult, sensorsResult] = await Promise.all([
-    apolloClient.query<{ sites: { data: Site[] } }>({
-      query: GET_FULL_TOPOLOGY,
-      fetchPolicy: "network-only",
-    }),
-    apolloClient.query<{ sensors: { data: Sensor[] } }>({
-      query: GET_ALL_SENSORS,
-      fetchPolicy: "network-only",
-    }),
-  ]);
+  let topoResult, sensorsResult;
+  try {
+    [topoResult, sensorsResult] = await Promise.all([
+      apolloClient.query<{ sites: { data: Site[] } }>({
+        query: GET_FULL_TOPOLOGY,
+        fetchPolicy: "network-only",
+      }),
+      apolloClient.query<{ sensors: { data: Sensor[] } }>({
+        query: GET_ALL_SENSORS,
+        fetchPolicy: "network-only",
+      }),
+    ]);
+  } catch (error: any) {
+    if (error && (error.graphQLErrors || error.networkError)) {
+      const mcpError = translateGraphQLError(error);
+      const errorMessage = formatMCPError(mcpError);
+      throw new Error(errorMessage);
+    }
+    throw error;
+  }
 
   const sites = topoResult.data?.sites?.data || [];
   const buildings = sites.flatMap((s) => s.buildings || []);
@@ -218,9 +230,9 @@ export async function executeGetCurrentOccupancy(args: GetCurrentOccupancyArgs) 
           presenceData.timestamp = new Date(latest.time).toISOString();
         }
       } catch (error: any) {
-        if (process.env.DEBUG) {
-          console.error(`[current-occupancy] Presence query failed:`, error);
-        }
+        console.error(`[current-occupancy] Presence query failed:`, error);
+        presenceData.warning =
+          "Failed to retrieve current presence data. Occupancy value may be missing.";
       }
     } else {
       presenceData.coverage_note =
@@ -259,9 +271,9 @@ export async function executeGetCurrentOccupancy(args: GetCurrentOccupancyArgs) 
           trafficData.timestamp = new Date(latest.time).toISOString();
         }
       } catch (error: any) {
-        if (process.env.DEBUG) {
-          console.error(`[current-occupancy] Traffic query failed:`, error);
-        }
+        console.error(`[current-occupancy] Traffic query failed:`, error);
+        trafficData.warning =
+          "Failed to retrieve current traffic data. Occupancy value may be missing.";
       }
     } else {
       if (assetType === "zone") {

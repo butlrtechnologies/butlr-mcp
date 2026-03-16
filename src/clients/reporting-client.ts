@@ -1,6 +1,19 @@
 import { request as httpRequest } from "undici";
 import { authClient } from "./auth-client.js";
 
+/**
+ * Structured API error with status code for proper error translation
+ */
+export class ApiError extends Error {
+  constructor(
+    public statusCode: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 const BASE_URL = process.env.BUTLR_BASE_URL || "https://api.butlr.io";
 const REPORTING_ENDPOINT = `${BASE_URL}/api/v3/reporting`;
 
@@ -161,15 +174,16 @@ export function getMeasurement(assetType: string): string {
  * Normalize RFC3339 timestamp to ISO-8601
  */
 export function normalizeTimestamp(rfc3339: string): string {
-  // RFC3339 and ISO-8601 are largely compatible
-  // But ensure consistent format
   try {
-    return new Date(rfc3339).toISOString();
-  } catch (error) {
-    if (process.env.DEBUG) {
-      console.error(`[reporting-client] Failed to normalize timestamp: ${rfc3339}`);
+    const date = new Date(rfc3339);
+    if (isNaN(date.getTime())) {
+      console.error(`[reporting-client] Invalid timestamp received: ${rfc3339}`);
+      return rfc3339;
     }
-    return rfc3339; // Return as-is if parsing fails
+    return date.toISOString();
+  } catch (error) {
+    console.error(`[reporting-client] Failed to normalize timestamp ${rfc3339}:`, error);
+    return rfc3339;
   }
 }
 
@@ -200,7 +214,10 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
 
     if (response.statusCode !== 200) {
       const errorBody = await response.body.text();
-      throw new Error(`Reporting API error (${response.statusCode}): ${errorBody}`);
+      throw new ApiError(
+        response.statusCode,
+        `Reporting API error (${response.statusCode}): ${errorBody}`
+      );
     }
 
     const data = (await response.body.json()) as ReportingResponse;
@@ -211,23 +228,23 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
 
     return data;
   } catch (error: any) {
-    if (process.env.DEBUG) {
-      console.error(`[reporting-client] Request failed:`, error);
-    }
+    console.error(`[reporting-client] Request failed:`, error);
 
-    // Translate common errors
-    if (error.message?.includes("401") || error.message?.includes("403")) {
-      throw new Error("Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET.");
-    }
+    // Translate common errors using structured ApiError
+    if (error instanceof ApiError) {
+      if (error.statusCode === 401 || error.statusCode === 403) {
+        throw new Error("Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET.");
+      }
 
-    if (error.message?.includes("429")) {
-      throw new Error("Rate limit exceeded. Please retry after a few seconds.");
-    }
+      if (error.statusCode === 429) {
+        throw new Error("Rate limit exceeded. Please retry after a few seconds.");
+      }
 
-    if (error.message?.includes("400")) {
-      throw new Error(
-        `Invalid request parameters: ${error.message}. Check your filter configuration.`
-      );
+      if (error.statusCode === 400) {
+        throw new Error(
+          `Invalid request parameters: ${error.message}. Check your filter configuration.`
+        );
+      }
     }
 
     throw error;
@@ -442,12 +459,7 @@ export async function getCurrentOccupancy(
     trafficResponse = await queryReporting(trafficRequest);
   } catch (error) {
     // Traffic query might fail if no traffic sensors
-    if (process.env.DEBUG) {
-      console.error(
-        `[reporting-client] Traffic query failed (may not have traffic sensors):`,
-        error
-      );
-    }
+    console.error(`[reporting-client] Traffic query failed (may not have traffic sensors):`, error);
     trafficResponse = { data: [] };
   }
 

@@ -130,7 +130,7 @@ export interface Sensor {
   id: string;
   name: string;
   mac_address: string;
-  mode: string;
+  mode: "presence" | "traffic";
   model: string;
   // Both field name formats supported (snake_case is preferred)
   floorID?: string; // camelCase (buggy resolver)

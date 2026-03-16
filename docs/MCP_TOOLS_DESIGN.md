@@ -1141,7 +1141,7 @@ Tools answer questions:
 
 See existing implementation in `src/tools/search-assets.ts`.
 
-**Note:** Currently implemented as `search_assets` (will be renamed to `butlr_search_assets` for consistency). Fuzzy matching successfully works around GraphQL's ID-only constraint.
+**Note:** Fuzzy matching successfully works around GraphQL's ID-only constraint.
 
 ---
 

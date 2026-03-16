@@ -17,10 +17,9 @@ We will acknowledge your report within 48 hours and provide an estimated timelin
 
 ## Supported Versions
 
-| Version | Supported |
-|---------|-----------|
-| 1.x.x   | Yes       |
-| < 1.0   | No        |
+| Version | Supported          |
+| ------- | ------------------ |
+| 0.1.x   | :white_check_mark: |
 
 ## Security Best Practices
 

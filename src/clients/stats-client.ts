@@ -1,5 +1,6 @@
 import { request as httpRequest } from "undici";
 import { authClient } from "./auth-client.js";
+import { ApiError } from "./reporting-client.js";
 
 const BASE_URL = process.env.BUTLR_BASE_URL || "https://api.butlr.io";
 const STATS_ENDPOINT = `${BASE_URL}/api/v4/reporting/stats`;
@@ -84,15 +85,17 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
 
       // Special handling for 504 Gateway Timeout
       if (response.statusCode === 504) {
-        if (process.env.DEBUG) {
-          console.error(`[stats-client] 504 Gateway Timeout - stats service may be overloaded`);
-        }
-        throw new Error(
+        console.error(`[stats-client] 504 Gateway Timeout - stats service may be overloaded`);
+        throw new ApiError(
+          504,
           "Stats service temporarily unavailable (504). Try reducing the time range or number of assets."
         );
       }
 
-      throw new Error(`Stats API error (${response.statusCode}): ${errorBody}`);
+      throw new ApiError(
+        response.statusCode,
+        `Stats API error (${response.statusCode}): ${errorBody}`
+      );
     }
 
     const data = (await response.body.json()) as StatsResponse;
@@ -105,23 +108,23 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
 
     return data;
   } catch (error: any) {
-    if (process.env.DEBUG) {
-      console.error(`[stats-client] Request failed:`, error);
-    }
+    console.error(`[stats-client] Request failed:`, error);
 
-    // Translate common errors
-    if (error.message?.includes("401") || error.message?.includes("403")) {
-      throw new Error("Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET.");
-    }
+    // Translate common errors using structured ApiError
+    if (error instanceof ApiError) {
+      if (error.statusCode === 401 || error.statusCode === 403) {
+        throw new Error("Authentication failed. Check BUTLR_CLIENT_ID and BUTLR_CLIENT_SECRET.");
+      }
 
-    if (error.message?.includes("429")) {
-      throw new Error("Rate limit exceeded. Please retry after a few seconds.");
-    }
+      if (error.statusCode === 429) {
+        throw new Error("Rate limit exceeded. Please retry after a few seconds.");
+      }
 
-    if (error.message?.includes("400")) {
-      throw new Error(
-        `Invalid request parameters: ${error.message}. Check measurements and items.`
-      );
+      if (error.statusCode === 400) {
+        throw new Error(
+          `Invalid request parameters: ${error.message}. Check measurements and items.`
+        );
+      }
     }
 
     throw error;
