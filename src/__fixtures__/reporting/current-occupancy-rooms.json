@@ -1,0 +1,772 @@
+{
+  "data": [
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_18792c7e-dfe0-402d-8314-cc620363db56"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_1d0d0bec-71a5-4262-a0b5-8ca8bcebc0cd"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_23f300e4-eb65-423c-ac67-64cd7f997156"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2Sm6VnkiPWgh4xhUg6YMtFeMktK"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2Sm6fRqaWi1ZgNXr1dQUankOBEh"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2Sm6fSXumK26kYHWD4lKQ3K13ir"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2Sm6fTWED4VN82vwTTQhST8Vnmu"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2Sm6iuF0Pu90EgCzv9NyYRiVLSW"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2Sr7g67R8B6xY6OIC19On7BrT0n"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2SrBeossVofPJ390SQIs5zJgPEI"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2SrBepmH0PxHdLa3NZbO8gnJl2I"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2SrBeqiEulWQaUNBkS7kCt9cqzv"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2SrBetHi21BVTLpKhsYOZIhAFPy"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2bee95e9-c021-4cf4-8a6e-7e193dd31ccb"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2oqlh4UWDQIgc1lUuXaDYpI8dCU"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2oqxCp1hypEWta73gi7Q1u21xwN"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2p7jgpTuVR5I9Uwb2n9fHKU00hv"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2p7jkk91HVW2dyO1bjLw4Qeetri"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2p7k4LhKF6ntIfcd5rMcwbkB0RZ"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2p7k7PZBaV8mUINK32InNdQ2j3d"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2p7kCp0vCCNyy9fOxBylOLjKQA9"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2p7kSylkMSc9tBTR21MH9QhcCFu"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pPKqtGn3eyQWG3O3Vy8A1lCwXK"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pPKvQdGk0HYKHXztTgNRaytZA0"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pPL238lFR6o0Ghjo6MCYUgarcA"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pPL5chSp3Jwof3Kj0p2ZKZAEor"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pPL8cccuMvNUSraK9x6AesYhdL"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pPLAz4EzYqgstHuVSV6rrH2B8k"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pPW6Ihvgizz8JTya2DcV8yOc7j"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pPWFEKRC2Pvc91PptN3Eh0pniZ"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pj7RXWpT3faAmIuxpKJJIXHq47"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pj7f717eLEGp7gdHH9S0aPX7VB"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pj7jNl7dpCcQvVhBh0nTj087zp"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pj7xnS1hzGgP1RhvYg3ko62CpX"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2pj84KsBA0qaRrkk81FXfEwLVz3"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAixpIHS1q3desnAmDXYqoz0Qa"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAjK1ZHQtK5CmgD2thXRkwBlyC"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAjMpnj6ptcqxyN6T9QMXmEZOU"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAjQuXoE1hsmZcGWel2Mphcma2"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAjVTpMA3vYuNeaJPQhuy2fFiB"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAjxpGKYHDQAZpHGuzLP8B3Vfr"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAk4UeTjaNBV8UkpP1eOxN3oM3"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAk8XMhOtgAXoL4yFT8fICYGYY"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAkEFbrCPtclKClx75kzyZBVTb"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAkHSUbKBaYyxajeTX0CJEWkhY"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qAkJqhYvhgrljlDCBekT2Xpfod"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2qVDjA3Hv9C1QtKyItlfdmCq5Zt"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2rL37dBjqxJBWFEyhiJ7310A2GW"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2rL87Bkj9WBBRuaESOxroZArlrd"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2rL89ReLp0VWZWGW8LRru1ypFPN"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2rPATDMyrnuQOekO7kg5iouMACC"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2rPFqmqKtxk7UfvPjkwdxM6IKCv"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2rPFsqUHIns1jQKhTEEoR28g7Pv"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sGiOocP77TMNnblQJlffeAAbpM"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sGik2Sp92g9rQ4exofbBIIhZCF"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sGingwNBUtNtFlFSXN5MJjXSgK"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sGnmOufrnojCXsNZYt74x0RXO5"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sXbgRm4Jxw4S0e3MgQspbyGwog"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sXwwP9isaAIFfF5nmR4yelERQn"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sXx6ngz8eFObXPlW5okxLwYRjp"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sXxE4qaa4jJhQ2uOVSnrEM4kB8"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sXxHjVSMDt6DDgPjRQtperXbvf"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sY37CZ5UrIvauGSOZ66Zw7OgoC"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sY3BHNnE6CllEyKnwdZTZpw66e"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sYCiCmT7lZTL0vGtkLWjIFcKoj"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sYCl41iRTgUfrVeG2FLgGVtMYO"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sayL7LIdktXAkkbjYmWBQAT214"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sayST6cBPi6lzGR7bJ7woR7cMh"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2saz3MwdCARtS7IcXgfm6oVwWuJ"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2saz5trYZhzH2BugBbB3q5biirk"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sazILRxIlGdcouGWKCmU3T3rDM"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sdrrrF1un4EFQDXte1RX5SL6iz"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sdwv7wbYb5nY3gSbyVEDNufpRn"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sdwxeJnJWY0e9GPoybB61okmyO"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sdxYZI1CDyx0G9GEZDgattMb3x"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2se0BZzCkV8uWenpZeVsieVzduS"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2se0DkFUEG9jOvOLbMDboLQSFAJ"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2se0Huq9Wlgm9e6PaP6yThv2Lhx"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2se0KgKhtJRq7OGX879lxtlNErp"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2se0MXYlpYpHSzvEfTEMNBDIjKu"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2seX3sorQyINMHL0rQ7SatqnSTp"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2seXHk0qle9nS6VVBP3JHlbJ2KL"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shQF1mYLJonptGcTR4AAoL6Zzg"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shRICg72nBNWAF5RSz9cJKhoED"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shUb1e9VqVh4zWW9ZRCszxiGyl"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shWW7RiK0cLCVsIVlYEkuvHOtY"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shWpo2QMSC4H1R6Tnl38274JPh"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shXmRwNA8NrlgteiEWbYX2aRWT"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shY8CN4RQwugnbTF9ooAzWzRF5"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shYE5gR1tb6mZuDoFsCN449S9H"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shYzbyW7IsRpCEWCjCGjPriqG6"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shZhOaf4kPzlvk8LFVUcb85lIw"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2shaUYCeW5CwfvksX2oV2nh5Kvt"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2slw7B2AHYnXnn3p6EBI48Cbpxv"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sm4dqashVQKKzYHMFIVKYefTXF"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sm5CuRNzERopnnAMYBOUHlDplP"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sm5QCYRL6ear66P5nRJbQsf3bQ"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sm5Sg0HlwBeo1REBHvS7JhzAN1"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2sodS65M0NkhA5ciyeH65nRkfHr"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2trcQv7LYzj7AcnxuFRZkoiZD2H"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2xVK5Or0xPKGe19d4dNmVEalCSg"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2xVvqHflP7KMO1QXR95PwHLhm2E"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_2xVvttllhKEJA6AgZ8DWIptjQVd"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_30e6249b-c5d6-488a-bf0d-9e1194c0d3e3"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_3e085377-9560-4431-9dc9-5f9bc3c663a1"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_3e8de816-046b-4cf0-a906-07184b0c873d"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_43a4299f-d5ec-43c6-b854-f043cd009b43"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_48df5b53-de43-426f-a7ec-b0f80f0255d5"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_4d977cd5-11ee-4735-9916-4d171f6c62dc"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_4f7c8fd6-1e04-4575-bb95-def21f7fb3bf"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_522e75b8-ab3d-4948-aa4a-0a77dd657c12"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_59dc90ad-d180-49ba-bb34-9e60d94a9aa2"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_76d06c58-1b61-4bec-809d-d55bfa39548b"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_7846d4a7-b75e-4527-8c41-404dad7e167b"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_7b93b437-2425-4b40-9c2e-d9884944a21a"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_8ea03d67-e6cc-450f-b3f3-4645e0ef9d6e"
+    },
+    {
+      "start": "2025-10-14T15:22:00.000Z",
+      "measurement": "traffic_room_occupancy",
+      "value": 2,
+      "asset_id": "room_9b5faf9d-d31b-453f-842c-972b64b79e65"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_9dc62c6d-5a80-4be8-9cce-6f00660cc750"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_a8ad0433-7e16-46e0-9e5c-2844d596657f"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_ab8cee89-9010-4083-93f4-914a6db92f62"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_b2836260-fa36-48c3-885e-19ee65302ebe"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_bcbeff51-920a-4237-a04c-ef7761c16578"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_c31df6a5-1434-431e-bf98-9060a61cd59c"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_c7e3ce14-ed77-451a-b447-d2defd70ac2b"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_cba32a4d-3003-4abd-b987-7d9fa82e09af"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_d9521a9c-fdd4-4726-b6d4-d662d7f538ec"
+    },
+    {
+      "start": "2025-10-14T15:23:00.000Z",
+      "measurement": "room_occupancy",
+      "value": 0,
+      "asset_id": "room_f24a92b6-c761-44b3-a831-df0d8aa1eafc"
+    }
+  ],
+  "page_info": {
+    "page": 1,
+    "page_item_count": 127,
+    "total_item_count": 127,
+    "total_pages": 1
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "floor": {
+    "__typename": "Floor",
+    "id": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+    "name": "CV",
+    "building_id": "building_lvgwdv9n5wwbdku6dvdrxpbe",
+    "rooms": [
+      {
+        "__typename": "Room",
+        "id": "room_2mtO0lzPDNifN2n3COW36N6mzWv",
+        "name": "min-3fps-opencv",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtO6SwWNAnrAv2Hop1CNZlmx6A",
+        "name": "mid-3fps-legacy",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtOD60elgn5xpEnbJ9GHfxKBQa",
+        "name": "mid-3fps-opencv",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtOKpi1GRI5WvTJR7tImHi74aV",
+        "name": "max-3fps-legacy",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtOR4N9nzTJ4jBYHSXZdsuKZfC",
+        "name": "max-3fps-opencv",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtOXlvSmDfPe9w9OQ7I8fGr4t0",
+        "name": "min-5fps-legacy",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtObAdBPjIZO2u5JC3xfZEEYUq",
+        "name": "min-5fps-opencv",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtOddJl2wCnK6hM3QJLLyZbdxj",
+        "name": "mid-5fps-legacy",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtOhOUVpet77XtFtprX8Blbr70",
+        "name": "mid-5fps-opencv",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtOhxFitkLHcKVM4VjczMwMK2L",
+        "name": "max-5fps-legacy",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtOk1EBl4OxAGUTmbge7GSp0ti",
+        "name": "max-5fps-opencv",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      },
+      {
+        "__typename": "Room",
+        "id": "room_2mtNrjyR13DzY6XAEJKy7EkvTJu",
+        "name": "min-3fps-legacy",
+        "floorID": "space_2mtNpBxiw4ZeJkDXs3Mtg4SFLGC",
+        "roomType": null,
+        "customID": null,
+        "capacity": {
+          "__typename": "Capacity",
+          "max": 0,
+          "mid": 0
+        }
+      }
+    ],
+    "sensors": null,
+    "hives": []
+  }
+}

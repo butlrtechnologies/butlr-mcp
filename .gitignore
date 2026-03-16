@@ -1,0 +1,32 @@
+# Claude Code state (all local, agent-generated state)
+.claude/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Test coverage
+coverage/
+
+# Large test fixtures (>500KB)
+src/__fixtures__/reporting/current-occupancy-presence.json
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# MCP workspace config (contains local paths and credentials)
+.mcp.json
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*

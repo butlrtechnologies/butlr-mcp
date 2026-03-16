@@ -1,0 +1,340 @@
+import { apolloClient } from "../clients/graphql-client.js";
+import { gql } from "@apollo/client";
+import { detectAssetType } from "../utils/asset-helpers.js";
+import { getValidatedFields } from "../utils/field-validator.js";
+import {
+  translateGraphQLError,
+  formatMCPError,
+  createValidationError,
+} from "../errors/mcp-errors.js";
+
+/**
+ * Tool definition for butlr_fetch_entity_details
+ */
+export const fetchEntityDetailsTool = {
+  name: "butlr_fetch_entity_details",
+  description:
+    "Retrieve specific fields for entities by ID with selective field fetching. " +
+    "Supports mixed entity types in a single call (site_, building_, floor_, room_, zone_, sensor_, hive_). " +
+    "Minimizes token usage by fetching only requested fields. " +
+    "Default fields if none specified: Sites (id, name), Buildings (id, name), Floors (id, name, floorNumber), " +
+    "Rooms (id, name), Zones (id, name), Sensors (id, mac_address), Hives (id, serialNumber).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      ids: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Entity IDs (mixed types supported: site_, building_, floor_, room_, zone_, sensor_, hive_)",
+      },
+      site_fields: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Optional: Fields to fetch for sites (e.g., ['timezone', 'siteNumber', 'customID'])",
+      },
+      building_fields: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Optional: Fields for buildings (e.g., ['capacity', 'address', 'building_number'])",
+      },
+      floor_fields: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional: Fields for floors (e.g., ['floorNumber', 'capacity', 'timezone'])",
+      },
+      room_fields: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional: Fields for rooms (e.g., ['roomType', 'capacity', 'coordinates'])",
+      },
+      zone_fields: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional: Fields for zones (e.g., ['roomID', 'capacity'])",
+      },
+      sensor_fields: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Optional: Fields for sensors (e.g., ['name', 'mac_address', 'mode', 'is_online'])",
+      },
+      hive_fields: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional: Fields for hives (e.g., ['name', 'serialNumber', 'isOnline'])",
+      },
+    },
+    required: ["ids"],
+    additionalProperties: false,
+  },
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  },
+};
+
+/**
+ * Input arguments for butlr_fetch_entity_details
+ */
+export interface FetchEntityDetailsArgs {
+  ids: string[];
+  site_fields?: string[];
+  building_fields?: string[];
+  floor_fields?: string[];
+  room_fields?: string[];
+  zone_fields?: string[];
+  sensor_fields?: string[];
+  hive_fields?: string[];
+}
+
+/**
+ * Build GraphQL query dynamically based on requested fields
+ */
+function buildQueryForFields(type: string, fields: string[]): any {
+  // Always include type indicator
+  const fieldList = fields.join("\n      ");
+
+  switch (type) {
+    case "site":
+      return gql`
+        query GetSiteDetails($id: ID!) {
+          site(id: $id) {
+            ${fieldList}
+          }
+        }
+      `;
+
+    case "building":
+      return gql`
+        query GetBuildingDetails($id: ID!) {
+          building(id: $id) {
+            ${fieldList}
+          }
+        }
+      `;
+
+    case "floor":
+      return gql`
+        query GetFloorDetails($id: ID!) {
+          floor(id: $id) {
+            ${fieldList}
+          }
+        }
+      `;
+
+    case "room":
+      return gql`
+        query GetRoomDetails($id: ID!) {
+          room(id: $id) {
+            ${fieldList}
+          }
+        }
+      `;
+
+    case "zone":
+      return gql`
+        query GetZoneDetails($id: ID!) {
+          zone(id: $id) {
+            ${fieldList}
+          }
+        }
+      `;
+
+    case "sensor":
+      // Sensors API accepts ids parameter (batch query)
+      return gql`
+        query GetSensorDetails($ids: [String!]) {
+          sensors(ids: $ids) {
+            data {
+              ${fieldList}
+            }
+          }
+        }
+      `;
+
+    case "hive":
+      // Hives API accepts both ids and serial_numbers (batch query)
+      return gql`
+        query GetHiveDetails($ids: [String!], $serial_numbers: [String!]) {
+          hives(ids: $ids, serial_numbers: $serial_numbers) {
+            data {
+              ${fieldList}
+            }
+          }
+        }
+      `;
+
+    default:
+      throw createValidationError(`Unsupported asset type: ${type}`);
+  }
+}
+
+/**
+ * Execute butlr_fetch_entity_details tool
+ */
+export async function executeFetchEntityDetails(args: FetchEntityDetailsArgs) {
+  // Validate inputs
+  if (!args.ids || !Array.isArray(args.ids) || args.ids.length === 0) {
+    throw createValidationError("ids is required and must be a non-empty array");
+  }
+
+  if (process.env.DEBUG) {
+    console.error(`[butlr-fetch-entity-details] Fetching details for ${args.ids.length} asset(s)`);
+  }
+
+  // Group IDs by type
+  const assetsByType: Record<string, string[]> = {};
+  for (const id of args.ids) {
+    const type = detectAssetType(id);
+    if (type === "unknown") {
+      throw createValidationError(`Unknown asset type for ID: ${id}`);
+    }
+
+    if (!assetsByType[type]) {
+      assetsByType[type] = [];
+    }
+    assetsByType[type].push(id);
+  }
+
+  // Fetch assets by type
+  const results: any[] = [];
+
+  for (const [type, ids] of Object.entries(assetsByType)) {
+    // Get fields for this type
+    const fieldParam = `${type}_fields` as keyof FetchEntityDetailsArgs;
+    const requestedFields = args[fieldParam] as string[] | undefined;
+
+    // Validate and get final field list (defaults if none provided)
+    const fields = getValidatedFields(type, requestedFields);
+
+    // Build query
+    const query = buildQueryForFields(type, fields);
+
+    // For hives and sensors, batch query all at once
+    if (type === "hive" || type === "sensor") {
+      try {
+        // Use ids for both types (API supports it)
+        const variables = { ids };
+
+        const { data, error } = await apolloClient.query({
+          query,
+          variables,
+          fetchPolicy: "network-only",
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        // Extract assets from response
+        const pluralType = type === "hive" ? "hives" : "sensors";
+        const dataArray = (data as any)[pluralType]?.data || [];
+
+        // Add all found assets
+        for (const asset of dataArray) {
+          results.push({
+            ...asset,
+            _type: type,
+          });
+        }
+
+        // Report missing assets
+        const foundIds = new Set(dataArray.map((a: any) => a.id));
+        for (const id of ids) {
+          if (!foundIds.has(id)) {
+            if (process.env.DEBUG) {
+              console.error(`[butlr-fetch-entity-details] Asset not found: ${id}`);
+            }
+            results.push({
+              id,
+              _type: type,
+              error: "Asset not found",
+            });
+          }
+        }
+      } catch (error: any) {
+        if (error && (error.graphQLErrors || error.networkError)) {
+          const mcpError = translateGraphQLError(error);
+          if (process.env.DEBUG) {
+            console.error(
+              `[butlr-fetch-entity-details] Error fetching ${type}:`,
+              formatMCPError(mcpError)
+            );
+          }
+          // Add error for all IDs in this batch
+          for (const id of ids) {
+            results.push({
+              id,
+              error: formatMCPError(mcpError),
+              _type: type,
+            });
+          }
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      // Query individually for other types (site, building, floor, room, zone)
+      for (const id of ids) {
+        try {
+          const { data, error } = await apolloClient.query({
+            query,
+            variables: { id },
+            fetchPolicy: "network-only",
+          });
+
+          if (error) {
+            throw error;
+          }
+
+          const asset = (data as any)[type];
+
+          if (asset) {
+            results.push({
+              ...asset,
+              _type: type,
+            });
+          } else {
+            if (process.env.DEBUG) {
+              console.error(`[butlr-fetch-entity-details] Asset not found: ${id}`);
+            }
+            results.push({
+              id,
+              _type: type,
+              error: "Asset not found",
+            });
+          }
+        } catch (error: any) {
+          if (error && (error.graphQLErrors || error.networkError)) {
+            const mcpError = translateGraphQLError(error);
+            if (process.env.DEBUG) {
+              console.error(
+                `[butlr-fetch-entity-details] Error fetching ${id}:`,
+                formatMCPError(mcpError)
+              );
+            }
+            results.push({
+              id,
+              error: formatMCPError(mcpError),
+              _type: type,
+            });
+          } else {
+            throw error;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    entities: results,
+    requested_count: args.ids.length,
+    fetched_count: results.filter((r) => !r.error).length,
+    timestamp: new Date().toISOString(),
+  };
+}
