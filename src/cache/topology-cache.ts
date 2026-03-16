@@ -7,7 +7,7 @@ const CACHE_TTL_SECONDS = parseInt(process.env.MCP_CACHE_TOPO_TTL || "600", 10) 
 const MAX_CACHE_ENTRIES = 100;
 
 interface CacheEntry {
-  data: any;
+  data: Record<string, unknown>;
   timestamp: string;
 }
 

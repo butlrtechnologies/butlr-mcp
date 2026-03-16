@@ -33,17 +33,17 @@ export function fuzzyMatch(query: string, target: string): number {
     return 90;
   }
 
-  // Contains query
-  if (lowerTarget.includes(lowerQuery)) {
-    return 70;
-  }
-
-  // Word boundary match (e.g., "SF" matches "SF Tower")
+  // Word boundary match (e.g., "SF" matches "SF Tower") — check before generic contains
   const words = lowerTarget.split(/\s+/);
   for (const word of words) {
     if (word.startsWith(lowerQuery)) {
       return 80;
     }
+  }
+
+  // Contains query
+  if (lowerTarget.includes(lowerQuery)) {
+    return 70;
   }
 
   // No match

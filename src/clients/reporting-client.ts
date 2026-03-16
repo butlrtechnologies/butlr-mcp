@@ -404,42 +404,7 @@ export async function getCurrentOccupancy(
   presenceRequest.filter.value = { gte: 0 };
   presenceRequest.group_by = { raw: true };
 
-  const presenceResponse = await queryReporting(presenceRequest);
-
-  // Normalize presence data
-  // Response structure: { "room_123": { "2025-10-10T00:00:00Z": { "max": 5 } } }
-  const presenceData: Record<string, NormalizedDataPoint> = {};
-
-  if (presenceResponse.data && typeof presenceResponse.data === "object") {
-    // Iterate through each asset (room/zone/floor)
-    for (const [assetId, timeSeriesData] of Object.entries(presenceResponse.data)) {
-      if (!timeSeriesData || typeof timeSeriesData !== "object") continue;
-
-      // Get all timestamps for this asset
-      const timestamps = Object.keys(timeSeriesData).sort();
-      if (timestamps.length === 0) continue;
-
-      // Get the latest timestamp
-      const latestTimestamp = timestamps[timestamps.length - 1];
-      const latestData = (timeSeriesData as any)[latestTimestamp];
-
-      if (latestData && typeof latestData === "object") {
-        // Extract the median value (current occupancy, smoothed)
-        const value =
-          latestData.median ?? latestData.max ?? latestData.mean ?? latestData.last ?? 0;
-
-        presenceData[assetId] = {
-          start: normalizeTimestamp(latestTimestamp),
-          measurement: presenceMeasurement,
-          value: value,
-          asset_id: assetId,
-          asset_name: undefined, // Not available in grouped response
-        };
-      }
-    }
-  }
-
-  // Try traffic data as fallback (traffic_room_occupancy, traffic_floor_occupancy)
+  // Build traffic request in parallel with presence
   const trafficMeasurement = `traffic_${presenceMeasurement}`;
 
   const trafficRequest = new ReportingRequestBuilder()
@@ -449,18 +414,56 @@ export async function getCurrentOccupancy(
     .window("60s", "median") // Use median to smooth noise
     .build();
 
-  // Add calibrated and value filters for traffic
   trafficRequest.filter.calibrated = "true";
   trafficRequest.filter.value = { gte: 0 };
   trafficRequest.group_by = { raw: true };
 
-  let trafficResponse;
-  try {
-    trafficResponse = await queryReporting(trafficRequest);
-  } catch (error) {
-    // Traffic query might fail if no traffic sensors
-    console.error(`[reporting-client] Traffic query failed (may not have traffic sensors):`, error);
-    trafficResponse = { data: [] };
+  // Run both queries in parallel — they're independent
+  const [presenceResult, trafficResult] = await Promise.allSettled([
+    queryReporting(presenceRequest),
+    queryReporting(trafficRequest),
+  ]);
+
+  const presenceResponse =
+    presenceResult.status === "fulfilled" ? presenceResult.value : { data: [] };
+  const trafficResponse = trafficResult.status === "fulfilled" ? trafficResult.value : { data: [] };
+
+  if (trafficResult.status === "rejected") {
+    console.error(
+      `[reporting-client] Traffic query failed (may not have traffic sensors):`,
+      trafficResult.reason
+    );
+  }
+
+  // Normalize presence data
+  // Response structure: { "room_123": { "2025-10-10T00:00:00Z": { "max": 5 } } }
+  const presenceData: Record<string, NormalizedDataPoint> = {};
+
+  if (presenceResponse.data && typeof presenceResponse.data === "object") {
+    for (const [assetId, timeSeriesData] of Object.entries(presenceResponse.data)) {
+      if (!timeSeriesData || typeof timeSeriesData !== "object") continue;
+
+      const timestamps = Object.keys(timeSeriesData).sort();
+      if (timestamps.length === 0) continue;
+
+      const latestTimestamp = timestamps[timestamps.length - 1];
+      const latestData = (timeSeriesData as Record<string, unknown>)[latestTimestamp] as
+        | Record<string, number>
+        | undefined;
+
+      if (latestData && typeof latestData === "object") {
+        const value =
+          latestData.median ?? latestData.max ?? latestData.mean ?? latestData.last ?? 0;
+
+        presenceData[assetId] = {
+          start: normalizeTimestamp(latestTimestamp),
+          measurement: presenceMeasurement,
+          value: value,
+          asset_id: assetId,
+          asset_name: undefined,
+        };
+      }
+    }
   }
 
   // Parse traffic data (different structure - timestamps map to arrays)
