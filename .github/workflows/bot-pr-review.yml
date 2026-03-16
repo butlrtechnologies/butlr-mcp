@@ -1,0 +1,24 @@
+name: PR Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    uses: butlrtechnologies/github-automations/.github/workflows/bot-pr-review.yml@main
+    with:
+      language: 'node'
+      node-version: '18'
+      model: 'opus'
+      max-turns: 50
+      enable-auto-approve: true
+      review-prompt-append: |
+        This is a Model Context Protocol (MCP) server built with @modelcontextprotocol/sdk.
+        Pay special attention to:
+        - MCP tool definitions and input validation via Zod schemas
+        - GraphQL client usage and query construction
+        - OAuth2 token handling and refresh logic
+        - Rate limiting and caching behavior
+        - Error translation to MCP error codes
+        - Read-only enforcement (no mutations allowed)
+    secrets: inherit
