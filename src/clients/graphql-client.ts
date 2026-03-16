@@ -35,25 +35,16 @@ const authLink = setContext(async (_, { headers }) => {
 /**
  * Error handling link - logs errors and provides debugging info
  */
-const errorLink = onError((errorResponse: any) => {
-  const { graphQLErrors, networkError, operation } = errorResponse;
+const errorLink = onError(({ error, operation }) => {
+  console.error(`[graphql-client] Error in ${operation.operationName}:`, error.message);
 
-  if (graphQLErrors) {
-    for (const err of graphQLErrors) {
-      console.error(`[graphql-client] GraphQL error in ${operation.operationName}:`, err.message);
-      // Handle specific error codes
-      if (err.extensions?.code === "UNAUTHENTICATED") {
-        // Clear cached token on auth errors
-        authClient.clearToken();
-      }
-    }
-  }
-
-  if (networkError) {
-    console.error(
-      `[graphql-client] Network error in ${operation.operationName}:`,
-      networkError.message
-    );
+  // Clear cached token on auth errors
+  if (
+    error.message?.includes("UNAUTHENTICATED") ||
+    error.message?.includes("401") ||
+    error.message?.includes("403")
+  ) {
+    authClient.clearToken();
   }
 });
 

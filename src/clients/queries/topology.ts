@@ -234,7 +234,7 @@ export const GET_TOPOLOGY_NO_DEVICES = gql`
             rooms {
               id
               name
-              floorID
+              floor_id
               customID
               capacity {
                 max
@@ -245,8 +245,8 @@ export const GET_TOPOLOGY_NO_DEVICES = gql`
             zones {
               id
               name
-              floorID
-              roomID
+              floor_id
+              room_id
               customID
               coordinates
             }

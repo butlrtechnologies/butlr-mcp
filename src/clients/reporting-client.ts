@@ -120,7 +120,7 @@ export interface ReportingResponse {
     hive_id?: string;
     sensor_id?: string;
     mac_address?: string;
-    [key: string]: any; // Allow grouped responses
+    [key: string]: unknown;
   }>;
   page_info?: {
     page: number;
@@ -128,7 +128,7 @@ export interface ReportingResponse {
     total_item_count: number;
     total_pages: number;
   };
-  calibrationPoints?: any[];
+  calibrationPoints?: unknown[];
 }
 
 /**
@@ -141,7 +141,7 @@ export interface NormalizedDataPoint {
   value: number;
   asset_id?: string;
   asset_name?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**
