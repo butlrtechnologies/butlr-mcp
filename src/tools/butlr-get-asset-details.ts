@@ -16,21 +16,12 @@ const assetIdSchema = z
   .min(1, "Asset ID cannot be empty")
   .refine(
     (val) => {
-      const validPrefixes = [
-        "site_",
-        "building_",
-        "space_",
-        "floor_",
-        "room_",
-        "zone_",
-        "sensor_",
-        "hive_",
-      ];
+      const validPrefixes = ["site_", "building_", "space_", "floor_", "room_", "zone_"];
       return validPrefixes.some((prefix) => val.startsWith(prefix));
     },
     {
       message:
-        "Asset ID must start with valid prefix: site_, building_, floor_, space_, room_, zone_, sensor_, or hive_",
+        "Asset ID must start with valid prefix: site_, building_, floor_, space_, room_, or zone_. For sensor/hive details, use butlr_search_assets or butlr_hardware_snapshot.",
     }
   );
 
@@ -143,7 +134,7 @@ function buildQuery(
   includeChildren: boolean,
   includeDevices: boolean,
   includeParentContext: boolean
-): any {
+): ReturnType<typeof gql> {
   switch (type) {
     case "site":
       return gql`
@@ -413,53 +404,54 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
     assetsByType[type].push(id);
   }
 
-  // Fetch assets by type
-  const results: any[] = [];
+  // Fetch all assets in parallel (grouped by type for query selection)
+  const fetchPromises: Array<{ id: string; type: string; promise: Promise<unknown> }> = [];
 
   for (const [type, ids] of Object.entries(assetsByType)) {
     const query = buildQuery(type, includeChildren, includeDevices, includeParentContext);
 
-    // Fetch each asset individually
     for (const id of ids) {
-      try {
-        const { data, error } = await apolloClient.query({
-          query,
-          variables: { id },
-          fetchPolicy: "network-only",
-        });
+      fetchPromises.push({
+        id,
+        type,
+        promise: apolloClient.query({ query, variables: { id }, fetchPolicy: "network-only" }),
+      });
+    }
+  }
 
-        if (error) {
-          throw error;
-        }
+  const settled = await Promise.allSettled(fetchPromises.map((f) => f.promise));
 
-        // Extract the asset from response (key is type name: site, building, floor, etc.)
-        const asset = (data as any)[type];
+  const results: Array<Record<string, unknown>> = [];
 
-        if (asset) {
-          results.push({
-            ...asset,
-            _type: type, // Add type metadata
-          });
-        } else {
-          if (process.env.DEBUG) {
-            console.error(`[get-asset-details] Asset not found: ${id}`);
-          }
+  for (let i = 0; i < settled.length; i++) {
+    const { id, type } = fetchPromises[i];
+    const outcome = settled[i];
+
+    if (outcome.status === "fulfilled") {
+      const { data, error } = outcome.value as { data: Record<string, unknown>; error?: unknown };
+      if (error) {
+        const mcpError = translateGraphQLError(
+          error as Parameters<typeof translateGraphQLError>[0]
+        );
+        results.push({ id, error: formatMCPError(mcpError), _type: type });
+        continue;
+      }
+      const asset = data[type];
+      if (asset && typeof asset === "object") {
+        results.push({ ...(asset as Record<string, unknown>), _type: type });
+      } else if (process.env.DEBUG) {
+        console.error(`[get-asset-details] Asset not found: ${id}`);
+      }
+    } else {
+      const err = outcome.reason;
+      if (err && (err.graphQLErrors || err.networkError)) {
+        const mcpError = translateGraphQLError(err);
+        if (process.env.DEBUG) {
+          console.error(`[get-asset-details] Error fetching ${id}:`, formatMCPError(mcpError));
         }
-      } catch (error: any) {
-        if (error && (error.graphQLErrors || error.networkError)) {
-          const mcpError = translateGraphQLError(error);
-          if (process.env.DEBUG) {
-            console.error(`[get-asset-details] Error fetching ${id}:`, formatMCPError(mcpError));
-          }
-          // Continue with other assets instead of failing completely
-          results.push({
-            id,
-            error: formatMCPError(mcpError),
-            _type: type,
-          });
-        } else {
-          throw error;
-        }
+        results.push({ id, error: formatMCPError(mcpError), _type: type });
+      } else {
+        throw err;
       }
     }
   }

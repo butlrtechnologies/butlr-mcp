@@ -7,8 +7,8 @@ import {
   setCachedTopology,
   generateTopologyCacheKey,
 } from "../cache/topology-cache.js";
-import { flattenTopology } from "../utils/asset-flattener.js";
-import { searchAssets } from "../utils/fuzzy-match.js";
+import { flattenTopology, type FlattenedAsset } from "../utils/asset-flattener.js";
+import { searchAssets, type SearchableAsset } from "../utils/fuzzy-match.js";
 import { buildAssetPath } from "../utils/path-builder.js";
 import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
 
@@ -250,11 +250,15 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
 
   // Perform fuzzy search
   // Search on name, mac_address (sensors), and serialNumber (hives)
-  const matches = searchAssets(searchableAssets, args.query, {
-    matchFields: ["name", "mac_address", "serialNumber"],
-    minScore: 70,
-    maxResults,
-  });
+  const matches = searchAssets(
+    searchableAssets as (FlattenedAsset & SearchableAsset)[],
+    args.query,
+    {
+      matchFields: ["name", "mac_address", "serialNumber"],
+      minScore: 70,
+      maxResults,
+    }
+  );
 
   if (process.env.DEBUG) {
     console.error(`[search-assets] Found ${matches.length} matches`);
