@@ -11,7 +11,7 @@ import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
  */
 export const HardwareSnapshotArgsSchema = z
   .object({
-    scope_type: z.enum(["org", "site", "building", "floor", "room"]).default("org"),
+    scope_type: z.enum(["org", "site", "building", "floor"]).default("org"),
 
     scope_id: z.string().min(1, "scope_id cannot be empty").optional(),
 
@@ -84,7 +84,7 @@ export const hardwareSnapshotTool = {
     properties: {
       scope_type: {
         type: "string",
-        enum: ["org", "site", "building", "floor", "room"],
+        enum: ["org", "site", "building", "floor"],
         default: "org",
         description: "Scope of the health check",
       },
@@ -251,6 +251,83 @@ function buildDevicePath(
 }
 
 /**
+ * Filter production devices from raw API responses, excluding test/mirror/placeholder devices.
+ * Returns production devices and counts of excluded test devices.
+ */
+function filterProductionDevices(rawSensors: Sensor[], rawHives: Hive[]) {
+  const sensors = rawSensors.filter(
+    (s) =>
+      s.mac_address &&
+      s.mac_address.trim() !== "" &&
+      !s.mac_address.startsWith("mi-rr-or") &&
+      !s.mac_address.startsWith("fa-ke")
+  );
+
+  const hives = rawHives.filter(
+    (h) =>
+      h.serialNumber &&
+      h.serialNumber.trim() !== "" &&
+      !h.serialNumber.toLowerCase().startsWith("fake")
+  );
+
+  const mirrorSensors = rawSensors.filter(
+    (s) => s.mac_address?.startsWith("mi-rr-or") || s.mac_address?.startsWith("fa-ke")
+  ).length;
+  const emptySensors = rawSensors.filter(
+    (s) => !s.mac_address || s.mac_address.trim() === ""
+  ).length;
+  const fakeHives = rawHives.filter((h) => h.serialNumber?.toLowerCase().startsWith("fake")).length;
+  const emptyHives = rawHives.filter((h) => !h.serialNumber || h.serialNumber.trim() === "").length;
+
+  return {
+    sensors,
+    hives,
+    testCounts: {
+      sensors: {
+        mirror: mirrorSensors,
+        placeholder: emptySensors,
+        total_test: mirrorSensors + emptySensors,
+      },
+      hives: { fake: fakeHives, placeholder: emptyHives, total_test: fakeHives + emptyHives },
+    },
+  };
+}
+
+/**
+ * Group devices by floor ID and merge into floor objects
+ */
+function assignDevicesToFloors(sensors: Sensor[], hives: Hive[], floors: Floor[]): void {
+  const sensorsByFloor: Record<string, Sensor[]> = {};
+  const hivesByFloor: Record<string, Hive[]> = {};
+
+  for (const sensor of sensors) {
+    const floorId = sensor.floor_id || sensor.floorID;
+    if (floorId) {
+      if (!sensorsByFloor[floorId]) sensorsByFloor[floorId] = [];
+      sensorsByFloor[floorId].push(sensor);
+    }
+  }
+
+  for (const hive of hives) {
+    const floorId = hive.floor_id || hive.floorID;
+    if (floorId) {
+      if (!hivesByFloor[floorId]) hivesByFloor[floorId] = [];
+      hivesByFloor[floorId].push(hive);
+    }
+  }
+
+  for (const floor of floors) {
+    floor.sensors = sensorsByFloor[floor.id] || [];
+    floor.hives = hivesByFloor[floor.id] || [];
+  }
+}
+
+interface TestDeviceCounts {
+  sensors: { mirror: number; placeholder: number; total_test: number };
+  hives: { fake: number; placeholder: number; total_test: number };
+}
+
+/**
  * Execute hardware snapshot tool
  */
 export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
@@ -262,30 +339,33 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
     );
   }
 
-  // Query appropriate scope
   let floors: Floor[] = [];
   let buildings: Building[] = [];
   let sites: Site[] = [];
   let scopeName = "";
-  let testDeviceCounts: any = null;
+  let testDeviceCounts: TestDeviceCounts | null = null;
 
   try {
+    // Fetch all devices org-wide (API doesn't support scope-filtered device queries)
+    const [sensorsResult, hivesResult] = await Promise.all([
+      apolloClient.query<{ sensors: { data: Sensor[] } }>({
+        query: GET_ALL_SENSORS,
+        fetchPolicy: "network-only",
+      }),
+      apolloClient.query<{ hives: { data: Hive[] } }>({
+        query: GET_ALL_HIVES,
+        fetchPolicy: "network-only",
+      }),
+    ]);
+
+    const allSensorsRaw = sensorsResult.data?.sensors?.data || [];
+    const allHivesRaw = hivesResult.data?.hives?.data || [];
+
     if (scopeType === "org") {
-      // Query topology and devices separately (nested fields broken)
-      const [topoResult, sensorsResult, hivesResult] = await Promise.all([
-        apolloClient.query<{ sites: { data: Site[] } }>({
-          query: GET_TOPOLOGY_FOR_HEALTH,
-          fetchPolicy: "network-only",
-        }),
-        apolloClient.query<{ sensors: { data: Sensor[] } }>({
-          query: GET_ALL_SENSORS,
-          fetchPolicy: "network-only",
-        }),
-        apolloClient.query<{ hives: { data: Hive[] } }>({
-          query: GET_ALL_HIVES,
-          fetchPolicy: "network-only",
-        }),
-      ]);
+      const topoResult = await apolloClient.query<{ sites: { data: Site[] } }>({
+        query: GET_TOPOLOGY_FOR_HEALTH,
+        fetchPolicy: "network-only",
+      });
 
       if (!topoResult.data?.sites?.data) {
         throw new Error("Invalid response structure from API");
@@ -295,177 +375,14 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
       buildings = sites.flatMap((s) => s.buildings || []);
       floors = buildings.flatMap((b) => b.floors || []);
       scopeName = "Organization";
-
-      // Categorize sensors by type (production vs test/placeholder)
-      const allSensorsRaw = sensorsResult.data?.sensors?.data || [];
-      const allHivesRaw = hivesResult.data?.hives?.data || [];
-
-      // Filter production sensors (exclude test/mirror/placeholder devices for hardware health)
-      const allSensors = allSensorsRaw.filter(
-        (s) =>
-          s.mac_address &&
-          s.mac_address.trim() !== "" &&
-          !s.mac_address.startsWith("mi-rr-or") && // Mirror/virtual sensors
-          !s.mac_address.startsWith("fa-ke") // Fake test sensors
-      );
-
-      // Filter production hives (exclude fake/test hives)
-      const allHives = allHivesRaw.filter(
-        (h) =>
-          h.serialNumber &&
-          h.serialNumber.trim() !== "" &&
-          !h.serialNumber.toLowerCase().startsWith("fake") // Fake test hives
-      );
-
-      // Count test/placeholder devices
-      const mirrorSensors = allSensorsRaw.filter(
-        (s) => s.mac_address?.startsWith("mi-rr-or") || s.mac_address?.startsWith("fa-ke")
-      ).length;
-      const emptySensors = allSensorsRaw.filter(
-        (s) => !s.mac_address || s.mac_address.trim() === ""
-      ).length;
-      const fakeHives = allHivesRaw.filter((h) =>
-        h.serialNumber?.toLowerCase().startsWith("fake")
-      ).length;
-      const emptyHives = allHivesRaw.filter(
-        (h) => !h.serialNumber || h.serialNumber.trim() === ""
-      ).length;
-
-      // Store test device counts for response
-      testDeviceCounts = {
-        sensors: {
-          mirror: mirrorSensors,
-          placeholder: emptySensors,
-          total_test: mirrorSensors + emptySensors,
-        },
-        hives: {
-          fake: fakeHives,
-          placeholder: emptyHives,
-          total_test: fakeHives + emptyHives,
-        },
-      };
-
-      // Group by floor_id
-      const sensorsByFloor: Record<string, Sensor[]> = {};
-      const hivesByFloor: Record<string, Hive[]> = {};
-
-      for (const sensor of allSensors) {
-        const floorId = sensor.floor_id || sensor.floorID;
-        if (floorId) {
-          if (!sensorsByFloor[floorId]) sensorsByFloor[floorId] = [];
-          sensorsByFloor[floorId].push(sensor);
-        }
-      }
-
-      for (const hive of allHives) {
-        const floorId = hive.floor_id || hive.floorID;
-        if (floorId) {
-          if (!hivesByFloor[floorId]) hivesByFloor[floorId] = [];
-          hivesByFloor[floorId].push(hive);
-        }
-      }
-
-      // Merge into floor objects
-      for (const floor of floors) {
-        floor.sensors = sensorsByFloor[floor.id] || [];
-        floor.hives = hivesByFloor[floor.id] || [];
-      }
-    } else {
-      // For site/building/floor scopes: query all devices, then filter
-      const [sensorsResult, hivesResult] = await Promise.all([
-        apolloClient.query<{ sensors: { data: Sensor[] } }>({
-          query: GET_ALL_SENSORS,
-          fetchPolicy: "network-only",
-        }),
-        apolloClient.query<{ hives: { data: Hive[] } }>({
-          query: GET_ALL_HIVES,
-          fetchPolicy: "network-only",
-        }),
-      ]);
-
-      // Filter production devices (same logic as org scope)
-      const allSensorsRaw = sensorsResult.data?.sensors?.data || [];
-      const allHivesRaw = hivesResult.data?.hives?.data || [];
-
-      const allSensors = allSensorsRaw.filter(
-        (s) =>
-          s.mac_address &&
-          s.mac_address.trim() !== "" &&
-          !s.mac_address.startsWith("mi-rr-or") &&
-          !s.mac_address.startsWith("fa-ke")
-      );
-
-      const allHives = allHivesRaw.filter(
-        (h) =>
-          h.serialNumber &&
-          h.serialNumber.trim() !== "" &&
-          !h.serialNumber.toLowerCase().startsWith("fake")
-      );
-
-      // Count test devices for this scope
-      const mirrorSensors = allSensorsRaw.filter(
-        (s) => s.mac_address?.startsWith("mi-rr-or") || s.mac_address?.startsWith("fa-ke")
-      ).length;
-      const emptySensors = allSensorsRaw.filter(
-        (s) => !s.mac_address || s.mac_address.trim() === ""
-      ).length;
-      const fakeHives = allHivesRaw.filter((h) =>
-        h.serialNumber?.toLowerCase().startsWith("fake")
-      ).length;
-      const emptyHives = allHivesRaw.filter(
-        (h) => !h.serialNumber || h.serialNumber.trim() === ""
-      ).length;
-
-      testDeviceCounts = {
-        sensors: {
-          mirror: mirrorSensors,
-          placeholder: emptySensors,
-          total_test: mirrorSensors + emptySensors,
-        },
-        hives: {
-          fake: fakeHives,
-          placeholder: emptyHives,
-          total_test: fakeHives + emptyHives,
-        },
-      };
-
-      if (scopeType === "site") {
-        const siteResult = await apolloClient.query<{ site: Site }>({
-          query: gql`
-            query GetSite($id: ID!) {
-              site(id: $id) {
-                id
-                name
-                buildings {
-                  id
-                  name
-                  site_id
-                  floors {
-                    id
-                    name
-                    building_id
-                  }
-                }
-              }
-            }
-          `,
-          variables: { id: args.scope_id },
-          fetchPolicy: "network-only",
-        });
-
-        if (!siteResult.data?.site) {
-          throw new Error(`Site ${args.scope_id} not found`);
-        }
-
-        sites = [siteResult.data.site];
-        buildings = sites[0].buildings || [];
-        floors = buildings.flatMap((b) => b.floors || []);
-        scopeName = sites[0].name;
-      } else if (scopeType === "building") {
-        const buildingResult = await apolloClient.query<{ building: Building }>({
-          query: gql`
-            query GetBuilding($id: ID!) {
-              building(id: $id) {
+    } else if (scopeType === "site") {
+      const siteResult = await apolloClient.query<{ site: Site }>({
+        query: gql`
+          query GetSite($id: ID!) {
+            site(id: $id) {
+              id
+              name
+              buildings {
                 id
                 name
                 site_id
@@ -476,77 +393,96 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
                 }
               }
             }
-          `,
-          variables: { id: args.scope_id },
-          fetchPolicy: "network-only",
-        });
+          }
+        `,
+        variables: { id: args.scope_id },
+        fetchPolicy: "network-only",
+      });
 
-        if (!buildingResult.data?.building) {
-          throw new Error(`Building ${args.scope_id} not found`);
-        }
+      if (!siteResult.data?.site) {
+        throw new Error(`Site ${args.scope_id} not found`);
+      }
 
-        buildings = [buildingResult.data.building];
-        floors = buildings[0].floors || [];
-        scopeName = buildings[0].name;
-      } else if (scopeType === "floor") {
-        const floorResult = await apolloClient.query<{ floor: Floor }>({
-          query: gql`
-            query GetFloor($id: ID!) {
-              floor(id: $id) {
+      sites = [siteResult.data.site];
+      buildings = sites[0].buildings || [];
+      floors = buildings.flatMap((b) => b.floors || []);
+      scopeName = sites[0].name;
+    } else if (scopeType === "building") {
+      const buildingResult = await apolloClient.query<{ building: Building }>({
+        query: gql`
+          query GetBuilding($id: ID!) {
+            building(id: $id) {
+              id
+              name
+              site_id
+              floors {
                 id
                 name
                 building_id
               }
             }
-          `,
-          variables: { id: args.scope_id },
-          fetchPolicy: "network-only",
-        });
+          }
+        `,
+        variables: { id: args.scope_id },
+        fetchPolicy: "network-only",
+      });
 
-        if (!floorResult.data?.floor) {
-          throw new Error(`Floor ${args.scope_id} not found`);
-        }
-
-        floors = [floorResult.data.floor];
-        scopeName = floors[0].name;
+      if (!buildingResult.data?.building) {
+        throw new Error(`Building ${args.scope_id} not found`);
       }
 
-      // Filter and merge sensors/hives for this scope
-      const sensorsByFloor: Record<string, Sensor[]> = {};
-      const hivesByFloor: Record<string, Hive[]> = {};
+      buildings = [buildingResult.data.building];
+      floors = buildings[0].floors || [];
+      scopeName = buildings[0].name;
+    } else if (scopeType === "floor") {
+      const floorResult = await apolloClient.query<{ floor: Floor }>({
+        query: gql`
+          query GetFloor($id: ID!) {
+            floor(id: $id) {
+              id
+              name
+              building_id
+            }
+          }
+        `,
+        variables: { id: args.scope_id },
+        fetchPolicy: "network-only",
+      });
 
-      for (const sensor of allSensors) {
-        const floorId = sensor.floor_id || sensor.floorID;
-        if (floorId) {
-          if (!sensorsByFloor[floorId]) sensorsByFloor[floorId] = [];
-          sensorsByFloor[floorId].push(sensor);
-        }
+      if (!floorResult.data?.floor) {
+        throw new Error(`Floor ${args.scope_id} not found`);
       }
 
-      for (const hive of allHives) {
-        const floorId = hive.floor_id || hive.floorID;
-        if (floorId) {
-          if (!hivesByFloor[floorId]) hivesByFloor[floorId] = [];
-          hivesByFloor[floorId].push(hive);
-        }
-      }
-
-      // Merge into floor objects
-      for (const floor of floors) {
-        floor.sensors = sensorsByFloor[floor.id] || [];
-        floor.hives = hivesByFloor[floor.id] || [];
-      }
+      floors = [floorResult.data.floor];
+      scopeName = floors[0].name;
     }
-  } catch (error: any) {
-    if (error && (error.graphQLErrors || error.networkError)) {
-      const mcpError = translateGraphQLError(error);
+
+    // Filter production devices and assign to scoped floors
+    const {
+      sensors: prodSensors,
+      hives: prodHives,
+      testCounts,
+    } = filterProductionDevices(allSensorsRaw, allHivesRaw);
+    assignDevicesToFloors(prodSensors, prodHives, floors);
+
+    // Only include test device counts for org scope (where they're meaningful)
+    if (scopeType === "org") {
+      testDeviceCounts = testCounts;
+    }
+  } catch (error: unknown) {
+    if (
+      error &&
+      typeof error === "object" &&
+      ("graphQLErrors" in error || "networkError" in error)
+    ) {
+      const mcpError = translateGraphQLError(error as Parameters<typeof translateGraphQLError>[0]);
       const errorMessage = formatMCPError(mcpError);
       throw new Error(errorMessage);
     }
     throw error;
   }
 
-  // Collect all sensors and hives
+  // Collect scoped sensors and hives (only devices on floors within this scope)
   const allSensors = floors.flatMap((f) => f.sensors || []);
   const allHives = floors.flatMap((f) => f.hives || []);
 
@@ -716,8 +652,8 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
     enhancedSummary += ` Showing ${offlineDeviceLimit} most recently offline devices (${offlineSensorCount} sensors, ${offlineHiveCount} hives offline).`;
   }
 
-  // Build response with test device breakdown
-  const response: any = {
+  // Build response
+  const response: Record<string, unknown> = {
     summary: enhancedSummary,
     sensors: {
       total: allSensors.length,
