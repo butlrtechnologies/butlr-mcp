@@ -49,6 +49,9 @@ export interface FlattenedAsset {
   // Hive fields
   serialNumber?: string;
   hiveVersion?: string;
+
+  // Index signature for SearchableAsset compatibility
+  [key: string]: unknown;
 }
 
 /**
