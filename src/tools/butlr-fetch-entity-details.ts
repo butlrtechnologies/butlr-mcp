@@ -13,7 +13,12 @@ const FETCH_ENTITY_DETAILS_DESCRIPTION =
   "Supports mixed entity types in a single call (site_, building_, floor_, room_, zone_, sensor_, hive_). " +
   "Minimizes token usage by fetching only requested fields. " +
   "Default fields if none specified: Sites (id, name), Buildings (id, name), Floors (id, name, floorNumber), " +
-  "Rooms (id, name), Zones (id, name), Sensors (id, mac_address), Hives (id, serialNumber).";
+  "Rooms (id, name), Zones (id, name), Sensors (id, mac_address), Hives (id, serialNumber).\n\n" +
+  "When NOT to Use:\n" +
+  "- Need comprehensive asset details with children and parent context → use butlr_get_asset_details instead\n" +
+  "- Don't have entity IDs yet → use butlr_search_assets to find IDs by name first\n" +
+  "- Need device health or battery status → use butlr_hardware_snapshot instead\n" +
+  "- Want to browse the organizational hierarchy → use butlr_list_topology instead";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const fetchEntityDetailsInputShape = {
