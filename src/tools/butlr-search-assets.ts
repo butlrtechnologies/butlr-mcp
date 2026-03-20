@@ -14,44 +14,47 @@ import { buildAssetPath } from "../utils/path-builder.js";
 import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
 
 /**
- * Zod validation schema for search_assets
+ * Zod validation for search_assets
  */
 const VALID_ASSET_TYPES = ["site", "building", "floor", "room", "zone", "sensor", "hive"] as const;
 
+/** Shared shape — used by both registerTool (SDK schema) and full validation */
+const searchAssetsInputShape = {
+  query: z
+    .string()
+    .min(1, "query cannot be empty")
+    .max(500, "query too long (max: 500 chars)")
+    .trim()
+    .refine(
+      (val) => val.length >= 2,
+      "query must be at least 2 characters (after trimming whitespace)"
+    )
+    .describe("Search term to match against asset names"),
+
+  asset_types: z
+    .array(
+      z.enum(VALID_ASSET_TYPES, {
+        errorMap: () => ({
+          message: `asset_type must be one of: ${VALID_ASSET_TYPES.join(", ")}`,
+        }),
+      })
+    )
+    .min(1, "asset_types array cannot be empty (omit field to search all types)")
+    .max(VALID_ASSET_TYPES.length)
+    .optional()
+    .describe("Optional: Filter to specific asset types"),
+
+  max_results: z
+    .number()
+    .int("max_results must be an integer")
+    .min(1, "max_results must be at least 1")
+    .max(100, "max_results cannot exceed 100")
+    .default(20)
+    .describe("Maximum number of results to return"),
+};
+
 export const SearchAssetsArgsSchema = z
-  .object({
-    query: z
-      .string()
-      .min(1, "query cannot be empty")
-      .max(500, "query too long (max: 500 chars)")
-      .trim()
-      .refine(
-        (val) => val.length >= 2,
-        "query must be at least 2 characters (after trimming whitespace)"
-      )
-      .describe("Search term to match against asset names"),
-
-    asset_types: z
-      .array(
-        z.enum(VALID_ASSET_TYPES, {
-          errorMap: () => ({
-            message: `asset_type must be one of: ${VALID_ASSET_TYPES.join(", ")}`,
-          }),
-        })
-      )
-      .min(1, "asset_types array cannot be empty (omit field to search all types)")
-      .max(VALID_ASSET_TYPES.length)
-      .optional()
-      .describe("Optional: Filter to specific asset types"),
-
-    max_results: z
-      .number()
-      .int("max_results must be an integer")
-      .min(1, "max_results must be at least 1")
-      .max(100, "max_results cannot exceed 100")
-      .default(20)
-      .describe("Maximum number of results to return"),
-  })
+  .object(searchAssetsInputShape)
   .strict()
   .refine(
     (data) => {
@@ -67,72 +70,35 @@ export const SearchAssetsArgsSchema = z
     }
   );
 
-/**
- * Tool definition for search_assets
- */
-export const searchAssetsTool = {
-  name: "butlr_search_assets",
-  description:
-    "Search for Butlr assets (sites, buildings, floors, rooms, zones, sensors, hives) by name using fuzzy matching. Essential prerequisite tool for finding asset IDs before calling other tools. Returns minimal matched results with breadcrumb paths, match scores, and parent context. Searches across all asset types by default, with optional filters.\n\n" +
-    "Primary Users:\n" +
-    "- All Users: Find asset IDs by human-readable names before using other tools\n" +
-    "- IT Manager: Find sensors by MAC address for troubleshooting\n" +
-    "- Field Technician: Locate sensors/hives by name or serial number before site visits\n" +
-    "- Workplace Manager: Find rooms/spaces by common names (e.g., 'café', 'huddle room 3')\n\n" +
-    "Example Queries:\n" +
-    '1. "Find the main lobby" → returns room_lobby_123\n' +
-    '2. "Search for café or coffee shop" → fuzzy matches "Café Barista", "Coffee Bar"\n' +
-    '3. "Find Floor 6 in SF Tower" → returns floor_sf_tower_6\n' +
-    '4. "Search for sensors with MAC address starting with 00:1A" → matches sensors by MAC\n' +
-    '5. "Find all conference rooms" → searches room names containing "conference"\n' +
-    '6. "Locate hive with serial number HV-2023-001" → finds hive by serial\n' +
-    '7. "Search for Chicago office" → finds site/building matching "Chicago"\n' +
-    '8. "Find focus rooms on Floor 3" → searches for rooms with "focus" in name\n\n' +
-    "When to Use:\n" +
-    "- Know a space's name but not its ID (e.g., 'Café Barista' → room_cafe_123)\n" +
-    "- Looking for sensors/hives by MAC address or serial number\n" +
-    "- Find all assets of a specific type (e.g., all sites, all conference rooms)\n" +
-    "- Exploring org topology and don't know exact asset names\n" +
-    "- Want to find spaces with partial/fuzzy names (e.g., 'cafe' matches 'Café Barista')\n\n" +
-    "When NOT to Use:\n" +
-    "- Already have asset IDs and need detailed info → use butlr_get_asset_details directly\n" +
-    "- Want to browse full organizational hierarchy → use butlr_list_topology instead\n" +
-    "- Need to analyze occupancy or sensor data → use this tool first to find IDs, then use data tools\n\n" +
-    "Search Features: Fuzzy matching (handles typos), multi-field search (name, MAC, serial), score threshold (≥70), type filtering, result limiting (default 20, max 100)\n\n" +
-    "Example Workflow: butlr_search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +
-    "See Also: butlr_get_asset_details, butlr_list_topology, butlr_fetch_entity_details",
-  inputSchema: {
-    type: "object",
-    properties: {
-      query: {
-        type: "string",
-        description:
-          "Search term to match against asset names (e.g., 'cafe', 'SF Tower', 'floor 6')",
-      },
-      asset_types: {
-        type: "array",
-        items: {
-          type: "string",
-          enum: ["site", "building", "floor", "room", "zone", "sensor", "hive"],
-        },
-        description: "Optional: Filter to specific asset types. If omitted, searches all types.",
-      },
-      max_results: {
-        type: "number",
-        default: 20,
-        description: "Maximum number of results to return (default: 20)",
-      },
-    },
-    required: ["query"],
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
+const SEARCH_ASSETS_DESCRIPTION =
+  "Search for Butlr assets (sites, buildings, floors, rooms, zones, sensors, hives) by name using fuzzy matching. Essential prerequisite tool for finding asset IDs before calling other tools. Returns minimal matched results with breadcrumb paths, match scores, and parent context. Searches across all asset types by default, with optional filters.\n\n" +
+  "Primary Users:\n" +
+  "- All Users: Find asset IDs by human-readable names before using other tools\n" +
+  "- IT Manager: Find sensors by MAC address for troubleshooting\n" +
+  "- Field Technician: Locate sensors/hives by name or serial number before site visits\n" +
+  "- Workplace Manager: Find rooms/spaces by common names (e.g., 'café', 'huddle room 3')\n\n" +
+  "Example Queries:\n" +
+  '1. "Find the main lobby" → returns room_lobby_123\n' +
+  '2. "Search for café or coffee shop" → fuzzy matches "Café Barista", "Coffee Bar"\n' +
+  '3. "Find Floor 6 in SF Tower" → returns floor_sf_tower_6\n' +
+  '4. "Search for sensors with MAC address starting with 00:1A" → matches sensors by MAC\n' +
+  '5. "Find all conference rooms" → searches room names containing "conference"\n' +
+  '6. "Locate hive with serial number HV-2023-001" → finds hive by serial\n' +
+  '7. "Search for Chicago office" → finds site/building matching "Chicago"\n' +
+  '8. "Find focus rooms on Floor 3" → searches for rooms with "focus" in name\n\n' +
+  "When to Use:\n" +
+  "- Know a space's name but not its ID (e.g., 'Café Barista' → room_cafe_123)\n" +
+  "- Looking for sensors/hives by MAC address or serial number\n" +
+  "- Find all assets of a specific type (e.g., all sites, all conference rooms)\n" +
+  "- Exploring org topology and don't know exact asset names\n" +
+  "- Want to find spaces with partial/fuzzy names (e.g., 'cafe' matches 'Café Barista')\n\n" +
+  "When NOT to Use:\n" +
+  "- Already have asset IDs and need detailed info → use butlr_get_asset_details directly\n" +
+  "- Want to browse full organizational hierarchy → use butlr_list_topology instead\n" +
+  "- Need to analyze occupancy or sensor data → use this tool first to find IDs, then use data tools\n\n" +
+  "Search Features: Fuzzy matching (handles typos), multi-field search (name, MAC, serial), score threshold (≥70), type filtering, result limiting (default 20, max 100)\n\n" +
+  "Example Workflow: butlr_search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +
+  "See Also: butlr_get_asset_details, butlr_list_topology, butlr_fetch_entity_details";
 
 /**
  * Input arguments for search_assets (inferred from Zod schema)
@@ -295,27 +261,8 @@ export function registerSearchAssets(server: McpServer): void {
     "butlr_search_assets",
     {
       title: "Search Butlr Assets",
-      description: searchAssetsTool.description,
-      inputSchema: {
-        query: z
-          .string()
-          .min(1, "query cannot be empty")
-          .max(500, "query too long (max: 500 chars)")
-          .describe("Search term to match against asset names"),
-        asset_types: z
-          .array(z.enum(VALID_ASSET_TYPES))
-          .min(1)
-          .max(VALID_ASSET_TYPES.length)
-          .optional()
-          .describe("Optional: Filter to specific asset types"),
-        max_results: z
-          .number()
-          .int()
-          .min(1)
-          .max(100)
-          .default(20)
-          .describe("Maximum number of results to return"),
-      },
+      description: SEARCH_ASSETS_DESCRIPTION,
+      inputSchema: searchAssetsInputShape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -328,7 +275,6 @@ export function registerSearchAssets(server: McpServer): void {
       const result = await executeSearchAssets(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        structuredContent: result as unknown as Record<string, unknown>,
       };
     }
   );
