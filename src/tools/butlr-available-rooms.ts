@@ -50,6 +50,14 @@ const availableRoomsInputShape = {
     )
     .optional()
     .describe("Limit to specific floor"),
+
+  max_results: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(50)
+    .describe("Maximum rooms to return (default: 50)"),
 };
 
 export const AvailableRoomsArgsSchema = z
@@ -469,8 +477,11 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
     console.error(`[available-rooms] ${availableRooms.length} rooms available (occupancy=0)`);
   }
 
-  // Sort by capacity (largest first)
+  // Sort by capacity (largest first) and limit results
   availableRooms.sort((a, b) => (b.capacity?.max || 0) - (a.capacity?.max || 0));
+  const totalAvailable = availableRooms.length;
+  const maxResults = args.max_results ?? 50;
+  const limitedRooms = availableRooms.slice(0, maxResults);
 
   // Calculate capacity range
   const capacities = availableRooms
@@ -498,7 +509,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
   // Build summary
   const summary = buildAvailableRoomsSummary({
-    count: availableRooms.length,
+    count: limitedRooms.length,
     roomType: args.tags?.[0],
     minCapacity: minCap,
     maxCapacity: maxCap,
@@ -507,8 +518,9 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   // Build response
   const response: any = {
     summary,
-    available_rooms: availableRooms,
-    total_available: availableRooms.length,
+    available_rooms: limitedRooms,
+    total_available: totalAvailable,
+    showing: limitedRooms.length,
     timestamp: new Date().toISOString(),
   };
 

@@ -233,7 +233,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
   }
 
   // Calculate utilization
-  const capacity = space.capacity?.max || 1;
+  const capacity = space.capacity?.max && space.capacity.max > 0 ? space.capacity.max : 1;
   const utilizationPercent = (currentOccupancy / capacity) * 100;
   const label = getOccupancyLabel(utilizationPercent);
 
