@@ -15,9 +15,7 @@ export default defineConfig({
         "**/__tests__/",
         "**/__mocks__/",
         "**/__fixtures__/",
-        "src/cli.ts",
         "src/index.ts",
-        "bin/**",
         "scripts/**",
       ],
       thresholds: {

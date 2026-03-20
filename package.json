@@ -4,12 +4,17 @@
   "description": "Model Context Protocol server providing secure, read-only access to Butlr occupancy and asset data",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "bin": {
-    "butlr-mcp": "./bin/cli.js"
+    "butlr-mcp": "./dist/index.js"
   },
   "files": [
-    "dist",
-    "bin"
+    "dist"
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -31,22 +36,35 @@
   },
   "keywords": [
     "mcp",
+    "mcp-server",
     "model-context-protocol",
     "butlr",
     "occupancy",
     "sensor",
+    "iot",
+    "smart-building",
     "graphql",
     "api"
   ],
   "author": "Butlr",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/butlrtechnologies/butlr-mcp.git"
+  },
+  "homepage": "https://github.com/butlrtechnologies/butlr-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/butlrtechnologies/butlr-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20.0.0"
   },
   "dependencies": {
     "@apollo/client": "^4.0.7",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "graphql": "^16.11.0",
     "lru-cache": "^11.0.2",
