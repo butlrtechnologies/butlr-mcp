@@ -16,7 +16,7 @@ const GET_OCCUPANCY_TIMESERIES_DESCRIPTION =
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const getOccupancyTimeseriesInputShape = {
-  asset_ids: z.array(z.string()).describe("Floor, room, or zone IDs"),
+  asset_ids: z.array(z.string()).min(1).max(50).describe("Floor, room, or zone IDs"),
 
   interval: z
     .enum(["1m", "1h", "1d"])

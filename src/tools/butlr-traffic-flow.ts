@@ -220,7 +220,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     // Analyze traffic sensors for this room
     const allSensors = sensorsResult.data?.sensors?.data || [];
     const roomSensors = allSensors.filter((s) => (s.room_id || s.roomID) === spaceId);
-    trafficSensors = roomSensors.filter((s) => s.mode === "traffic" && s.is_entrance === false);
+    trafficSensors = roomSensors.filter((s) => s.mode === "traffic" && s.is_entrance !== true);
 
     if (trafficSensors.length === 0) {
       throw new Error(

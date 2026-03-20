@@ -85,7 +85,7 @@ export interface FetchEntityDetailsArgs {
 function buildQueryForFields(type: string, fields: string[]): ReturnType<typeof gql> {
   // Defense-in-depth: reject any field name that isn't a simple identifier
   for (const field of fields) {
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(field)) {
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(field) || field.startsWith("__")) {
       throw new Error(`Invalid field name: ${field}`);
     }
   }

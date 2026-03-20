@@ -15,7 +15,7 @@ const GET_CURRENT_OCCUPANCY_DESCRIPTION =
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const getCurrentOccupancyInputShape = {
-  asset_ids: z.array(z.string()).describe("Floor, room, or zone IDs"),
+  asset_ids: z.array(z.string()).min(1).max(50).describe("Floor, room, or zone IDs"),
 };
 
 export const GetCurrentOccupancyArgsSchema = z.object(getCurrentOccupancyInputShape).strict();
