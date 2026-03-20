@@ -1,3 +1,4 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
@@ -467,4 +468,44 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
     },
     timestamp: new Date().toISOString(),
   };
+}
+
+/**
+ * Register butlr_get_asset_details with an McpServer instance
+ */
+export function registerGetAssetDetails(server: McpServer): void {
+  server.registerTool(
+    "butlr_get_asset_details",
+    {
+      title: "Get Butlr Asset Details",
+      description: getAssetDetailsTool.description,
+      inputSchema: {
+        ids: z
+          .array(z.string().min(1))
+          .min(1, "ids must contain at least 1 asset ID")
+          .max(50, "ids cannot exceed 50 assets")
+          .describe("Asset IDs to fetch (e.g., ['room_123', 'floor_456'])"),
+        include_children: z.boolean().default(true).describe("Include child assets"),
+        include_devices: z.boolean().default(false).describe("Include sensors and hives"),
+        include_parent_context: z
+          .boolean()
+          .default(true)
+          .describe("Include parent names for context"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      const validated = GetAssetDetailsArgsSchema.parse(args);
+      const result = await executeGetAssetDetails(validated);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
+    }
+  );
 }

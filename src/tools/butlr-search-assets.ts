@@ -1,3 +1,4 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { z } from "zod";
 import { GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
@@ -284,4 +285,51 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
     searched_assets: searchableAssets.length,
     timestamp: new Date().toISOString(),
   };
+}
+
+/**
+ * Register butlr_search_assets with an McpServer instance
+ */
+export function registerSearchAssets(server: McpServer): void {
+  server.registerTool(
+    "butlr_search_assets",
+    {
+      title: "Search Butlr Assets",
+      description: searchAssetsTool.description,
+      inputSchema: {
+        query: z
+          .string()
+          .min(1, "query cannot be empty")
+          .max(500, "query too long (max: 500 chars)")
+          .describe("Search term to match against asset names"),
+        asset_types: z
+          .array(z.enum(VALID_ASSET_TYPES))
+          .min(1)
+          .max(VALID_ASSET_TYPES.length)
+          .optional()
+          .describe("Optional: Filter to specific asset types"),
+        max_results: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .default(20)
+          .describe("Maximum number of results to return"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      const validated = SearchAssetsArgsSchema.parse(args);
+      const result = await executeSearchAssets(validated);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
+    }
+  );
 }

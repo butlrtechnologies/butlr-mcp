@@ -1,3 +1,4 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
@@ -729,4 +730,60 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
   }
 
   return response;
+}
+
+/**
+ * Register butlr_hardware_snapshot with an McpServer instance
+ */
+export function registerHardwareSnapshot(server: McpServer): void {
+  server.registerTool(
+    "butlr_hardware_snapshot",
+    {
+      title: "Butlr Hardware Health Snapshot",
+      description: hardwareSnapshotTool.description,
+      inputSchema: {
+        scope_type: z
+          .enum(["org", "site", "building", "floor"])
+          .default("org")
+          .describe("Scope of the health check"),
+        scope_id: z.string().min(1).optional().describe("Required if scope_type is not 'org'"),
+        include_battery_details: z
+          .boolean()
+          .default(false)
+          .describe("Include list of sensors needing battery service"),
+        battery_status_filter: z
+          .enum(["critical", "due_soon", "healthy", "all"])
+          .default("all")
+          .describe("Filter battery details by status"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .default(20)
+          .describe("Max devices in battery_details list"),
+        offline_devices_limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(500)
+          .default(20)
+          .describe("Max offline devices to show"),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false, // Real-time data changes between calls
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      const validated = HardwareSnapshotArgsSchema.parse(args);
+      const result = await executeHardwareSnapshot(validated);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        structuredContent: result as Record<string, unknown>,
+      };
+    }
+  );
 }
