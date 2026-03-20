@@ -340,6 +340,40 @@ describe("butlr_space_busyness - Integration", () => {
       );
     });
 
+    it("returns null utilization when capacity is not configured", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: {
+          room: {
+            id: "room_nocap",
+            name: "Unconfigured Room",
+            capacity: {},
+          },
+        },
+        loading: false,
+        networkStatus: 7,
+      } as any);
+
+      vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([
+        {
+          start: "2025-10-14T15:00:00Z",
+          measurement: "room_occupancy",
+          value: 5,
+          asset_id: "room_nocap",
+        },
+      ]);
+
+      const result = await executeSpaceBusyness({
+        space_id_or_name: "room_nocap",
+        include_trend: false,
+      });
+
+      expect(result.current.occupancy).toBe(5);
+      expect(result.current.utilization_percent).toBeNull();
+      expect(result.current.label).toBeNull();
+      expect(result.current.capacity_configured).toBe(false);
+      expect(result.warning).toContain("capacity");
+    });
+
     it("throws error if space not found", async () => {
       vi.mocked(apolloClient.query).mockResolvedValue({
         data: { room: null },

@@ -289,12 +289,14 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
 
       if (stats) {
         const typical = stats.mean;
-        const vsTypicalPercent =
-          typical > 0
-            ? ((currentOccupancy - typical) / typical) * 100
-            : currentOccupancy > 0
-              ? 100
-              : 0;
+        let vsTypicalPercent: number;
+        if (typical > 0) {
+          vsTypicalPercent = ((currentOccupancy - typical) / typical) * 100;
+        } else if (currentOccupancy > 0) {
+          vsTypicalPercent = 100;
+        } else {
+          vsTypicalPercent = 0;
+        }
         const trendLabel = getTrendLabel(vsTypicalPercent);
 
         response.trend = {

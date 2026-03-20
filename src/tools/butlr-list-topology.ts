@@ -1,7 +1,16 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { GET_FULL_TOPOLOGY, GET_ALL_SENSORS, GET_ALL_HIVES } from "../clients/queries/topology.js";
-import type { SitesResponse, Sensor, Hive } from "../clients/types.js";
+import type {
+  SitesResponse,
+  Site,
+  Building,
+  Floor,
+  Room,
+  Zone,
+  Sensor,
+  Hive,
+} from "../clients/types.js";
 import { z } from "zod";
 import {
   getCachedTopology,
@@ -77,7 +86,7 @@ export async function executeListTopology(
   );
 
   // Try to get cached topology
-  let sites: any[] = [];
+  let sites: Site[] = [];
   let partialData = false;
   const cached = getCachedTopology(cacheKey);
 
@@ -85,7 +94,7 @@ export async function executeListTopology(
     if (process.env.DEBUG) {
       console.error("[butlr-list-topology] Using cached topology");
     }
-    sites = cached.data.sites as any[];
+    sites = cached.data.sites as Site[];
   } else {
     // Fetch fresh topology
     if (process.env.DEBUG) {
@@ -193,10 +202,10 @@ export async function executeListTopology(
  * Groups by floor_id and nests under appropriate floors
  */
 function mergeSensorsAndHivesIntoTopology(
-  sites: any[],
+  sites: Site[],
   allSensors: Sensor[],
   allHives: Hive[]
-): any[] {
+): Site[] {
   // Group sensors by floor_id
   const sensorsByFloor: Record<string, Sensor[]> = {};
   for (const sensor of allSensors) {
@@ -239,39 +248,34 @@ function mergeSensorsAndHivesIntoTopology(
  * Filter topology to only include assets matching the provided IDs
  * Returns a subset of the topology tree
  */
-function filterTopologyByAssets(sites: any[], assetIds: string[]): any[] {
-  // For each asset ID, find it in the topology and include its subtree
+function filterTopologyByAssets(sites: Site[], assetIds: string[]): Site[] {
   const idSet = new Set(assetIds);
-  const filtered: any[] = [];
+  const filtered: Site[] = [];
 
   for (const site of sites) {
-    // Check if this site or any descendants match
     if (idSet.has(site.id)) {
       filtered.push(site);
       continue;
     }
 
-    // Check buildings
-    const matchedBuildings: any[] = [];
+    const matchedBuildings: Building[] = [];
     for (const building of site.buildings || []) {
       if (idSet.has(building.id)) {
         matchedBuildings.push(building);
         continue;
       }
 
-      // Check floors
-      const matchedFloors: any[] = [];
+      const matchedFloors: Floor[] = [];
       for (const floor of building.floors || []) {
         if (idSet.has(floor.id)) {
           matchedFloors.push(floor);
           continue;
         }
 
-        // Check rooms
-        const hasMatchedRoom = floor.rooms?.some((r: any) => idSet.has(r.id));
-        const hasMatchedZone = floor.zones?.some((z: any) => idSet.has(z.id));
-        const hasMatchedHive = floor.hives?.some((h: any) => idSet.has(h.id));
-        const hasMatchedSensor = floor.sensors?.some((s: any) => idSet.has(s.id));
+        const hasMatchedRoom = floor.rooms?.some((r: Room) => idSet.has(r.id));
+        const hasMatchedZone = floor.zones?.some((z: Zone) => idSet.has(z.id));
+        const hasMatchedHive = floor.hives?.some((h: Hive) => idSet.has(h.id));
+        const hasMatchedSensor = floor.sensors?.some((s: Sensor) => idSet.has(s.id));
 
         if (hasMatchedRoom || hasMatchedZone || hasMatchedHive || hasMatchedSensor) {
           matchedFloors.push(floor);

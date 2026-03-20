@@ -247,34 +247,32 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     periodDescription = "last hour";
   } else {
     // today - use site's timezone for local midnight
-    try {
-      const localMidnight = getLocalMidnight(new Date(), timezone);
+    const localMidnight = getLocalMidnight(new Date(), timezone);
 
-      if (isNaN(localMidnight.getTime())) {
-        throw new Error("getLocalMidnight returned invalid date");
-      }
-
-      start = localMidnight.toISOString();
-      periodDescription = `today (${tzMetadata.timezone_abbr})`;
-
-      if (process.env.DEBUG) {
-        console.error(
-          `[traffic-flow] Today starts at ${start} (midnight ${tzMetadata.timezone_abbr})`
-        );
-      }
-    } catch (midnightError: unknown) {
-      if (process.env.DEBUG) {
-        console.error(
-          "[traffic-flow] Failed to calculate local midnight, using UTC:",
-          midnightError
-        );
-      }
-      // Fallback to UTC midnight
-      const utcMidnight = new Date();
-      utcMidnight.setUTCHours(0, 0, 0, 0);
-      start = utcMidnight.toISOString();
-      periodDescription = "today (UTC fallback)";
+    if (isNaN(localMidnight.getTime())) {
+      // getLocalMidnight returns UTC midnight as fallback on error
       usedUtcFallback = true;
+    }
+
+    // Detect if getLocalMidnight silently fell back to UTC by comparing
+    // the result against a plain UTC midnight (which is what the internal fallback does)
+    const utcMidnight = new Date();
+    utcMidnight.setUTCHours(0, 0, 0, 0);
+    if (timezone !== "UTC" && Math.abs(localMidnight.getTime() - utcMidnight.getTime()) < 1000) {
+      // The result suspiciously matches UTC midnight for a non-UTC timezone —
+      // likely the internal fallback fired
+      usedUtcFallback = true;
+    }
+
+    start = localMidnight.toISOString();
+    periodDescription = usedUtcFallback
+      ? "today (UTC fallback)"
+      : `today (${tzMetadata.timezone_abbr})`;
+
+    if (process.env.DEBUG) {
+      console.error(
+        `[traffic-flow] Today starts at ${start} (midnight ${usedUtcFallback ? "UTC fallback" : tzMetadata.timezone_abbr})`
+      );
     }
   }
 
@@ -283,7 +281,14 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   }
 
   // Query traffic data with timezone
-  let trafficData: any[] = [];
+  interface TrafficDataPoint {
+    time: string;
+    sensor_id: string;
+    field: "in" | "out";
+    value: number;
+  }
+
+  let trafficData: TrafficDataPoint[] = [];
 
   try {
     const response = await new ReportingRequestBuilder()
@@ -299,18 +304,20 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       throw new Error("Expected array response from traffic query");
     }
 
-    trafficData = response.data;
+    trafficData = response.data as TrafficDataPoint[];
 
     if (process.env.DEBUG) {
       console.error(
         `[traffic-flow] Received ${trafficData.length} data points from ${trafficSensors.length} sensors`
       );
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
     if (process.env.DEBUG) {
       console.error(`[traffic-flow] Failed to get traffic data:`, error);
     }
-    throw new Error(`Failed to get traffic data for ${room.name}. ${error.message || error}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to get traffic data for ${room.name}. ${msg}`);
   }
 
   // Parse traffic data: group by time, then by sensor, then aggregate
