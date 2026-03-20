@@ -13,7 +13,7 @@ export function withToolErrorHandling(
       return await handler(args);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      debug("tool-error", message);
+      debug("tool-error", message, error);
       return {
         content: [{ type: "text" as const, text: message }],
         isError: true,
