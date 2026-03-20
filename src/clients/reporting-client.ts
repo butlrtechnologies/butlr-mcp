@@ -1,4 +1,3 @@
-import { request as httpRequest } from "undici";
 import { authClient } from "./auth-client.js";
 
 /**
@@ -207,7 +206,7 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
     const token = await authClient.getToken();
 
     // Make request
-    const response = await httpRequest(REPORTING_ENDPOINT, {
+    const response = await fetch(REPORTING_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -216,18 +215,18 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
       body: JSON.stringify(requestBody),
     });
 
-    if (response.statusCode !== 200) {
-      const errorBody = await response.body.text();
+    if (!response.ok) {
+      const errorBody = await response.text();
       if (process.env.DEBUG) {
         console.error(`[reporting-client] API error body: ${errorBody}`);
       }
       throw new ApiError(
-        response.statusCode,
-        `Butlr API error (${response.statusCode}). Enable DEBUG=butlr-mcp for details.`
+        response.status,
+        `Butlr API error (${response.status}). Enable DEBUG=butlr-mcp for details.`
       );
     }
 
-    const data = (await response.body.json()) as ReportingResponse;
+    const data = (await response.json()) as ReportingResponse;
 
     if (process.env.DEBUG) {
       console.error(`[reporting-client] Response: ${data.data?.length || 0} data points`);

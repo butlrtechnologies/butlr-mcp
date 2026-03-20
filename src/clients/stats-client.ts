@@ -1,4 +1,3 @@
-import { request as httpRequest } from "undici";
 import { authClient } from "./auth-client.js";
 import { ApiError } from "./reporting-client.js";
 
@@ -71,7 +70,7 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
     const token = await authClient.getToken();
 
     // Make request
-    const response = await httpRequest(STATS_ENDPOINT, {
+    const response = await fetch(STATS_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -80,11 +79,11 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
       body: JSON.stringify(statsRequest),
     });
 
-    if (response.statusCode !== 200) {
-      const errorBody = await response.body.text();
+    if (!response.ok) {
+      const errorBody = await response.text();
 
       // Special handling for 504 Gateway Timeout
-      if (response.statusCode === 504) {
+      if (response.status === 504) {
         console.error(`[stats-client] 504 Gateway Timeout - stats service may be overloaded`);
         throw new ApiError(
           504,
@@ -96,12 +95,12 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
         console.error(`[stats-client] API error body: ${errorBody}`);
       }
       throw new ApiError(
-        response.statusCode,
-        `Butlr API error (${response.statusCode}). Enable DEBUG=butlr-mcp for details.`
+        response.status,
+        `Butlr API error (${response.status}). Enable DEBUG=butlr-mcp for details.`
       );
     }
 
-    const data = (await response.body.json()) as StatsResponse;
+    const data = (await response.json()) as StatsResponse;
 
     if (process.env.DEBUG) {
       console.error(
