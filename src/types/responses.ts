@@ -228,3 +228,83 @@ export interface CurrentOccupancyResponse {
   timestamp: string;
   timezone_note: string;
 }
+
+// ---------------------------------------------------------------------------
+// butlr_hardware_snapshot
+// ---------------------------------------------------------------------------
+
+export type BatteryStatus = "critical" | "due_soon" | "healthy" | "unknown" | "no_battery";
+
+export interface BatteryDetail {
+  sensor_id: string;
+  sensor_name: string;
+  mac_address: string;
+  path: string;
+  status: BatteryStatus;
+  battery_change_by_date: string;
+  days_remaining: number;
+  last_battery_change_date?: string;
+  next_battery_change_date?: string;
+}
+
+export interface FloorBreakdown {
+  floor_id: string;
+  floor_name: string;
+  sensors_online: number;
+  sensors_total: number;
+  percent_online: number;
+  batteries_critical: number;
+  batteries_due_soon: number;
+}
+
+export interface OfflineDevice {
+  type: "sensor" | "hive";
+  id: string;
+  name: string;
+  serial_number?: string;
+  mac_address?: string;
+  path: string;
+  last_heartbeat?: string;
+  hours_offline?: number;
+}
+
+export interface HardwareSnapshotResponse {
+  summary: string;
+  sensors: {
+    total: number;
+    online: number;
+    offline: number;
+    percent_online: number;
+  };
+  hives: {
+    total: number;
+    online: number;
+    offline: number;
+    percent_online: number;
+  };
+  battery_health: Record<string, number>;
+  scope: {
+    type: string;
+    id?: string;
+    name: string;
+  };
+  timestamp: string;
+  test_devices_excluded?: {
+    sensors: { mirror: number; placeholder: number; total: number };
+    hives: { fake: number; placeholder: number; total: number };
+    note: string;
+  };
+  battery_details?: BatteryDetail[];
+  battery_details_truncated?: boolean;
+  battery_details_total?: number;
+  breakdown_by_floor?: FloorBreakdown[];
+  offline_devices?: OfflineDevice[];
+  offline_devices_summary?: {
+    sensors_offline: number;
+    hives_offline: number;
+    total_offline: number;
+    showing: number;
+  };
+  offline_devices_truncated?: boolean;
+  offline_devices_total?: number;
+}
