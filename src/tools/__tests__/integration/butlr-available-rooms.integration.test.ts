@@ -309,7 +309,7 @@ describe("butlr_available_rooms - Integration", () => {
         expect(room.name).toBeDefined();
         expect(room.path).toBeDefined();
         expect(room.capacity).toBeDefined();
-        expect(room.available_for_minutes).toBe(5);
+        expect(room.data_window_minutes).toBe(5);
       }
     });
   });

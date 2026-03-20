@@ -9,7 +9,12 @@ import {
   generateTopologyCacheKey,
 } from "../cache/topology-cache.js";
 import { formatTopologyTree } from "../utils/tree-formatter.js";
-import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
+import {
+  isProductionSensor,
+  isProductionHive,
+  rethrowIfGraphQLError,
+} from "../utils/graphql-helpers.js";
+import type { ListTopologyResponse } from "../types/responses.js";
 
 const LIST_TOPOLOGY_DESCRIPTION =
   "Display org hierarchy tree with flexible depth control. Can show full tree, specific subtrees, or flat lists. " +
@@ -45,19 +50,14 @@ const listTopologyInputShape = {
 
 export const ListTopologyArgsSchema = z.object(listTopologyInputShape).strict();
 
-/**
- * Input arguments for butlr_list_topology
- */
-export interface ListTopologyArgs {
-  asset_ids?: string[];
-  starting_depth?: number;
-  traversal_depth?: number;
-}
+type ListTopologyArgs = z.output<typeof ListTopologyArgsSchema>;
 
 /**
  * Execute butlr_list_topology tool
  */
-export async function executeListTopology(args: ListTopologyArgs = {}) {
+export async function executeListTopology(
+  args: ListTopologyArgs = {} as ListTopologyArgs
+): Promise<ListTopologyResponse> {
   const startingDepth = args.starting_depth ?? 0;
   const traversalDepth = args.traversal_depth ?? 0;
   const assetIds = args.asset_ids ?? [];
@@ -78,6 +78,7 @@ export async function executeListTopology(args: ListTopologyArgs = {}) {
 
   // Try to get cached topology
   let sites: any[] = [];
+  let partialData = false;
   const cached = getCachedTopology(cacheKey);
 
   if (cached && cached.data && cached.data.sites) {
@@ -106,9 +107,10 @@ export async function executeListTopology(args: ListTopologyArgs = {}) {
         throw new Error("Invalid response structure from API");
       }
 
-      // Log if we got errors but still have data (partial success)
-      if (result.error && process.env.DEBUG) {
-        console.error(`[butlr-list-topology] Warning: GraphQL errors present, but got data anyway`);
+      // Track whether the topology data is partial (errors alongside data)
+      partialData = !!result.error;
+      if (partialData && process.env.DEBUG) {
+        console.error(`[butlr-list-topology] Warning: GraphQL errors present, data may be partial`);
       }
 
       sites = result.data.sites.data;
@@ -131,19 +133,8 @@ export async function executeListTopology(args: ListTopologyArgs = {}) {
 
       // Filter out test/placeholder devices from topology listing
       // (Note: These filters are ONLY for topology display, not occupancy queries)
-      const allSensors = (sensorsResult.data?.sensors?.data || []).filter(
-        (s) =>
-          s.mac_address &&
-          s.mac_address.trim() !== "" &&
-          !s.mac_address.startsWith("mi-rr-or") && // Mirror/virtual sensors
-          !s.mac_address.startsWith("fa-ke") // Fake test sensors
-      );
-      const allHives = (hivesResult.data?.hives?.data || []).filter(
-        (h) =>
-          h.serialNumber &&
-          h.serialNumber.trim() !== "" &&
-          !h.serialNumber.toLowerCase().startsWith("fake") // Fake test hives
-      );
+      const allSensors = (sensorsResult.data?.sensors?.data || []).filter(isProductionSensor);
+      const allHives = (hivesResult.data?.hives?.data || []).filter(isProductionHive);
 
       if (process.env.DEBUG) {
         console.error(
@@ -154,18 +145,18 @@ export async function executeListTopology(args: ListTopologyArgs = {}) {
       // Merge sensors and hives into topology by floor_id
       sites = mergeSensorsAndHivesIntoTopology(sites, allSensors, allHives);
 
-      // Cache for future requests
-      setCachedTopology(cacheKey, { sites });
+      // Only cache complete topology data — partial results should be re-fetched
+      if (!partialData) {
+        setCachedTopology(cacheKey, { sites });
 
-      if (process.env.DEBUG) {
-        console.error(`[butlr-list-topology] Cached topology with ${sites.length} sites`);
+        if (process.env.DEBUG) {
+          console.error(`[butlr-list-topology] Cached topology with ${sites.length} sites`);
+        }
+      } else if (process.env.DEBUG) {
+        console.error(`[butlr-list-topology] Skipping cache — topology data is partial`);
       }
-    } catch (error: any) {
-      if (error && (error.graphQLErrors || error.networkError)) {
-        const mcpError = translateGraphQLError(error);
-        const errorMessage = formatMCPError(mcpError);
-        throw new Error(errorMessage);
-      }
+    } catch (error: unknown) {
+      rethrowIfGraphQLError(error);
       throw error;
     }
   }
@@ -179,7 +170,7 @@ export async function executeListTopology(args: ListTopologyArgs = {}) {
   // Format as tree with depth controls
   const tree = formatTopologyTree(filteredSites, startingDepth, traversalDepth);
 
-  return {
+  const response: ListTopologyResponse = {
     tree,
     query_params: {
       starting_depth: startingDepth,
@@ -188,6 +179,13 @@ export async function executeListTopology(args: ListTopologyArgs = {}) {
     },
     timestamp: new Date().toISOString(),
   };
+
+  if (partialData) {
+    response.warning =
+      "Topology data may be incomplete — the API returned partial results due to upstream errors.";
+  }
+
+  return response;
 }
 
 /**

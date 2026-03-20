@@ -1,13 +1,23 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { apolloClient } from "../clients/graphql-client.js";
-import { GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
 import { ReportingRequestBuilder } from "../clients/reporting-client.js";
-import type { Sensor, Site } from "../clients/types.js";
 import { z } from "zod";
-import { detectAssetType } from "../utils/asset-helpers.js";
 import { validateTimeRange } from "../utils/time-range-validator.js";
-import { buildTimezoneMetadata, getTimezoneForAsset } from "../utils/timezone-helpers.js";
-import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
+import {
+  fetchTopologyAndSensors,
+  resolveAssetContext,
+  getPresenceMeasurement,
+  getTrafficMeasurement,
+  getPresenceCoverageNote,
+  getTrafficCoverageNote,
+  buildRecommendation,
+} from "../utils/occupancy-helpers.js";
+import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import type {
+  OccupancyTimeseriesResponse,
+  AssetOccupancyTimeseries,
+  TimeseriesMeasurementData,
+  TimeseriesPoint,
+} from "../types/responses.js";
 
 const GET_OCCUPANCY_TIMESERIES_DESCRIPTION =
   "Get occupancy timeseries data for floors, rooms, or zones. Automatically queries both traffic and presence measurements, " +
@@ -29,308 +39,141 @@ const getOccupancyTimeseriesInputShape = {
 
 export const GetOccupancyTimeseriesArgsSchema = z.object(getOccupancyTimeseriesInputShape).strict();
 
-/**
- * Input arguments
- */
-export interface GetOccupancyTimeseriesArgs {
-  asset_ids: string[];
-  interval: string;
-  start: string;
-  stop: string;
-}
+/** Inferred args type — no manual interface needed */
+type GetOccupancyTimeseriesArgs = z.output<typeof GetOccupancyTimeseriesArgsSchema>;
 
 /**
- * Measurement data for an asset
+ * Query a single measurement type and map to TimeseriesPoint[].
+ * Returns the array on success, or undefined on failure (with warning set on data).
  */
-interface MeasurementData {
-  available: boolean;
-  sensor_count?: number;
-  entrance_sensor_count?: number;
-  coverage_note?: string;
-  warning?: string;
-  timeseries: any[];
-}
+async function queryTimeseries(
+  assetType: string,
+  assetId: string,
+  measurement: string,
+  start: string,
+  stop: string,
+  interval: string
+): Promise<TimeseriesPoint[] | undefined> {
+  const response = await new ReportingRequestBuilder()
+    .assets(assetType, [assetId])
+    .measurements([measurement])
+    .timeRange(start, stop)
+    .window(interval, "median")
+    .execute();
 
-/**
- * Occupancy data for a single asset
- */
-interface AssetOccupancyData {
-  asset_id: string;
-  asset_type: string;
-  asset_name?: string;
-  site_timezone: string;
-  timezone_offset: string;
-  timezone_abbr: string;
-  current_local_time: string;
-  dst_active: boolean;
-  presence: MeasurementData;
-  traffic: MeasurementData;
-  recommended_measurement: "presence" | "traffic" | "none";
-  recommendation_reason: string;
+  if (response.data && Array.isArray(response.data)) {
+    return response.data.map(
+      (d): TimeseriesPoint => ({
+        timestamp: new Date(d.time).toISOString(),
+        value: d.value,
+      })
+    );
+  }
+  return [];
 }
 
 /**
  * Execute unified occupancy timeseries tool
  */
-export async function executeGetOccupancyTimeseries(args: GetOccupancyTimeseriesArgs) {
-  // Validate inputs
-  if (!args.asset_ids || !Array.isArray(args.asset_ids) || args.asset_ids.length === 0) {
-    throw new Error("asset_ids is required and must be a non-empty array");
-  }
-
-  if (!["1m", "1h", "1d"].includes(args.interval)) {
-    throw new Error("interval must be one of: 1m, 1h, 1d");
-  }
-
-  // Validate time range
-  try {
-    validateTimeRange(args.interval, args.start, args.stop);
-  } catch (error: any) {
-    throw new Error(error.message);
-  }
+export async function executeGetOccupancyTimeseries(
+  args: GetOccupancyTimeseriesArgs
+): Promise<OccupancyTimeseriesResponse> {
+  // Validate time range — let errors throw naturally
+  validateTimeRange(args.interval, args.start, args.stop);
 
   if (process.env.DEBUG) {
     console.error(`[butlr-get-occupancy-timeseries] Querying ${args.asset_ids.length} assets`);
   }
 
-  // Query topology and sensors
-  let topoResult, sensorsResult;
-  try {
-    [topoResult, sensorsResult] = await Promise.all([
-      apolloClient.query<{ sites: { data: Site[] } }>({
-        query: GET_FULL_TOPOLOGY,
-        fetchPolicy: "network-only",
-      }),
-      apolloClient.query<{ sensors: { data: Sensor[] } }>({
-        query: GET_ALL_SENSORS,
-        fetchPolicy: "network-only",
-      }),
-    ]);
-  } catch (error: any) {
-    if (error && (error.graphQLErrors || error.networkError)) {
-      const mcpError = translateGraphQLError(error);
-      const errorMessage = formatMCPError(mcpError);
-      throw new Error(errorMessage);
-    }
-    throw error;
-  }
-
-  const sites = topoResult.data?.sites?.data || [];
-  const buildings = sites.flatMap((s) => s.buildings || []);
-  const floors = buildings.flatMap((b) => b.floors || []);
-  const allSensors = sensorsResult.data?.sensors?.data || [];
-
-  // Filter out test/placeholder sensors
-  const productionSensors = allSensors.filter(
-    (s) =>
-      s.mac_address &&
-      s.mac_address.trim() !== "" &&
-      !s.mac_address.startsWith("mi-rr-or") &&
-      !s.mac_address.startsWith("fa-ke")
-  );
+  // Fetch topology and sensors in parallel
+  const ctx = await fetchTopologyAndSensors();
 
   // Process each asset
-  const assetData: AssetOccupancyData[] = [];
+  const assets: AssetOccupancyTimeseries[] = [];
 
   for (const assetId of args.asset_ids) {
-    const assetType = detectAssetType(assetId);
+    const asset = resolveAssetContext(assetId, ctx);
 
-    if (!["floor", "room", "zone"].includes(assetType)) {
-      throw new Error(`Asset ${assetId} must be a floor, room, or zone. Got: ${assetType}`);
-    }
-
-    // Get timezone for this asset
-    const timezone = getTimezoneForAsset(
-      assetId,
-      assetType as "floor" | "room" | "zone",
-      floors,
-      buildings,
-      sites
-    );
-
-    if (!timezone) {
-      throw new Error(`Could not determine timezone for asset ${assetId}`);
-    }
-
-    const tzMetadata = buildTimezoneMetadata(timezone);
-
-    // Get asset name
-    let assetName: string | undefined;
-    if (assetType === "floor") {
-      assetName = floors.find((f) => f.id === assetId)?.name;
-    } else if (assetType === "room") {
-      for (const floor of floors) {
-        const room = floor.rooms?.find((r) => r.id === assetId);
-        if (room) {
-          assetName = room.name;
-          break;
-        }
-      }
-    } else if (assetType === "zone") {
-      for (const floor of floors) {
-        const zone = floor.zones?.find((z) => z.id === assetId);
-        if (zone) {
-          assetName = zone.name;
-          break;
-        }
-      }
-    }
-
-    // Filter sensors for this asset
-    const assetSensors = productionSensors.filter((s) => {
-      const sensorFloorId = s.floor_id || s.floorID;
-      const sensorRoomId = s.room_id || s.roomID;
-
-      if (assetType === "floor") {
-        return sensorFloorId === assetId;
-      } else if (assetType === "room") {
-        return sensorRoomId === assetId;
-      } else if (assetType === "zone") {
-        // Zones don't have direct sensor assignments in our current model
-        // Would need to check sensor.zone_ids array
-        return false;
-      }
-      return false;
-    });
-
-    // Analyze sensor configuration
-    const presenceSensors = assetSensors.filter((s) => s.mode === "presence");
-
-    let trafficSensors: Sensor[];
-    if (assetType === "floor") {
-      // Floor traffic: entrance sensors only
-      trafficSensors = assetSensors.filter((s) => s.mode === "traffic" && s.is_entrance === true);
-    } else if (assetType === "room") {
-      // Room traffic: non-entrance sensors
-      trafficSensors = assetSensors.filter((s) => s.mode === "traffic" && s.is_entrance === false);
-    } else {
-      // Zones don't support traffic
-      trafficSensors = [];
-    }
-
-    // Query presence data if sensors available
-    const presenceData: MeasurementData = {
-      available: presenceSensors.length > 0,
-      sensor_count: presenceSensors.length,
+    // Build presence measurement data
+    const presenceData: TimeseriesMeasurementData = {
+      available: asset.presenceSensors.length > 0,
+      sensor_count: asset.presenceSensors.length,
+      coverage_note: getPresenceCoverageNote(asset.assetType, asset.presenceSensors.length),
       timeseries: [],
     };
 
-    if (presenceSensors.length > 0) {
-      const measurement =
-        assetType === "floor"
-          ? "floor_occupancy"
-          : assetType === "room"
-            ? "room_occupancy"
-            : "zone_occupancy";
-
-      presenceData.coverage_note =
-        assetType === "floor"
-          ? `Presence data from ${presenceSensors.length} sensors. May not cover entire floor area.`
-          : `Presence data from ${presenceSensors.length} sensors.`;
-
+    if (asset.presenceSensors.length > 0) {
+      const measurement = getPresenceMeasurement(asset.assetType);
       try {
-        const response = await new ReportingRequestBuilder()
-          .assets(assetType, [assetId])
-          .measurements([measurement])
-          .timeRange(args.start, args.stop)
-          .window(args.interval, "median")
-          .execute();
-
-        if (response.data && Array.isArray(response.data)) {
-          presenceData.timeseries = response.data.map((d) => ({
-            timestamp: new Date(d.time).toISOString(),
-            value: d.value,
-          }));
+        const points = await queryTimeseries(
+          asset.assetType,
+          assetId,
+          measurement,
+          args.start,
+          args.stop,
+          args.interval
+        );
+        if (points) {
+          presenceData.timeseries = points;
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error(`[occupancy-timeseries] Presence query failed:`, error);
         presenceData.warning =
           "Failed to retrieve presence timeseries data. Results may be incomplete.";
       }
-    } else {
-      presenceData.coverage_note =
-        assetType === "zone"
-          ? "Zones support presence measurement only."
-          : `No presence sensors configured for this ${assetType}.`;
     }
 
-    // Query traffic data if sensors available
-    const trafficData: MeasurementData = {
-      available: trafficSensors.length > 0,
-      entrance_sensor_count: assetType === "floor" ? trafficSensors.length : undefined,
-      sensor_count: assetType === "room" ? trafficSensors.length : undefined,
+    // Build traffic measurement data
+    const trafficData: TimeseriesMeasurementData = {
+      available: asset.trafficSensors.length > 0,
+      entrance_sensor_count: asset.assetType === "floor" ? asset.trafficSensors.length : undefined,
+      sensor_count: asset.assetType === "room" ? asset.trafficSensors.length : undefined,
+      coverage_note: getTrafficCoverageNote(asset.assetType, asset.trafficSensors.length),
       timeseries: [],
     };
 
-    if (trafficSensors.length > 0) {
-      const measurement =
-        assetType === "floor" ? "traffic_floor_occupancy" : "traffic_room_occupancy";
-
-      trafficData.coverage_note =
-        assetType === "floor"
-          ? `Traffic data from ${trafficSensors.length} main entrance sensors.`
-          : `Traffic data from ${trafficSensors.length} sensors (non-entrance).`;
-
+    if (asset.trafficSensors.length > 0 && asset.assetType !== "zone") {
+      const measurement = getTrafficMeasurement(asset.assetType as "floor" | "room");
       try {
-        const response = await new ReportingRequestBuilder()
-          .assets(assetType, [assetId])
-          .measurements([measurement])
-          .timeRange(args.start, args.stop)
-          .window(args.interval, "median")
-          .execute();
-
-        if (response.data && Array.isArray(response.data)) {
-          trafficData.timeseries = response.data.map((d) => ({
-            timestamp: new Date(d.time).toISOString(),
-            value: d.value,
-          }));
+        const points = await queryTimeseries(
+          asset.assetType,
+          assetId,
+          measurement,
+          args.start,
+          args.stop,
+          args.interval
+        );
+        if (points) {
+          trafficData.timeseries = points;
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error(`[occupancy-timeseries] Traffic query failed:`, error);
         trafficData.warning =
           "Failed to retrieve traffic timeseries data. Results may be incomplete.";
       }
-    } else {
-      if (assetType === "zone") {
-        trafficData.coverage_note = "Zones do not support traffic measurement.";
-      } else if (assetType === "floor") {
-        trafficData.coverage_note =
-          "No main entrance sensors configured. Floor does not have traffic data.";
-      } else {
-        trafficData.coverage_note = "No traffic sensors configured for this room.";
-      }
     }
 
-    // Determine recommendation
-    let recommended: "presence" | "traffic" | "none" = "none";
-    let reason = "No occupancy data available for this asset.";
+    // Recommendation checks data success, not just sensor count
+    const recommendation = buildRecommendation(
+      presenceData,
+      trafficData,
+      presenceData.timeseries.length > 0,
+      trafficData.timeseries.length > 0
+    );
 
-    if (presenceData.available && trafficData.available) {
-      recommended = "presence";
-      reason =
-        "Both measurements available. Presence shows current occupants; traffic shows entry/exit flow.";
-    } else if (presenceData.available) {
-      recommended = "presence";
-      reason = "Only presence data available (direct occupant count).";
-    } else if (trafficData.available) {
-      recommended = "traffic";
-      reason = "Only traffic data available (entry/exit counts).";
-    }
-
-    assetData.push({
+    assets.push({
       asset_id: assetId,
-      asset_type: assetType,
-      asset_name: assetName,
-      ...tzMetadata,
+      asset_type: asset.assetType,
+      asset_name: asset.assetName,
+      ...asset.tzMetadata,
       presence: presenceData,
       traffic: trafficData,
-      recommended_measurement: recommended,
-      recommendation_reason: reason,
+      ...recommendation,
     });
   }
 
   return {
-    assets: assetData,
+    assets,
     interval: args.interval,
     start: args.start,
     stop: args.stop,
@@ -358,11 +201,16 @@ export function registerGetOccupancyTimeseries(server: McpServer): void {
       },
     },
     async (args) => {
-      const validated = GetOccupancyTimeseriesArgsSchema.parse(args);
-      const result = await executeGetOccupancyTimeseries(validated);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-      };
+      try {
+        const validated = GetOccupancyTimeseriesArgsSchema.parse(args);
+        const result = await executeGetOccupancyTimeseries(validated);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (error: unknown) {
+        rethrowIfGraphQLError(error);
+        throw error;
+      }
     }
   );
 }

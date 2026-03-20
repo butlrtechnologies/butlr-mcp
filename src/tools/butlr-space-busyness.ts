@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
-import type { Room, Zone } from "../clients/types.js";
+import type { Room, Zone, Floor } from "../clients/types.js";
 import { getCurrentOccupancy } from "../clients/reporting-client.js";
 import { getSingleAssetStats } from "../clients/stats-client.js";
 import { executeSearchAssets } from "./butlr-search-assets.js";
@@ -14,13 +14,24 @@ import {
   formatDayAndTime,
 } from "../utils/natural-language.js";
 import { getCachedOccupancy, setCachedOccupancy } from "../cache/occupancy-cache.js";
-import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
+import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import type { SpaceBusynessResponse } from "../types/responses.js";
 
-/**
- * Zod validation schema for butlr_space_busyness
- */
+/** Room with floor populated via GraphQL (includes building/site for timezone) */
+type RoomWithFloor = Room & {
+  floor: Floor & {
+    building: { id: string; name: string; site_id: string; site?: { timezone: string } };
+  };
+};
 
-/** Shared shape — used by both registerTool (SDK schema) and full validation */
+/** Zone with floor populated via GraphQL (includes building/site for timezone) */
+type ZoneWithFloor = Zone & {
+  floor: Floor & {
+    building: { id: string; name: string; site_id: string; site?: { timezone: string } };
+  };
+};
+
+/** Shared shape -- used by both registerTool (SDK schema) and full validation */
 const spaceBusynessInputShape = {
   space_id_or_name: z
     .string()
@@ -64,17 +75,11 @@ const SPACE_BUSYNESS_DESCRIPTION =
   "- Historical utilization patterns → use butlr_get_occupancy_timeseries for time series data\n" +
   "- Entry/exit traffic counts (lobby, building entrance) → use butlr_traffic_flow instead\n" +
   "- Searching for a space first → use butlr_search_assets to find room/zone ID by name\n\n" +
-  "Qualitative Labels: Quiet (<30% utilized), Moderate (30-70%), Busy (70-90%), Very Busy (>90%)\n\n" +
+  "Qualitative Labels: Quiet (<30% utilized), Moderate (30-70%), Busy (>=70%)\n\n" +
   "See Also: butlr_get_current_occupancy, butlr_traffic_flow, butlr_search_assets, butlr_get_occupancy_timeseries";
 
-/**
- * Input arguments (inferred from Zod schema)
- */
 export type SpaceBusynessArgs = z.output<typeof SpaceBusynessArgsSchema>;
 
-/**
- * GraphQL queries
- */
 const GET_ROOM = gql`
   query GetRoom($roomId: ID!) {
     room(id: $roomId) {
@@ -94,6 +99,9 @@ const GET_ROOM = gql`
           id
           name
           site_id
+          site {
+            timezone
+          }
         }
       }
     }
@@ -118,6 +126,9 @@ const GET_ZONE = gql`
           id
           name
           site_id
+          site {
+            timezone
+          }
         }
       }
     }
@@ -163,12 +174,13 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
   }
 
   // Query space details
-  let space: any = null;
+  let space: RoomWithFloor | ZoneWithFloor | null = null;
   let spacePath = "";
+  let spaceTimezone: string | undefined;
 
   try {
     if (spaceType === "room") {
-      const result = await apolloClient.query<{ room: Room }>({
+      const result = await apolloClient.query<{ room: RoomWithFloor }>({
         query: GET_ROOM,
         variables: { roomId: spaceId },
         fetchPolicy: "network-only",
@@ -182,8 +194,9 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       const floor = space.floor;
       const building = floor?.building;
       spacePath = building ? `${building.name} > ${floor.name} > ${space.name}` : space.name;
+      spaceTimezone = building?.site?.timezone;
     } else {
-      const result = await apolloClient.query<{ zone: Zone }>({
+      const result = await apolloClient.query<{ zone: ZoneWithFloor }>({
         query: GET_ZONE,
         variables: { zoneId: spaceId },
         fetchPolicy: "network-only",
@@ -197,13 +210,10 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       const floor = space.floor;
       const building = floor?.building;
       spacePath = building ? `${building.name} > ${floor.name} > ${space.name}` : space.name;
+      spaceTimezone = building?.site?.timezone;
     }
-  } catch (error: any) {
-    if (error && (error.graphQLErrors || error.networkError)) {
-      const mcpError = translateGraphQLError(error);
-      const errorMessage = formatMCPError(mcpError);
-      throw new Error(errorMessage);
-    }
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
     throw error;
   }
 
@@ -224,7 +234,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
         currentOccupancy = occupancyData[0].value;
         setCachedOccupancy(spaceId, currentOccupancy, spaceType, now);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(`[space-busyness] Failed to get occupancy:`, error);
       throw new Error(
         `Failed to get current occupancy for ${space.name}. The space may not have active sensors.`
@@ -232,13 +242,22 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
     }
   }
 
-  // Calculate utilization
-  const capacity = space.capacity?.max && space.capacity.max > 0 ? space.capacity.max : 1;
-  const utilizationPercent = (currentOccupancy / capacity) * 100;
-  const label = getOccupancyLabel(utilizationPercent);
+  // Calculate utilization (null when capacity is not configured)
+  const capacityConfigured = !!(space.capacity?.max && space.capacity.max > 0);
+  const utilizationPercent = capacityConfigured
+    ? (currentOccupancy / space.capacity!.max!) * 100
+    : null;
+  const label = utilizationPercent !== null ? getOccupancyLabel(utilizationPercent) : null;
 
   // Build response
-  const response: any = {
+  const warnings: string[] = [];
+  if (!capacityConfigured) {
+    warnings.push(
+      "Capacity is not configured for this space. Utilization percentage and busyness label are unavailable. Configure capacity in the Butlr dashboard for richer insights."
+    );
+  }
+
+  const response: SpaceBusynessResponse = {
     space: {
       id: space.id,
       name: space.name,
@@ -248,19 +267,24 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
     current: {
       occupancy: Math.round(currentOccupancy),
       capacity: space.capacity,
-      utilization_percent: parseFloat(utilizationPercent.toFixed(1)),
+      utilization_percent:
+        utilizationPercent !== null ? parseFloat(utilizationPercent.toFixed(1)) : null,
       label,
+      capacity_configured: capacityConfigured,
       as_of: now.toISOString(),
     },
-    recommendation: getBusinessRecommendation(label),
+    recommendation: label
+      ? getBusinessRecommendation(label)
+      : "Unable to assess busyness without configured capacity.",
+    summary: "", // Populated below
     timestamp: now.toISOString(),
   };
 
   // Get trend if requested
   if (args.include_trend !== false) {
     try {
-      // Query last 4 weeks of data
-      const measurement = spaceType === "room" ? "room_occupancy" : "zone_occupancy";
+      // Query last 4 weeks of data (v4 Stats API uses occupancy_avg_presence for both rooms and zones)
+      const measurement = "occupancy_avg_presence";
       const stats = await getSingleAssetStats(measurement, spaceId, "-4w", "now");
 
       if (stats) {
@@ -277,25 +301,32 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
           typical_for_time: parseFloat(typical.toFixed(1)),
           vs_typical_percent: parseFloat(vsTypicalPercent.toFixed(1)),
           trend_label: trendLabel,
-          historical_context: `${formatDayAndTime(now)} avg: ${Math.round(typical)} people (last 4 weeks)`,
+          historical_context: `${formatDayAndTime(now, spaceTimezone)} avg: ${Math.round(typical)} people (last 4 weeks)`,
         };
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(`[space-busyness] Failed to get trend data:`, error);
-      response.warning =
-        "Could not retrieve historical trend data. Trend comparison is unavailable.";
+      warnings.push("Could not retrieve historical trend data. Trend comparison is unavailable.");
     }
   }
 
   // Build summary
-  response.summary = buildBusynessSummary({
-    spaceName: space.name,
-    occupancy: Math.round(currentOccupancy),
-    capacity,
-    utilizationPercent,
-    trendLabel: response.trend?.trend_label,
-    dayTime: formatDayAndTime(now),
-  });
+  if (capacityConfigured && utilizationPercent !== null) {
+    response.summary = buildBusynessSummary({
+      spaceName: space.name,
+      occupancy: Math.round(currentOccupancy),
+      capacity: space.capacity!.max!,
+      utilizationPercent,
+      trendLabel: response.trend?.trend_label,
+      dayTime: formatDayAndTime(now, spaceTimezone),
+    });
+  } else {
+    response.summary = `${space.name}: ${Math.round(currentOccupancy)} people (capacity not configured)`;
+  }
+
+  if (warnings.length > 0) {
+    response.warning = warnings.join(" ");
+  }
 
   return response;
 }

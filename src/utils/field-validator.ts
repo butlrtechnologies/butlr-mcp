@@ -3,9 +3,23 @@
  * Validates that requested fields are valid for each entity type
  */
 
+/** Known entity types supported by the Butlr GraphQL API */
+export const ENTITY_TYPES = [
+  "site",
+  "building",
+  "floor",
+  "room",
+  "zone",
+  "sensor",
+  "hive",
+] as const;
+
+export type EntityType = (typeof ENTITY_TYPES)[number];
+
 /**
  * Field name aliases (snake_case → camelCase)
- * GraphQL schema has both formats, but queries use camelCase
+ * GraphQL schema uses a mix of snake_case and camelCase.
+ * Some fields have aliases (e.g., floor_id → floorID).
  */
 const FIELD_ALIASES: Record<string, string> = {
   floor_id: "floorID",
@@ -23,9 +37,9 @@ function normalizeFieldName(field: string): string {
 
 /**
  * Valid fields for each entity type
- * Based on GraphQL schema (using camelCase names)
+ * Based on GraphQL schema (mix of snake_case and camelCase)
  */
-const VALID_FIELDS: Record<string, string[]> = {
+const VALID_FIELDS: Record<EntityType, readonly string[]> = {
   site: ["id", "name", "timezone", "siteNumber", "customID", "org_id", "buildings"],
   building: [
     "id",
@@ -130,7 +144,7 @@ const VALID_FIELDS: Record<string, string[]> = {
 /**
  * Default fields for each entity type (minimal set)
  */
-export const DEFAULT_FIELDS: Record<string, string[]> = {
+export const DEFAULT_FIELDS: Record<EntityType, readonly string[]> = {
   site: ["id", "name"],
   building: ["id", "name"],
   floor: ["id", "name", "floorNumber"],
@@ -147,7 +161,7 @@ export const DEFAULT_FIELDS: Record<string, string[]> = {
  * @param requestedFields Array of field names
  * @throws Error if any field is invalid
  */
-export function validateFields(entityType: string, requestedFields: string[]): void {
+export function validateFields(entityType: EntityType, requestedFields: string[]): void {
   const validFields = VALID_FIELDS[entityType];
 
   if (!validFields) {
@@ -175,19 +189,19 @@ export function validateFields(entityType: string, requestedFields: string[]): v
 /**
  * Get default fields for an entity type
  */
-export function getDefaultFields(entityType: string): string[] {
+export function getDefaultFields(entityType: EntityType): string[] {
   const defaults = DEFAULT_FIELDS[entityType];
   if (!defaults) {
     throw new Error(`Unknown entity type: ${entityType}`);
   }
-  return defaults;
+  return [...defaults];
 }
 
 /**
  * Validate and return fields (use defaults if none provided)
  * Normalizes snake_case to camelCase for GraphQL queries
  */
-export function getValidatedFields(entityType: string, requestedFields?: string[]): string[] {
+export function getValidatedFields(entityType: EntityType, requestedFields?: string[]): string[] {
   if (!requestedFields || requestedFields.length === 0) {
     return getDefaultFields(entityType);
   }

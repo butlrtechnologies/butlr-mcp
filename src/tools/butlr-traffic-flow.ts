@@ -11,15 +11,11 @@ import {
   buildTimezoneMetadata,
   getLocalMidnight,
 } from "../utils/timezone-helpers.js";
-import {
-  translateGraphQLError,
-  formatMCPError,
-  createValidationError,
-} from "../errors/mcp-errors.js";
+import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
+import { createValidationError } from "../errors/mcp-errors.js";
+import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import type { TrafficFlowResponse } from "../types/responses.js";
 
-/**
- * Zod validation schema for butlr_traffic_flow
- */
 const timeStringSchema = z.string().refine(
   (val) => {
     const isoMatch = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/.test(val);
@@ -58,8 +54,6 @@ const trafficFlowInputShape = {
     .pipe(timeStringSchema)
     .optional()
     .describe("Custom stop time. Defaults to 'now'"),
-
-  include_trend: z.boolean().default(true).describe("Compare to typical traffic for this period"),
 };
 
 export const TrafficFlowArgsSchema = z
@@ -107,14 +101,8 @@ const TRAFFIC_FLOW_DESCRIPTION =
   "CRE Context: Traffic counts are movements, not unique people - one person exiting/re-entering counts as 2 movements. Net flow helps detect sensor calibration issues (large negative net flow might indicate misconfigured entry/exit sensors).\n\n" +
   "See Also: butlr_get_current_occupancy, butlr_space_busyness, butlr_search_assets, butlr_get_asset_details";
 
-/**
- * Input arguments (output type from Zod schema after defaults applied)
- */
 export type TrafficFlowArgs = z.output<typeof TrafficFlowArgsSchema>;
 
-/**
- * GraphQL query for room with sensors
- */
 const GET_ROOM_SENSORS = gql`
   query GetRoomSensors($roomId: ID!) {
     room(id: $roomId) {
@@ -174,7 +162,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   let room: Room | null = null;
   let roomPath = "";
   let timezone: string;
-  let tzMetadata: any;
+  let tzMetadata: TimezoneMetadata;
   let trafficSensors: Sensor[] = [];
 
   try {
@@ -220,7 +208,8 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     // Analyze traffic sensors for this room
     const allSensors = sensorsResult.data?.sensors?.data || [];
     const roomSensors = allSensors.filter((s) => (s.room_id || s.roomID) === spaceId);
-    trafficSensors = roomSensors.filter((s) => s.mode === "traffic" && s.is_entrance !== true);
+    // Non-entrance traffic sensors (room-level traffic counting)
+    trafficSensors = roomSensors.filter((s) => s.mode === "traffic" && s.is_entrance === false);
 
     if (trafficSensors.length === 0) {
       throw new Error(
@@ -231,12 +220,8 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     if (process.env.DEBUG) {
       console.error(`[traffic-flow] Found ${trafficSensors.length} traffic sensors for room`);
     }
-  } catch (error: any) {
-    if (error && (error.graphQLErrors || error.networkError)) {
-      const mcpError = translateGraphQLError(error);
-      const errorMessage = formatMCPError(mcpError);
-      throw new Error(errorMessage);
-    }
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
     throw error;
   }
 
@@ -245,6 +230,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   let start: string;
   let stop: string = "now";
   let periodDescription: string;
+  let usedUtcFallback = false;
 
   if (timeWindow === "custom") {
     if (!args.custom_start) {
@@ -276,7 +262,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
           `[traffic-flow] Today starts at ${start} (midnight ${tzMetadata.timezone_abbr})`
         );
       }
-    } catch (midnightError: any) {
+    } catch (midnightError: unknown) {
       if (process.env.DEBUG) {
         console.error(
           "[traffic-flow] Failed to calculate local midnight, using UTC:",
@@ -288,6 +274,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       utcMidnight.setUTCHours(0, 0, 0, 0);
       start = utcMidnight.toISOString();
       periodDescription = "today (UTC fallback)";
+      usedUtcFallback = true;
     }
   }
 
@@ -382,8 +369,12 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     }
   }
 
+  // Build enhanced summary
+  const netFlowStr = netFlow >= 0 ? `+${netFlow}` : `${netFlow}`;
+  const summary = `${room.name}: ${totalTraffic.toLocaleString()} movements ${periodDescription} (${totalEntries.toLocaleString()} entries, ${totalExits.toLocaleString()} exits, net flow: ${netFlowStr})`;
+
   // Build response with timezone metadata and in/out breakdown
-  const response: any = {
+  const response: TrafficFlowResponse = {
     space: {
       id: room.id,
       name: room.name,
@@ -414,18 +405,15 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
           net_flow: peakHour.net_flow,
         }
       : null,
+    summary,
     timestamp: new Date().toISOString(),
     timezone_note:
       "All timestamps are UTC (ISO-8601). Use site_timezone to interpret in local time.",
+    ...(usedUtcFallback && {
+      warning:
+        "Could not determine local timezone for this space; timestamps use UTC midnight as fallback. 'Today' may not align with the site's actual local day.",
+    }),
   };
-
-  // Build enhanced summary
-  const netFlowStr = netFlow >= 0 ? `+${netFlow}` : `${netFlow}`;
-  response.summary = `${room.name}: ${totalTraffic.toLocaleString()} movements ${periodDescription} (${totalEntries.toLocaleString()} entries, ${totalExits.toLocaleString()} exits, net flow: ${netFlowStr})`;
-
-  // TODO: Add trend comparison if include_trend=true
-  // Would require querying same period from previous week/month
-  // and calculating percentage difference
 
   return response;
 }

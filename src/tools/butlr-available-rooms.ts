@@ -6,11 +6,8 @@ import type { Room, Building, Floor } from "../clients/types.js";
 import { getCurrentOccupancy } from "../clients/reporting-client.js";
 import { buildAvailableRoomsSummary } from "../utils/natural-language.js";
 import { getCachedOccupancy, setBulkCachedOccupancy } from "../cache/occupancy-cache.js";
-import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
-
-/**
- * Zod validation schema for butlr_available_rooms
- */
+import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import type { AvailableRoom, AvailableRoomsResponse, BuildingContext } from "../types/responses.js";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const availableRoomsInputShape = {
@@ -106,28 +103,8 @@ const AVAILABLE_ROOMS_DESCRIPTION =
   "CRE Context: Meeting rooms are expensive real estate (avg $150-300/sqft in Class A offices). This tool helps validate booking system accuracy and identify 'ghost bookings' (booked but unused).\n\n" +
   "See Also: butlr_space_busyness, butlr_get_occupancy_timeseries, butlr_search_assets";
 
-/**
- * Input arguments (output type from Zod schema after defaults applied)
- */
 export type AvailableRoomsArgs = z.output<typeof AvailableRoomsArgsSchema>;
 
-/**
- * Available room result
- */
-interface AvailableRoom {
-  id: string;
-  name: string;
-  path: string;
-  capacity: { max?: number; mid?: number };
-  area?: { value?: number; unit?: string };
-  tags?: string[];
-  available_for_minutes: number;
-  last_occupied?: string;
-}
-
-/**
- * GraphQL query for rooms
- */
 const GET_ROOMS_BY_FLOOR = gql`
   query GetRoomsByFloor($floorId: ID!) {
     floor(id: $floorId) {
@@ -273,7 +250,6 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   let rooms: Room[] = [];
   let buildings: Building[] = [];
   let floors: Floor[] = [];
-  let buildingContext: any = null;
 
   try {
     if (args.floor_id) {
@@ -306,11 +282,6 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       buildings = [result.data.building];
       floors = result.data.building.floors || [];
       rooms = floors.flatMap((f) => f.rooms || []);
-
-      buildingContext = {
-        building_id: result.data.building.id,
-        building_name: result.data.building.name,
-      };
     } else if (args.tags && args.tags.length > 0) {
       // Query by tags
       const result = await apolloClient.query<{ roomsByTag: Room[] }>({
@@ -351,12 +322,8 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       floors = buildings.flatMap((b) => b.floors || []);
       rooms = floors.flatMap((f) => f.rooms || []);
     }
-  } catch (error: any) {
-    if (error && (error.graphQLErrors || error.networkError)) {
-      const mcpError = translateGraphQLError(error);
-      const errorMessage = formatMCPError(mcpError);
-      throw new Error(errorMessage);
-    }
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
     throw error;
   }
 
@@ -364,27 +331,49 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
     console.error(`[available-rooms] Found ${rooms.length} rooms before filtering`);
   }
 
-  // Apply capacity filters
-  if (args.min_capacity !== undefined) {
-    rooms = rooms.filter((r) => r.capacity?.max && r.capacity.max >= args.min_capacity!);
-  }
+  // Apply capacity filters and track rooms excluded due to missing capacity data
+  const warnings: string[] = [];
 
-  if (args.max_capacity !== undefined) {
-    rooms = rooms.filter((r) => r.capacity?.max && r.capacity.max <= args.max_capacity!);
+  if (args.min_capacity !== undefined || args.max_capacity !== undefined) {
+    const roomsWithoutCapacity = rooms.filter((r) => !r.capacity?.max).length;
+
+    if (args.min_capacity !== undefined) {
+      rooms = rooms.filter((r) => r.capacity?.max && r.capacity.max >= args.min_capacity!);
+    }
+
+    if (args.max_capacity !== undefined) {
+      rooms = rooms.filter((r) => r.capacity?.max && r.capacity.max <= args.max_capacity!);
+    }
+
+    if (roomsWithoutCapacity > 0) {
+      warnings.push(
+        `${roomsWithoutCapacity} room(s) excluded because they have no capacity data configured.`
+      );
+    }
   }
 
   if (rooms.length === 0) {
-    // No rooms match filters
-    return {
+    // No rooms match filters — unified return shape
+    const response: AvailableRoomsResponse = {
       summary: buildAvailableRoomsSummary({
         count: 0,
         roomType: args.tags?.[0],
       }),
       available_rooms: [],
       total_available: 0,
-      filtered_by: args,
+      showing: 0,
       timestamp: new Date().toISOString(),
     };
+
+    if (Object.keys(args).length > 0) {
+      response.filtered_by = args;
+    }
+
+    if (warnings.length > 0) {
+      response.warning = warnings.join(" ");
+    }
+
+    return response;
   }
 
   // Get current occupancy for all rooms
@@ -434,20 +423,27 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       }
 
       setBulkCachedOccupancy(cacheEntries);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(`[available-rooms] Failed to get occupancy data:`, error);
       occupancyFetchFailed = true;
     }
   }
 
-  // Filter to available rooms (occupancy == 0)
+  // When occupancy fetch failed and we have no cached data, we cannot determine availability
+  if (occupancyFetchFailed && Object.keys(occupancyMap).length === 0) {
+    throw new Error(
+      "Unable to determine room availability: occupancy data fetch failed and no cached data is available. " +
+        "Please retry or check the Butlr reporting API status."
+    );
+  }
+
+  // Filter to available rooms — only include rooms with confirmed zero occupancy
+  // (exclude rooms with no data)
   const availableRooms: AvailableRoom[] = [];
 
   for (const room of rooms) {
     const occupancy = occupancyMap[room.id] ?? null;
 
-    // Consider room available if occupancy is 0 or null (no data)
-    // For safety, only include if we have data and it's 0
     if (occupancy === 0) {
       // Build path
       const floor = floors.find((f) => f.id === room.floorID);
@@ -467,9 +463,19 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
         path,
         capacity: room.capacity,
         area: room.area,
-        available_for_minutes: 5, // We queried last 5 minutes, so at least 5 minutes
-        // Could enhance by querying longer history to get actual duration
+        data_window_minutes: 5,
       });
+    }
+  }
+
+  // If occupancy fetch partially failed, note how many rooms have no data
+  if (occupancyFetchFailed) {
+    const roomsWithoutData = rooms.filter((r) => !(r.id in occupancyMap)).length;
+    if (roomsWithoutData > 0) {
+      warnings.push(
+        `Occupancy data unavailable for ${roomsWithoutData} room(s). ` +
+          `Only rooms with confirmed zero occupancy are shown.`
+      );
     }
   }
 
@@ -491,7 +497,8 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   const maxCap = capacities.length > 0 ? Math.max(...capacities) : undefined;
 
   // Build building context if applicable
-  if (!buildingContext && args.building_id) {
+  let buildingContext: BuildingContext | undefined;
+  if (args.building_id) {
     const building = buildings.find((b) => b.id === args.building_id);
     if (building) {
       const totalRooms = rooms.length;
@@ -516,7 +523,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   });
 
   // Build response
-  const response: any = {
+  const response: AvailableRoomsResponse = {
     summary,
     available_rooms: limitedRooms,
     total_available: totalAvailable,
@@ -533,8 +540,13 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   }
 
   if (occupancyFetchFailed) {
-    response.warning =
-      "Could not retrieve real-time occupancy data. Room availability may be inaccurate.";
+    warnings.push(
+      "Could not retrieve real-time occupancy data for all rooms. Room availability may be incomplete."
+    );
+  }
+
+  if (warnings.length > 0) {
+    response.warning = warnings.join(" ");
   }
 
   return response;

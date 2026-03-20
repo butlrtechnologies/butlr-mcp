@@ -3,12 +3,10 @@ import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
 import { detectAssetType } from "../utils/asset-helpers.js";
-import { getValidatedFields } from "../utils/field-validator.js";
-import {
-  translateGraphQLError,
-  formatMCPError,
-  createValidationError,
-} from "../errors/mcp-errors.js";
+import { type EntityType, ENTITY_TYPES, getValidatedFields } from "../utils/field-validator.js";
+import { createValidationError } from "../errors/mcp-errors.js";
+import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import type { FetchEntityDetailsResponse, EntityResult } from "../types/responses.js";
 
 const FETCH_ENTITY_DETAILS_DESCRIPTION =
   "Retrieve specific fields for entities by ID with selective field fetching. " +
@@ -65,19 +63,7 @@ const fetchEntityDetailsInputShape = {
 
 export const FetchEntityDetailsArgsSchema = z.object(fetchEntityDetailsInputShape).strict();
 
-/**
- * Input arguments for butlr_fetch_entity_details
- */
-export interface FetchEntityDetailsArgs {
-  ids: string[];
-  site_fields?: string[];
-  building_fields?: string[];
-  floor_fields?: string[];
-  room_fields?: string[];
-  zone_fields?: string[];
-  sensor_fields?: string[];
-  hive_fields?: string[];
-}
+type FetchEntityDetailsArgs = z.output<typeof FetchEntityDetailsArgsSchema>;
 
 /**
  * Build GraphQL query dynamically based on requested fields
@@ -169,12 +155,9 @@ function buildQueryForFields(type: string, fields: string[]): ReturnType<typeof 
 /**
  * Execute butlr_fetch_entity_details tool
  */
-export async function executeFetchEntityDetails(args: FetchEntityDetailsArgs) {
-  // Validate inputs
-  if (!args.ids || !Array.isArray(args.ids) || args.ids.length === 0) {
-    throw createValidationError("ids is required and must be a non-empty array");
-  }
-
+export async function executeFetchEntityDetails(
+  args: FetchEntityDetailsArgs
+): Promise<FetchEntityDetailsResponse> {
   if (process.env.DEBUG) {
     console.error(`[butlr-fetch-entity-details] Fetching details for ${args.ids.length} asset(s)`);
   }
@@ -187,6 +170,11 @@ export async function executeFetchEntityDetails(args: FetchEntityDetailsArgs) {
       throw createValidationError(`Unknown asset type for ID: ${id}`);
     }
 
+    // Validate that detectAssetType returned a known EntityType
+    if (!ENTITY_TYPES.includes(type as EntityType)) {
+      throw createValidationError(`Unsupported asset type: ${type}`);
+    }
+
     if (!assetsByType[type]) {
       assetsByType[type] = [];
     }
@@ -194,15 +182,17 @@ export async function executeFetchEntityDetails(args: FetchEntityDetailsArgs) {
   }
 
   // Fetch assets by type
-  const results: any[] = [];
+  const results: EntityResult[] = [];
 
   for (const [type, ids] of Object.entries(assetsByType)) {
+    const entityType = type as EntityType;
+
     // Get fields for this type
     const fieldParam = `${type}_fields` as keyof FetchEntityDetailsArgs;
     const requestedFields = args[fieldParam] as string[] | undefined;
 
     // Validate and get final field list (defaults if none provided)
-    const fields = getValidatedFields(type, requestedFields);
+    const fields = getValidatedFields(entityType, requestedFields);
 
     // Build query
     const query = buildQueryForFields(type, fields);
@@ -249,26 +239,9 @@ export async function executeFetchEntityDetails(args: FetchEntityDetailsArgs) {
             });
           }
         }
-      } catch (error: any) {
-        if (error && (error.graphQLErrors || error.networkError)) {
-          const mcpError = translateGraphQLError(error);
-          if (process.env.DEBUG) {
-            console.error(
-              `[butlr-fetch-entity-details] Error fetching ${type}:`,
-              formatMCPError(mcpError)
-            );
-          }
-          // Add error for all IDs in this batch
-          for (const id of ids) {
-            results.push({
-              id,
-              error: formatMCPError(mcpError),
-              _type: type,
-            });
-          }
-        } else {
-          throw error;
-        }
+      } catch (error: unknown) {
+        rethrowIfGraphQLError(error);
+        throw error;
       }
     } else {
       // Query individually for other types (site, building, floor, room, zone)
@@ -301,34 +274,27 @@ export async function executeFetchEntityDetails(args: FetchEntityDetailsArgs) {
               error: "Asset not found",
             });
           }
-        } catch (error: any) {
-          if (error && (error.graphQLErrors || error.networkError)) {
-            const mcpError = translateGraphQLError(error);
-            if (process.env.DEBUG) {
-              console.error(
-                `[butlr-fetch-entity-details] Error fetching ${id}:`,
-                formatMCPError(mcpError)
-              );
-            }
-            results.push({
-              id,
-              error: formatMCPError(mcpError),
-              _type: type,
-            });
-          } else {
-            throw error;
-          }
+        } catch (error: unknown) {
+          rethrowIfGraphQLError(error);
+          throw error;
         }
       }
     }
   }
 
-  return {
+  const failedCount = results.filter((r) => r.error).length;
+  const response: FetchEntityDetailsResponse = {
     entities: results,
     requested_count: args.ids.length,
     fetched_count: results.filter((r) => !r.error).length,
     timestamp: new Date().toISOString(),
   };
+
+  if (failedCount > 0) {
+    response.warning = `${failedCount} of ${args.ids.length} entities failed to fetch. Check individual entity 'error' fields for details.`;
+  }
+
+  return response;
 }
 
 /**

@@ -8,6 +8,9 @@
  * - Position 2: Children array (optional, only if has children)
  */
 
+import type { Site, Building, Floor, Room, Zone, Sensor, Hive } from "../clients/types.js";
+import type { TopologyNode } from "../types/responses.js";
+
 /**
  * Depth level mappings
  */
@@ -21,8 +24,19 @@ const DEPTH_LEVELS = {
 };
 
 /**
+ * Determine whether children should be included at the current depth level.
+ */
+function shouldTraverse(
+  currentDepth: number,
+  startingDepth: number,
+  traversalDepth: number
+): boolean {
+  return currentDepth >= startingDepth && currentDepth - startingDepth < traversalDepth;
+}
+
+/**
  * Format topology as a tree structure with depth controls
- * Hierarchy: Sites(0) → Buildings(1) → Floors(2) → Rooms/Zones(3) → Hives(4) → Sensors(5)
+ * Hierarchy: Sites(0) -> Buildings(1) -> Floors(2) -> Rooms/Zones(3) -> Hives(4) -> Sensors(5)
  * Format: [id, display_name, children?]
  *
  * @param sites Array of sites with full topology
@@ -31,10 +45,10 @@ const DEPTH_LEVELS = {
  * @returns Ultra-compact array tree structure
  */
 export function formatTopologyTree(
-  sites: any[],
+  sites: Site[],
   startingDepth: number = 0,
   traversalDepth: number = 0
-): any {
+): TopologyNode[] {
   const currentDepth = DEPTH_LEVELS.SITE;
 
   // If starting depth is 0 (sites), format sites
@@ -49,51 +63,55 @@ export function formatTopologyTree(
 /**
  * Collect all assets at a specific depth level
  */
-function collectAssetsAtDepth(sites: any[], targetDepth: number, traversalDepth: number): any[] {
-  const results: any[] = [];
+function collectAssetsAtDepth(
+  sites: Site[],
+  targetDepth: number,
+  traversalDepth: number
+): TopologyNode[] {
+  const results: TopologyNode[] = [];
 
   for (const site of sites) {
     if (targetDepth === DEPTH_LEVELS.BUILDING) {
       // Collect buildings
-      site.buildings?.forEach((building: any) => {
+      site.buildings?.forEach((building: Building) => {
         results.push(formatBuilding(building, DEPTH_LEVELS.BUILDING, targetDepth, traversalDepth));
       });
     } else if (targetDepth === DEPTH_LEVELS.FLOOR) {
       // Collect floors
-      site.buildings?.forEach((building: any) => {
-        building.floors?.forEach((floor: any) => {
+      site.buildings?.forEach((building: Building) => {
+        building.floors?.forEach((floor: Floor) => {
           results.push(formatFloor(floor, DEPTH_LEVELS.FLOOR, targetDepth, traversalDepth));
         });
       });
     } else if (targetDepth === DEPTH_LEVELS.ROOM_ZONE) {
       // Collect rooms and zones
-      site.buildings?.forEach((building: any) => {
-        building.floors?.forEach((floor: any) => {
-          floor.rooms?.forEach((room: any) => {
+      site.buildings?.forEach((building: Building) => {
+        building.floors?.forEach((floor: Floor) => {
+          floor.rooms?.forEach((room: Room) => {
             results.push(
               formatRoom(room, floor, DEPTH_LEVELS.ROOM_ZONE, targetDepth, traversalDepth)
             );
           });
-          floor.zones?.forEach((zone: any) => {
-            results.push(formatZone(zone, DEPTH_LEVELS.ROOM_ZONE, targetDepth, traversalDepth));
+          floor.zones?.forEach((zone: Zone) => {
+            results.push(formatZone(zone));
           });
         });
       });
     } else if (targetDepth === DEPTH_LEVELS.HIVE) {
       // Collect hives
-      site.buildings?.forEach((building: any) => {
-        building.floors?.forEach((floor: any) => {
-          floor.hives?.forEach((hive: any) => {
+      site.buildings?.forEach((building: Building) => {
+        building.floors?.forEach((floor: Floor) => {
+          floor.hives?.forEach((hive: Hive) => {
             results.push(formatHive(hive, floor, DEPTH_LEVELS.HIVE, targetDepth, traversalDepth));
           });
         });
       });
     } else if (targetDepth === DEPTH_LEVELS.SENSOR) {
       // Collect sensors
-      site.buildings?.forEach((building: any) => {
-        building.floors?.forEach((floor: any) => {
-          floor.sensors?.forEach((sensor: any) => {
-            results.push(formatSensor(sensor, DEPTH_LEVELS.SENSOR, targetDepth, traversalDepth));
+      site.buildings?.forEach((building: Building) => {
+        building.floors?.forEach((floor: Floor) => {
+          floor.sensors?.forEach((sensor: Sensor) => {
+            results.push(formatSensor(sensor));
           });
         });
       });
@@ -108,25 +126,21 @@ function collectAssetsAtDepth(sites: any[], targetDepth: number, traversalDepth:
  * Returns: [id, name, children?]
  */
 function formatSite(
-  site: any,
+  site: Site,
   currentDepth: number,
   startingDepth: number,
   traversalDepth: number
-): any[] {
-  const result: any[] = [site.id, site.name];
+): TopologyNode {
+  const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
 
-  // Check if we should include children
-  const shouldIncludeChildren =
-    currentDepth >= startingDepth && currentDepth - startingDepth < traversalDepth;
-
-  if (shouldIncludeChildren && site.buildings && site.buildings.length > 0) {
-    const children = site.buildings.map((building: any) =>
+  if (includeChildren && site.buildings && site.buildings.length > 0) {
+    const children = site.buildings.map((building: Building) =>
       formatBuilding(building, DEPTH_LEVELS.BUILDING, startingDepth, traversalDepth)
     );
-    result.push(children);
+    return [site.id, site.name, children];
   }
 
-  return result;
+  return [site.id, site.name];
 }
 
 /**
@@ -134,24 +148,21 @@ function formatSite(
  * Returns: [id, name, children?]
  */
 function formatBuilding(
-  building: any,
+  building: Building,
   currentDepth: number,
   startingDepth: number,
   traversalDepth: number
-): any[] {
-  const result: any[] = [building.id, building.name];
+): TopologyNode {
+  const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
 
-  const shouldIncludeChildren =
-    currentDepth >= startingDepth && currentDepth - startingDepth < traversalDepth;
-
-  if (shouldIncludeChildren && building.floors && building.floors.length > 0) {
-    const children = building.floors.map((floor: any) =>
+  if (includeChildren && building.floors && building.floors.length > 0) {
+    const children = building.floors.map((floor: Floor) =>
       formatFloor(floor, DEPTH_LEVELS.FLOOR, startingDepth, traversalDepth)
     );
-    result.push(children);
+    return [building.id, building.name, children];
   }
 
-  return result;
+  return [building.id, building.name];
 }
 
 /**
@@ -159,26 +170,23 @@ function formatBuilding(
  * Returns: [id, name, children?]
  */
 function formatFloor(
-  floor: any,
+  floor: Floor,
   currentDepth: number,
   startingDepth: number,
   traversalDepth: number
-): any[] {
-  const result: any[] = [floor.id, floor.name];
+): TopologyNode {
+  const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
 
-  const shouldIncludeChildren =
-    currentDepth >= startingDepth && currentDepth - startingDepth < traversalDepth;
-
-  if (!shouldIncludeChildren) {
-    return result;
+  if (!includeChildren) {
+    return [floor.id, floor.name];
   }
 
-  const children: any[] = [];
+  const children: TopologyNode[] = [];
 
   // Add rooms
   if (floor.rooms && floor.rooms.length > 0) {
     children.push(
-      ...floor.rooms.map((room: any) =>
+      ...floor.rooms.map((room: Room) =>
         formatRoom(room, floor, DEPTH_LEVELS.ROOM_ZONE, startingDepth, traversalDepth)
       )
     );
@@ -186,19 +194,15 @@ function formatFloor(
 
   // Add floor-level zones (no room assignment)
   if (floor.zones && floor.zones.length > 0) {
-    const floorLevelZones = floor.zones.filter((zone: any) => !(zone.roomID || zone.room_id));
-    children.push(
-      ...floorLevelZones.map((zone: any) =>
-        formatZone(zone, DEPTH_LEVELS.ROOM_ZONE, startingDepth, traversalDepth)
-      )
-    );
+    const floorLevelZones = floor.zones.filter((zone: Zone) => !(zone.roomID || zone.room_id));
+    children.push(...floorLevelZones.map((zone: Zone) => formatZone(zone)));
   }
 
   // Add floor-level hives (no room assignment)
   if (floor.hives && floor.hives.length > 0) {
-    const floorLevelHives = floor.hives.filter((hive: any) => !(hive.roomID || hive.room_id));
+    const floorLevelHives = floor.hives.filter((hive: Hive) => !(hive.roomID || hive.room_id));
     children.push(
-      ...floorLevelHives.map((hive: any) =>
+      ...floorLevelHives.map((hive: Hive) =>
         formatHive(hive, floor, DEPTH_LEVELS.HIVE, startingDepth, traversalDepth)
       )
     );
@@ -213,18 +217,16 @@ function formatFloor(
       children.push([
         "orphan",
         "Orphan (no parent hive)",
-        floorOrphans.map((sensor: any) =>
-          formatSensor(sensor, DEPTH_LEVELS.SENSOR, startingDepth, traversalDepth)
-        ),
+        floorOrphans.map((sensor: Sensor) => formatSensor(sensor)),
       ]);
     }
   }
 
   if (children.length > 0) {
-    result.push(children);
+    return [floor.id, floor.name, children];
   }
 
-  return result;
+  return [floor.id, floor.name];
 }
 
 /**
@@ -232,36 +234,31 @@ function formatFloor(
  * Returns: [id, name, children?]
  */
 function formatRoom(
-  room: any,
-  floor: any,
+  room: Room,
+  floor: Floor,
   currentDepth: number,
   startingDepth: number,
   traversalDepth: number
-): any[] {
-  const result: any[] = [room.id, room.name];
+): TopologyNode {
+  const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
 
-  const shouldIncludeChildren =
-    currentDepth >= startingDepth && currentDepth - startingDepth < traversalDepth;
-
-  if (!shouldIncludeChildren) {
-    return result;
+  if (!includeChildren) {
+    return [room.id, room.name];
   }
 
-  const children: any[] = [];
+  const children: TopologyNode[] = [];
 
   // Add zones belonging to this room (zones at room level, not separate depth)
   if (floor.zones && floor.zones.length > 0) {
-    const roomZones = floor.zones.filter((zone: any) => (zone.roomID || zone.room_id) === room.id);
-    children.push(
-      ...roomZones.map((zone: any) => formatZone(zone, currentDepth, startingDepth, traversalDepth))
-    );
+    const roomZones = floor.zones.filter((zone: Zone) => (zone.roomID || zone.room_id) === room.id);
+    children.push(...roomZones.map((zone: Zone) => formatZone(zone)));
   }
 
   // Add hives belonging to this room
   if (floor.hives && floor.hives.length > 0) {
-    const roomHives = floor.hives.filter((hive: any) => (hive.roomID || hive.room_id) === room.id);
+    const roomHives = floor.hives.filter((hive: Hive) => (hive.roomID || hive.room_id) === room.id);
     children.push(
-      ...roomHives.map((hive: any) =>
+      ...roomHives.map((hive: Hive) =>
         formatHive(hive, floor, DEPTH_LEVELS.HIVE, startingDepth, traversalDepth)
       )
     );
@@ -276,30 +273,23 @@ function formatRoom(
       children.push([
         "orphan",
         "Orphan (no parent hive)",
-        roomOrphans.map((sensor: any) =>
-          formatSensor(sensor, DEPTH_LEVELS.SENSOR, startingDepth, traversalDepth)
-        ),
+        roomOrphans.map((sensor: Sensor) => formatSensor(sensor)),
       ]);
     }
   }
 
   if (children.length > 0) {
-    result.push(children);
+    return [room.id, room.name, children];
   }
 
-  return result;
+  return [room.id, room.name];
 }
 
 /**
  * Format a single zone
  * Returns: [id, name]
  */
-function formatZone(
-  zone: any,
-  _currentDepth: number,
-  _startingDepth: number,
-  _traversalDepth: number
-): any[] {
+function formatZone(zone: Zone): TopologyNode {
   return [zone.id, zone.name];
 }
 
@@ -309,32 +299,27 @@ function formatZone(
  * NOTE: Uses serialNumber, NOT name (name is optional metadata)
  */
 function formatHive(
-  hive: any,
-  floor: any,
+  hive: Hive,
+  floor: Floor,
   currentDepth: number,
   startingDepth: number,
   traversalDepth: number
-): any[] {
-  const result: any[] = [hive.id, hive.serialNumber];
-
-  const shouldIncludeChildren =
-    currentDepth >= startingDepth && currentDepth - startingDepth < traversalDepth;
+): TopologyNode {
+  const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
 
   // Find sensors belonging to this hive
-  if (shouldIncludeChildren && floor.sensors && floor.sensors.length > 0) {
+  if (includeChildren && floor.sensors && floor.sensors.length > 0) {
     const hiveSensors = floor.sensors.filter(
-      (sensor: any) => sensor.hive_serial === hive.serialNumber
+      (sensor: Sensor) => sensor.hive_serial === hive.serialNumber
     );
 
     if (hiveSensors.length > 0) {
-      const children = hiveSensors.map((sensor: any) =>
-        formatSensor(sensor, DEPTH_LEVELS.SENSOR, startingDepth, traversalDepth)
-      );
-      result.push(children);
+      const children = hiveSensors.map((sensor: Sensor) => formatSensor(sensor));
+      return [hive.id, hive.serialNumber, children];
     }
   }
 
-  return result;
+  return [hive.id, hive.serialNumber];
 }
 
 /**
@@ -342,12 +327,7 @@ function formatHive(
  * Returns: [id, mac_address]
  * NOTE: Uses mac_address, NOT name (name is optional metadata)
  */
-function formatSensor(
-  sensor: any,
-  _currentDepth: number,
-  _startingDepth: number,
-  _traversalDepth: number
-): any[] {
+function formatSensor(sensor: Sensor): TopologyNode {
   return [sensor.id, sensor.mac_address];
 }
 
@@ -357,18 +337,18 @@ function formatSensor(
  * @param roomID Room ID to filter by (null for floor-level)
  * @returns Array of orphan sensors
  */
-function getOrphanSensors(floor: any, roomID: string | null): any[] {
+function getOrphanSensors(floor: Floor, roomID: string | null): Sensor[] {
   if (!floor.sensors || floor.sensors.length === 0) {
     return [];
   }
 
   // Get all hive serial numbers
-  const hiveSerials = new Set(floor.hives?.map((hive: any) => hive.serialNumber) || []);
+  const hiveSerials = new Set(floor.hives?.map((hive: Hive) => hive.serialNumber) || []);
 
   // Find sensors without a parent hive that belong to this room/floor
-  return floor.sensors.filter((sensor: any) => {
+  return floor.sensors.filter((sensor: Sensor) => {
     const hasNoHive = !sensor.hive_serial || !hiveSerials.has(sensor.hive_serial);
-    const sensorRoomID = sensor.roomID || sensor.room_id;
+    const sensorRoomID = sensor.roomID || sensor.room_id || null;
     const matchesLocation = sensorRoomID === roomID;
     return hasNoHive && matchesLocation;
   });
