@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@butlr/butlr-mcp-server.svg)](https://www.npmjs.com/package/@butlr/butlr-mcp-server)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that connects AI assistants to [Butlr's](https://www.butlr.com) occupancy sensing platform. Query real-time space utilization, search facility assets, and analyze occupancy patterns through natural language.
 
@@ -17,7 +17,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that co
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) 20 or higher
+- [Node.js](https://nodejs.org/) 18 or higher
 - An MCP-compatible client ([Claude Desktop](https://claude.ai/download), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [VS Code](https://code.visualstudio.com/), [Cursor](https://cursor.com/), etc.)
 - Butlr API credentials (OAuth2 client ID, client secret, and organization ID) — see [Getting API Credentials](#getting-api-credentials)
 
