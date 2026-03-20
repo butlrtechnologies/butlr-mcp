@@ -1,0 +1,125 @@
+# Butlr MCP Server
+
+> MCP server for querying Butlr occupancy sensors and facility data through natural language.
+
+## Installation
+
+Install via npx — no global install needed. Requires Node.js 18+.
+
+### Claude Code
+
+```bash
+claude mcp add butlr \
+  -e BUTLR_CLIENT_ID=<client_id> \
+  -e BUTLR_CLIENT_SECRET=<client_secret> \
+  -- npx -y @butlr/butlr-mcp-server@latest
+```
+
+### Claude Desktop
+
+Add to the MCP config file (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "butlr": {
+      "command": "npx",
+      "args": ["-y", "@butlr/butlr-mcp-server@latest"],
+      "env": {
+        "BUTLR_CLIENT_ID": "<client_id>",
+        "BUTLR_CLIENT_SECRET": "<client_secret>"
+      }
+    }
+  }
+}
+```
+
+### VS Code (Copilot)
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "butlr": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@butlr/butlr-mcp-server@latest"],
+      "env": {
+        "BUTLR_CLIENT_ID": "<client_id>",
+        "BUTLR_CLIENT_SECRET": "<client_secret>"
+      }
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "butlr": {
+      "command": "npx",
+      "args": ["-y", "@butlr/butlr-mcp-server@latest"],
+      "env": {
+        "BUTLR_CLIENT_ID": "<client_id>",
+        "BUTLR_CLIENT_SECRET": "<client_secret>"
+      }
+    }
+  }
+}
+```
+
+### Other MCP Clients
+
+Use this command with any stdio-compatible MCP client:
+
+```
+npx -y @butlr/butlr-mcp-server@latest
+```
+
+Required environment variables: `BUTLR_CLIENT_ID`, `BUTLR_CLIENT_SECRET`.
+
+## Getting API Credentials
+
+Users create API tokens in Butlr Studio:
+
+1. Log in to app.butlr.io
+2. Click username in top-right corner → Account Settings → API Tokens
+3. Create a new token and copy the Client ID and Client Secret
+
+Users need edit access to Butlr Studio to create tokens. If they don't have edit permissions, they should ask someone in their organization who does, contact their Butlr sales representative, or submit a support ticket at butlr.com.
+
+## Required Environment Variables
+
+- `BUTLR_CLIENT_ID` — API token client ID (required)
+- `BUTLR_CLIENT_SECRET` — API token client secret (required)
+
+## Optional Environment Variables
+
+- `BUTLR_BASE_URL` — API base URL (default: https://api.butlr.io)
+- `BUTLR_TIMEZONE` — Default timezone (default: UTC)
+- `MCP_CACHE_TOPO_TTL` — Topology cache TTL in seconds (default: 600)
+- `DEBUG` — Set to `butlr-mcp` for verbose logging
+
+## Available Tools
+
+- `butlr_search_assets` — Search for assets (sites, buildings, floors, rooms, sensors) by name with fuzzy matching
+- `butlr_get_asset_details` — Get comprehensive details for specific assets by ID with batch support
+- `butlr_hardware_snapshot` — Device health check: online/offline status and battery levels
+- `butlr_available_rooms` — Find currently unoccupied rooms, filterable by capacity and tags
+- `butlr_space_busyness` — Current occupancy with qualitative labels (quiet/moderate/busy) and trend comparison
+- `butlr_traffic_flow` — Entry/exit counts with hourly breakdown for traffic-mode sensors
+- `butlr_list_topology` — Display org hierarchy tree with flexible depth control
+- `butlr_fetch_entity_details` — Retrieve specific fields for entities by ID (minimal token usage)
+- `butlr_get_occupancy_timeseries` — Historical occupancy data with configurable time ranges
+- `butlr_get_current_occupancy` — Real-time occupancy snapshot (last 5 minutes median)
+
+All tools are read-only. The server cannot modify any data in the user's Butlr account.
+
+## About Butlr
+
+Butlr (butlr.com) is an occupancy sensing platform for smart buildings. It uses anonymous thermal sensors to measure how spaces are being used — occupancy counts, traffic flow, and space utilization — without cameras or personally identifiable data.

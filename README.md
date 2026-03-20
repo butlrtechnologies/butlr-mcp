@@ -19,7 +19,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that co
 
 - [Node.js](https://nodejs.org/) 18 or higher
 - An MCP-compatible client ([Claude Desktop](https://claude.ai/download), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [VS Code](https://code.visualstudio.com/), [Cursor](https://cursor.com/), etc.)
-- Butlr API credentials (OAuth2 client ID, client secret, and organization ID) — see [Getting API Credentials](#getting-api-credentials)
+- Butlr API token — see [Getting API Credentials](#getting-api-credentials)
 
 ## Quick Start
 
@@ -36,8 +36,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
       "args": ["-y", "@butlr/butlr-mcp-server@latest"],
       "env": {
         "BUTLR_CLIENT_ID": "your_client_id",
-        "BUTLR_CLIENT_SECRET": "your_client_secret",
-        "BUTLR_ORG_ID": "your_org_id"
+        "BUTLR_CLIENT_SECRET": "your_client_secret"
       }
     }
   }
@@ -53,7 +52,6 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 claude mcp add butlr \
   -e BUTLR_CLIENT_ID=your_client_id \
   -e BUTLR_CLIENT_SECRET=your_client_secret \
-  -e BUTLR_ORG_ID=your_org_id \
   -- npx -y @butlr/butlr-mcp-server@latest
 ```
 
@@ -73,8 +71,7 @@ Add to `.vscode/mcp.json`:
       "args": ["-y", "@butlr/butlr-mcp-server@latest"],
       "env": {
         "BUTLR_CLIENT_ID": "your_client_id",
-        "BUTLR_CLIENT_SECRET": "your_client_secret",
-        "BUTLR_ORG_ID": "your_org_id"
+        "BUTLR_CLIENT_SECRET": "your_client_secret"
       }
     }
   }
@@ -96,8 +93,7 @@ Add to `.cursor/mcp.json`:
       "args": ["-y", "@butlr/butlr-mcp-server@latest"],
       "env": {
         "BUTLR_CLIENT_ID": "your_client_id",
-        "BUTLR_CLIENT_SECRET": "your_client_secret",
-        "BUTLR_ORG_ID": "your_org_id"
+        "BUTLR_CLIENT_SECRET": "your_client_secret"
       }
     }
   }
@@ -115,7 +111,7 @@ For any MCP client that supports stdio transport, use this command:
 npx -y @butlr/butlr-mcp-server@latest
 ```
 
-Pass the required environment variables (`BUTLR_CLIENT_ID`, `BUTLR_CLIENT_SECRET`, `BUTLR_ORG_ID`) through your client's configuration.
+Pass the required environment variables (`BUTLR_CLIENT_ID`, `BUTLR_CLIENT_SECRET`) through your client's configuration.
 
 </details>
 
@@ -140,9 +136,8 @@ All tools are **read-only** — the server cannot modify any data in your Butlr 
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `BUTLR_CLIENT_ID` | **Yes** | - | OAuth2 client ID |
-| `BUTLR_CLIENT_SECRET` | **Yes** | - | OAuth2 client secret |
-| `BUTLR_ORG_ID` | **Yes** | - | Organization ID |
+| `BUTLR_CLIENT_ID` | **Yes** | - | API token client ID |
+| `BUTLR_CLIENT_SECRET` | **Yes** | - | API token client secret |
 | `BUTLR_BASE_URL` | No | `https://api.butlr.io` | API base URL |
 | `BUTLR_TIMEZONE` | No | `UTC` | Default timezone |
 | `MCP_CACHE_TOPO_TTL` | No | `600` | Topology cache TTL (seconds) |
@@ -150,15 +145,16 @@ All tools are **read-only** — the server cannot modify any data in your Butlr 
 
 ## Getting API Credentials
 
-To use this MCP server, you need OAuth2 API credentials from Butlr:
+1. Log in to [app.butlr.io](https://app.butlr.io)
+2. Click your username in the top-right corner, then **Account Settings**
+3. Go to **API Tokens** and create a new token
+4. Copy the **Client ID** and **Client Secret**
 
-1. **Contact your Butlr account representative** or visit [butlr.com](https://www.butlr.com) to request API access
-2. You will receive a **Client ID**, **Client Secret**, and **Organization ID**
-3. These credentials provide read-only access scoped to your organization's data
+You need **edit access** to Butlr Studio to create API tokens. If you don't have edit permissions, ask someone in your organization who does, or contact your Butlr sales representative or [submit a support ticket](https://www.butlr.com).
 
 ## Troubleshooting
 
-**Authentication errors** — Verify your `BUTLR_CLIENT_ID`, `BUTLR_CLIENT_SECRET`, and `BUTLR_ORG_ID` are correct. Tokens are refreshed automatically.
+**Authentication errors** — Verify your `BUTLR_CLIENT_ID` and `BUTLR_CLIENT_SECRET` are correct. Tokens are refreshed automatically.
 
 **Rate limiting** — The server handles rate limits automatically with retry logic. If you see persistent rate limit errors, reduce the frequency of requests.
 

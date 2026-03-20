@@ -13,7 +13,7 @@ import { registerGetOccupancyTimeseries } from "./tools/butlr-get-occupancy-time
 import { registerGetCurrentOccupancy } from "./tools/butlr-get-current-occupancy.js";
 
 const SERVER_NAME = "butlr-mcp-server";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.1.1";
 
 const server = new McpServer({
   name: SERVER_NAME,
