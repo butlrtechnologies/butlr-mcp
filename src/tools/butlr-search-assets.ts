@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { z } from "zod";
 import { GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
-import type { SitesResponse } from "../clients/types.js";
+import type { Site, SitesResponse } from "../clients/types.js";
 import {
   getCachedTopology,
   setCachedTopology,
@@ -11,11 +11,8 @@ import {
 import { flattenTopology, type FlattenedAsset } from "../utils/asset-flattener.js";
 import { searchAssets, type SearchableAsset } from "../utils/fuzzy-match.js";
 import { buildAssetPath } from "../utils/path-builder.js";
-import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
+import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
 
-/**
- * Zod validation for search_assets
- */
 const VALID_ASSET_TYPES = ["site", "building", "floor", "room", "zone", "sensor", "hive"] as const;
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
@@ -100,9 +97,6 @@ const SEARCH_ASSETS_DESCRIPTION =
   "Example Workflow: butlr_search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +
   "See Also: butlr_get_asset_details, butlr_list_topology, butlr_fetch_entity_details";
 
-/**
- * Input arguments for search_assets (inferred from Zod schema)
- */
 export type SearchAssetsArgs = z.output<typeof SearchAssetsArgsSchema>;
 
 /**
@@ -144,14 +138,14 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
   );
 
   // Try to get cached topology
-  let sites: any[] = [];
+  let sites: Site[] = [];
   const cached = getCachedTopology(cacheKey);
 
   if (cached && cached.data && cached.data.sites) {
     if (process.env.DEBUG) {
       console.error("[search-assets] Using cached topology for search");
     }
-    sites = cached.data.sites as any[];
+    sites = cached.data.sites as Site[];
   } else {
     // Fetch fresh topology
     if (process.env.DEBUG) {
@@ -173,25 +167,26 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
         throw new Error("Invalid response structure from API");
       }
 
-      // Log if we got errors but still have data (partial success)
-      if (result.error && process.env.DEBUG) {
-        console.error(`[search-assets] Warning: GraphQL errors present, but got data anyway`);
+      // Track whether the topology data is partial (errors alongside data)
+      const partialData = !!result.error;
+      if (partialData && process.env.DEBUG) {
+        console.error(`[search-assets] Warning: GraphQL errors present, data may be partial`);
       }
 
       sites = result.data.sites.data;
 
-      // Cache for future searches
-      setCachedTopology(cacheKey, { sites });
+      // Only cache complete topology data — partial results should be re-fetched
+      if (!partialData) {
+        setCachedTopology(cacheKey, { sites });
 
-      if (process.env.DEBUG) {
-        console.error(`[search-assets] Cached topology with ${sites.length} sites`);
+        if (process.env.DEBUG) {
+          console.error(`[search-assets] Cached topology with ${sites.length} sites`);
+        }
+      } else if (process.env.DEBUG) {
+        console.error(`[search-assets] Skipping cache — topology data is partial`);
       }
-    } catch (error: any) {
-      if (error && (error.graphQLErrors || error.networkError)) {
-        const mcpError = translateGraphQLError(error);
-        const errorMessage = formatMCPError(mcpError);
-        throw new Error(errorMessage);
-      }
+    } catch (error: unknown) {
+      rethrowIfGraphQLError(error);
       throw error;
     }
   }

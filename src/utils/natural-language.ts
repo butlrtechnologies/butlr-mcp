@@ -170,15 +170,36 @@ export function getBusinessRecommendation(label: "quiet" | "moderate" | "busy"):
 
 /**
  * Format day and time for context
+ * @param date - Date to format (defaults to now)
+ * @param timezone - IANA timezone name (e.g. "America/Los_Angeles"). When provided,
+ *   formats in the space's local time instead of the server's system time.
  * @example "Thursday 2pm"
  */
-export function formatDayAndTime(date: Date = new Date()): string {
+export function formatDayAndTime(date: Date = new Date(), timezone?: string): string {
+  if (timezone) {
+    try {
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        weekday: "long",
+        hour: "numeric",
+        hour12: true,
+      });
+      const parts = formatter.formatToParts(date);
+      const dayName = parts.find((p) => p.type === "weekday")?.value || "";
+      const hour = parts.find((p) => p.type === "hour")?.value || "";
+      const dayPeriod = parts.find((p) => p.type === "dayPeriod")?.value || "";
+      return `${dayName} ${hour}${dayPeriod.toLowerCase()}`;
+    } catch {
+      // Fall through to system-local fallback
+    }
+  }
+
   const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const dayName = days[date.getDay()];
 
   let hours = date.getHours();
   const ampm = hours >= 12 ? "pm" : "am";
-  hours = hours % 12 || 12; // Convert to 12-hour format
+  hours = hours % 12 || 12;
 
   return `${dayName} ${hours}${ampm}`;
 }

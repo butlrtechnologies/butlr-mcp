@@ -4,6 +4,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { registerSearchAssets } from "./tools/butlr-search-assets.js";
 import { registerGetAssetDetails } from "./tools/butlr-get-asset-details.js";
 import { registerHardwareSnapshot } from "./tools/butlr-hardware-snapshot.js";
+import { registerAvailableRooms } from "./tools/butlr-available-rooms.js";
+import { registerSpaceBusyness } from "./tools/butlr-space-busyness.js";
+import { registerTrafficFlow } from "./tools/butlr-traffic-flow.js";
+import { registerListTopology } from "./tools/butlr-list-topology.js";
+import { registerFetchEntityDetails } from "./tools/butlr-fetch-entity-details.js";
+import { registerGetOccupancyTimeseries } from "./tools/butlr-get-occupancy-timeseries.js";
+import { registerGetCurrentOccupancy } from "./tools/butlr-get-current-occupancy.js";
 
 const SERVER_NAME = "butlr-mcp-server";
 const SERVER_VERSION = "0.1.0";
@@ -17,6 +24,13 @@ const server = new McpServer({
 registerSearchAssets(server);
 registerGetAssetDetails(server);
 registerHardwareSnapshot(server);
+registerAvailableRooms(server);
+registerSpaceBusyness(server);
+registerTrafficFlow(server);
+registerListTopology(server);
+registerFetchEntityDetails(server);
+registerGetOccupancyTimeseries(server);
+registerGetCurrentOccupancy(server);
 
 async function main() {
   const transport = new StdioServerTransport();
