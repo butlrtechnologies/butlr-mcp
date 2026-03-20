@@ -150,7 +150,7 @@ describe("getBatteryStatus", () => {
   });
 
   describe("missing battery data", () => {
-    it('returns "healthy" when battery_change_by_date is missing', () => {
+    it('returns "unknown" when battery_change_by_date is missing', () => {
       const sensor = {
         id: "sensor_13",
         name: "No Battery Tracking",
@@ -158,10 +158,10 @@ describe("getBatteryStatus", () => {
         battery_change_by_date: undefined,
       } as Sensor;
 
-      expect(getBatteryStatus(sensor, now)).toBe("healthy");
+      expect(getBatteryStatus(sensor, now)).toBe("unknown");
     });
 
-    it('returns "healthy" when battery_change_by_date is null', () => {
+    it('returns "unknown" when battery_change_by_date is null', () => {
       const sensor = {
         id: "sensor_14",
         name: "Null Battery Date",
@@ -169,10 +169,10 @@ describe("getBatteryStatus", () => {
         battery_change_by_date: null as any,
       } as Sensor;
 
-      expect(getBatteryStatus(sensor, now)).toBe("healthy");
+      expect(getBatteryStatus(sensor, now)).toBe("unknown");
     });
 
-    it('returns "healthy" when battery_change_by_date is empty string', () => {
+    it('returns "unknown" when battery_change_by_date is empty string', () => {
       const sensor = {
         id: "sensor_15",
         name: "Empty Battery Date",
@@ -180,7 +180,7 @@ describe("getBatteryStatus", () => {
         battery_change_by_date: "" as any,
       } as Sensor;
 
-      expect(getBatteryStatus(sensor, now)).toBe("healthy");
+      expect(getBatteryStatus(sensor, now)).toBe("unknown");
     });
   });
 

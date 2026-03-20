@@ -9,9 +9,6 @@ import {
 } from "../errors/mcp-errors.js";
 import { detectAssetType } from "../utils/asset-helpers.js";
 
-/**
- * Zod validation for get_asset_details
- */
 const assetIdSchema = z
   .string()
   .min(1, "Asset ID cannot be empty")
@@ -349,6 +346,8 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
     );
   }
 
+  const results: Array<Record<string, unknown>> = [];
+
   // Group IDs by type
   const assetsByType: Record<string, string[]> = {};
   for (const id of args.ids) {
@@ -357,6 +356,11 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
       if (process.env.DEBUG) {
         console.error(`[get-asset-details] Warning: Unknown asset type for ID: ${id}`);
       }
+      results.push({
+        id,
+        _type: "unknown",
+        error: `Unknown asset type for ID: ${id}. Expected prefix: site_, building_, floor_, room_, zone_`,
+      });
       continue;
     }
 
@@ -382,8 +386,6 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
   }
 
   const settled = await Promise.allSettled(fetchPromises.map((f) => f.promise));
-
-  const results: Array<Record<string, unknown>> = [];
 
   for (let i = 0; i < settled.length; i++) {
     const { id, type } = fetchPromises[i];

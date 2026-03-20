@@ -5,11 +5,18 @@ import { z } from "zod";
 import { GET_ALL_SENSORS, GET_ALL_HIVES } from "../clients/queries/topology.js";
 import type { Site, Building, Floor, Sensor, Hive } from "../clients/types.js";
 import { buildHardwareSummary, daysBetween, hoursBetween } from "../utils/natural-language.js";
-import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
-
-/**
- * Zod validation for butlr_hardware_snapshot
- */
+import {
+  isProductionSensor,
+  isProductionHive,
+  rethrowIfGraphQLError,
+} from "../utils/graphql-helpers.js";
+import type {
+  BatteryDetail,
+  BatteryStatus,
+  FloorBreakdown,
+  HardwareSnapshotResponse,
+  OfflineDevice,
+} from "../types/responses.js";
 
 /** Shared shape — used by both registerTool and full validation */
 const hardwareSnapshotInputShape = {
@@ -62,9 +69,6 @@ export const HardwareSnapshotArgsSchema = z
     }
   );
 
-/**
- * Tool definition for butlr_hardware_snapshot
- */
 const HARDWARE_SNAPSHOT_DESCRIPTION =
   "Get unified device health check combining online/offline status and battery health across your entire portfolio or specific locations. Provides proactive maintenance insights for facilities teams managing IoT sensor infrastructure.\n\n" +
   "Primary Users:\n" +
@@ -93,57 +97,7 @@ const HARDWARE_SNAPSHOT_DESCRIPTION =
   "CRE Context: Battery-powered sensors typically last 1-2 years depending on mode. Proactive battery management prevents data gaps that could impact space utilization reporting and right-sizing decisions.\n\n" +
   "See Also: butlr_search_assets, butlr_get_asset_details, butlr_list_topology";
 
-/**
- * Input arguments (output type from Zod schema after defaults applied)
- */
 export type HardwareSnapshotArgs = z.output<typeof HardwareSnapshotArgsSchema>;
-
-/**
- * Battery status for a sensor
- */
-type BatteryStatus = "critical" | "due_soon" | "healthy" | "no_battery";
-
-/**
- * Battery detail for a specific sensor
- */
-interface BatteryDetail {
-  sensor_id: string;
-  sensor_name: string;
-  mac_address: string; // Human-readable identifier
-  path: string;
-  status: BatteryStatus;
-  battery_change_by_date: string;
-  days_remaining: number;
-  last_battery_change_date?: string;
-  next_battery_change_date?: string;
-}
-
-/**
- * Floor breakdown
- */
-interface FloorBreakdown {
-  floor_id: string;
-  floor_name: string;
-  sensors_online: number;
-  sensors_total: number;
-  percent_online: number;
-  batteries_critical: number;
-  batteries_due_soon: number;
-}
-
-/**
- * Offline device
- */
-interface OfflineDevice {
-  type: "sensor" | "hive";
-  id: string;
-  name: string;
-  serial_number?: string; // Hive serial number (hives only)
-  mac_address?: string; // Sensor MAC address (sensors only)
-  path: string;
-  last_heartbeat?: string;
-  hours_offline?: number;
-}
 
 /**
  * GraphQL query for topology (without devices - they're queried separately)
@@ -181,7 +135,7 @@ export function getBatteryStatus(sensor: Sensor, currentDate: Date = new Date())
 
   // No battery_change_by_date means we don't have battery tracking
   if (!sensor.battery_change_by_date) {
-    return "healthy"; // Assume healthy if no tracking
+    return "unknown";
   }
 
   const changeByDate = new Date(sensor.battery_change_by_date);
@@ -205,7 +159,7 @@ function buildDevicePath(
   buildings: Building[],
   sites: Site[]
 ): string {
-  const deviceFloorId = (device as any).floor_id || (device as any).floorID;
+  const deviceFloorId = device.floor_id || device.floorID;
   const floor = floors.find((f) => f.id === deviceFloorId);
   if (!floor) return device.name;
 
@@ -223,20 +177,8 @@ function buildDevicePath(
  * Returns production devices and counts of excluded test devices.
  */
 function filterProductionDevices(rawSensors: Sensor[], rawHives: Hive[]) {
-  const sensors = rawSensors.filter(
-    (s) =>
-      s.mac_address &&
-      s.mac_address.trim() !== "" &&
-      !s.mac_address.startsWith("mi-rr-or") &&
-      !s.mac_address.startsWith("fa-ke")
-  );
-
-  const hives = rawHives.filter(
-    (h) =>
-      h.serialNumber &&
-      h.serialNumber.trim() !== "" &&
-      !h.serialNumber.toLowerCase().startsWith("fake")
-  );
+  const sensors = rawSensors.filter(isProductionSensor);
+  const hives = rawHives.filter(isProductionHive);
 
   const mirrorSensors = rawSensors.filter(
     (s) => s.mac_address?.startsWith("mi-rr-or") || s.mac_address?.startsWith("fa-ke")
@@ -438,15 +380,7 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
       testDeviceCounts = testCounts;
     }
   } catch (error: unknown) {
-    if (
-      error &&
-      typeof error === "object" &&
-      ("graphQLErrors" in error || "networkError" in error)
-    ) {
-      const mcpError = translateGraphQLError(error as Parameters<typeof translateGraphQLError>[0]);
-      const errorMessage = formatMCPError(mcpError);
-      throw new Error(errorMessage);
-    }
+    rethrowIfGraphQLError(error);
     throw error;
   }
 
@@ -473,10 +407,11 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
     allHives.length > 0 ? parseFloat(((hivesOnline / allHives.length) * 100).toFixed(1)) : 0;
 
   // Calculate battery health
-  const batteryStatusCounts = {
+  const batteryStatusCounts: Record<BatteryStatus, number> = {
     critical: 0,
     due_soon: 0,
     healthy: 0,
+    unknown: 0,
     no_battery: 0,
   };
 
@@ -621,7 +556,7 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
   }
 
   // Build response
-  const response: Record<string, unknown> = {
+  const response: HardwareSnapshotResponse = {
     summary: enhancedSummary,
     sensors: {
       total: allSensors.length,
