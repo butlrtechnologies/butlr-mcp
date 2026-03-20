@@ -47,7 +47,7 @@ npm test
 Every commit automatically runs:
 
 1. **Type checking** (`npm run typecheck`) - Ensures TypeScript types are valid
-2. **Full test suite** (`npm test`) - All 256 tests must pass (~600ms runtime)
+2. **Full test suite** (`npm test`) - All tests must pass
 3. **Secret file detection** - Blocks commits containing `.env`, `.pem`, `.key`, `.p12`, `.pfx` files
 4. **Secret pattern detection** - Scans for AWS keys, API tokens, JWTs in code
 5. **Large file detection** - Blocks files >500KB (suggest Git LFS or .gitignore)

@@ -12,8 +12,9 @@ import {
   getLocalMidnight,
 } from "../utils/timezone-helpers.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
-import { createValidationError } from "../errors/mcp-errors.js";
+import { createValidationError, withToolErrorHandling } from "../errors/mcp-errors.js";
 import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { debug } from "../utils/debug.js";
 import type { TrafficFlowResponse } from "../types/responses.js";
 
 const timeStringSchema = z.string().refine(
@@ -133,9 +134,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
   // If not an ID, search for the space
   if (!spaceId.match(/^room_/)) {
-    if (process.env.DEBUG) {
-      console.error(`[traffic-flow] Searching for space: "${args.space_id_or_name}"`);
-    }
+    debug("traffic-flow", `Searching for space: "${args.space_id_or_name}"`);
 
     const searchResults = await executeSearchAssets({
       query: args.space_id_or_name,
@@ -151,11 +150,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
     spaceId = searchResults.matches[0].id;
 
-    if (process.env.DEBUG) {
-      console.error(
-        `[traffic-flow] Using best match: ${searchResults.matches[0].name} (${spaceId})`
-      );
-    }
+    debug("traffic-flow", `Using best match: ${searchResults.matches[0].name} (${spaceId})`);
   }
 
   // Query room details, topology for timezone, and all sensors
@@ -217,9 +212,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       );
     }
 
-    if (process.env.DEBUG) {
-      console.error(`[traffic-flow] Found ${trafficSensors.length} traffic sensors for room`);
-    }
+    debug("traffic-flow", `Found ${trafficSensors.length} traffic sensors for room`);
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
     throw error;
@@ -269,16 +262,13 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       ? "today (UTC fallback)"
       : `today (${tzMetadata.timezone_abbr})`;
 
-    if (process.env.DEBUG) {
-      console.error(
-        `[traffic-flow] Today starts at ${start} (midnight ${usedUtcFallback ? "UTC fallback" : tzMetadata.timezone_abbr})`
-      );
-    }
+    debug(
+      "traffic-flow",
+      `Today starts at ${start} (midnight ${usedUtcFallback ? "UTC fallback" : tzMetadata.timezone_abbr})`
+    );
   }
 
-  if (process.env.DEBUG) {
-    console.error(`[traffic-flow] Querying traffic from ${start} to ${stop}`);
-  }
+  debug("traffic-flow", `Querying traffic from ${start} to ${stop}`);
 
   // Query traffic data with timezone
   interface TrafficDataPoint {
@@ -306,16 +296,13 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
     trafficData = response.data as TrafficDataPoint[];
 
-    if (process.env.DEBUG) {
-      console.error(
-        `[traffic-flow] Received ${trafficData.length} data points from ${trafficSensors.length} sensors`
-      );
-    }
+    debug(
+      "traffic-flow",
+      `Received ${trafficData.length} data points from ${trafficSensors.length} sensors`
+    );
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
-    if (process.env.DEBUG) {
-      console.error(`[traffic-flow] Failed to get traffic data:`, error);
-    }
+    debug("traffic-flow", "Failed to get traffic data:", error);
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to get traffic data for ${room.name}. ${msg}`);
   }
@@ -439,15 +426,15 @@ export function registerTrafficFlow(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: false,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = TrafficFlowArgsSchema.parse(args);
       const result = await executeTrafficFlow(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }

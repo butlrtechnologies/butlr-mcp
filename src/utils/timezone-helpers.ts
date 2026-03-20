@@ -4,6 +4,7 @@
  */
 
 import type { Site, Building, Floor } from "../clients/types.js";
+import { debug } from "./debug.js";
 
 /**
  * Get the site timezone for any asset (floor, room, zone)
@@ -69,9 +70,7 @@ export function getTimezoneAbbreviation(timezone: string, date: Date = new Date(
     const tzPart = parts.find((p) => p.type === "timeZoneName");
     return tzPart?.value || "UTC";
   } catch (error) {
-    if (process.env.DEBUG) {
-      console.error(`[timezone-helpers] Failed to get abbreviation for ${timezone}:`, error);
-    }
+    debug("timezone-helpers", `Failed to get abbreviation for ${timezone}:`, error);
     return "UTC";
   }
 }
@@ -97,9 +96,7 @@ export function getUTCOffset(timezone: string, date: Date = new Date()): string 
 
     return "UTC";
   } catch (error) {
-    if (process.env.DEBUG) {
-      console.error(`[timezone-helpers] Failed to get offset for ${timezone}:`, error);
-    }
+    debug("timezone-helpers", `Failed to get offset for ${timezone}:`, error);
     return "UTC";
   }
 }
@@ -152,9 +149,7 @@ export function getCurrentLocalTime(timezone: string): string {
 
     return `${dateStr} ${tzAbbr}`;
   } catch (error) {
-    if (process.env.DEBUG) {
-      console.error(`[timezone-helpers] Failed to format time for ${timezone}:`, error);
-    }
+    debug("timezone-helpers", `Failed to format time for ${timezone}:`, error);
     return new Date().toISOString();
   }
 }
@@ -214,7 +209,7 @@ export function getLocalMidnight(date: Date, timezone: string): Date {
 
     return estimate;
   } catch (error) {
-    console.error(`[timezone] Failed to calculate local midnight for ${timezone}:`, error);
+    debug("timezone-helpers", `Failed to calculate local midnight for ${timezone}:`, error);
     // Fallback to UTC midnight
     const utcMidnight = new Date(date);
     utcMidnight.setUTCHours(0, 0, 0, 0);

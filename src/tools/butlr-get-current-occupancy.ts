@@ -10,6 +10,8 @@ import {
   getTrafficCoverageNote,
   buildRecommendation,
 } from "../utils/occupancy-helpers.js";
+import { debug } from "../utils/debug.js";
+import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   CurrentOccupancyResponse,
   AssetCurrentOccupancy,
@@ -37,9 +39,7 @@ export type GetCurrentOccupancyArgs = z.output<typeof GetCurrentOccupancyArgsSch
 export async function executeGetCurrentOccupancy(
   args: GetCurrentOccupancyArgs
 ): Promise<CurrentOccupancyResponse> {
-  if (process.env.DEBUG) {
-    console.error(`[butlr-get-current-occupancy] Querying ${args.asset_ids.length} assets`);
-  }
+  debug("butlr-get-current-occupancy", `Querying ${args.asset_ids.length} assets`);
 
   // Fetch topology and sensors using shared helper
   const ctx = await fetchTopologyAndSensors();
@@ -79,7 +79,7 @@ export async function executeGetCurrentOccupancy(
           presenceHasData = true;
         }
       } catch (error: unknown) {
-        console.error(`[current-occupancy] Presence query failed:`, error);
+        debug("current-occupancy", "Presence query failed:", error);
         presenceData.warning =
           "Failed to retrieve current presence data. Occupancy value may be missing.";
       }
@@ -113,7 +113,7 @@ export async function executeGetCurrentOccupancy(
           trafficHasData = true;
         }
       } catch (error: unknown) {
-        console.error(`[current-occupancy] Traffic query failed:`, error);
+        debug("current-occupancy", "Traffic query failed:", error);
         trafficData.warning =
           "Failed to retrieve current traffic data. Occupancy value may be missing.";
       }
@@ -159,15 +159,15 @@ export function registerGetCurrentOccupancy(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: false,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = GetCurrentOccupancyArgsSchema.parse(args);
       const result = await executeGetCurrentOccupancy(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }

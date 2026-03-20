@@ -12,6 +12,8 @@ import {
   buildRecommendation,
 } from "../utils/occupancy-helpers.js";
 import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { debug } from "../utils/debug.js";
+import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   OccupancyTimeseriesResponse,
   AssetOccupancyTimeseries,
@@ -81,9 +83,7 @@ export async function executeGetOccupancyTimeseries(
   // Validate time range — let errors throw naturally
   validateTimeRange(args.interval, args.start, args.stop);
 
-  if (process.env.DEBUG) {
-    console.error(`[butlr-get-occupancy-timeseries] Querying ${args.asset_ids.length} assets`);
-  }
+  debug("butlr-get-occupancy-timeseries", `Querying ${args.asset_ids.length} assets`);
 
   // Fetch topology and sensors in parallel
   const ctx = await fetchTopologyAndSensors();
@@ -117,7 +117,7 @@ export async function executeGetOccupancyTimeseries(
           presenceData.timeseries = points;
         }
       } catch (error: unknown) {
-        console.error(`[occupancy-timeseries] Presence query failed:`, error);
+        debug("occupancy-timeseries", "Presence query failed:", error);
         presenceData.warning =
           "Failed to retrieve presence timeseries data. Results may be incomplete.";
       }
@@ -147,7 +147,7 @@ export async function executeGetOccupancyTimeseries(
           trafficData.timeseries = points;
         }
       } catch (error: unknown) {
-        console.error(`[occupancy-timeseries] Traffic query failed:`, error);
+        debug("occupancy-timeseries", "Traffic query failed:", error);
         trafficData.warning =
           "Failed to retrieve traffic timeseries data. Results may be incomplete.";
       }
@@ -197,10 +197,10 @@ export function registerGetOccupancyTimeseries(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       try {
         const validated = GetOccupancyTimeseriesArgsSchema.parse(args);
         const result = await executeGetOccupancyTimeseries(validated);
@@ -211,6 +211,6 @@ export function registerGetOccupancyTimeseries(server: McpServer): void {
         rethrowIfGraphQLError(error);
         throw error;
       }
-    }
+    })
   );
 }

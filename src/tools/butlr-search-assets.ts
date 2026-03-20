@@ -12,6 +12,8 @@ import { flattenTopology, type FlattenedAsset } from "../utils/asset-flattener.j
 import { searchAssets, type SearchableAsset } from "../utils/fuzzy-match.js";
 import { buildAssetPath } from "../utils/path-builder.js";
 import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { debug } from "../utils/debug.js";
+import { withToolErrorHandling } from "../errors/mcp-errors.js";
 
 const VALID_ASSET_TYPES = ["site", "building", "floor", "room", "zone", "sensor", "hive"] as const;
 
@@ -121,13 +123,12 @@ export interface SearchResult {
 export async function executeSearchAssets(args: SearchAssetsArgs) {
   const maxResults = args.max_results;
 
-  if (process.env.DEBUG) {
-    console.error(
-      `[search-assets] Searching for "${args.query}"` +
-        (args.asset_types ? ` in types: ${args.asset_types.join(",")}` : "") +
-        ` (max: ${maxResults})`
-    );
-  }
+  debug(
+    "search-assets",
+    `Searching for "${args.query}"` +
+      (args.asset_types ? ` in types: ${args.asset_types.join(",")}` : "") +
+      ` (max: ${maxResults})`
+  );
 
   // Use a generic cache key for full topology (we'll search across it)
   const cacheKey = generateTopologyCacheKey(
@@ -142,15 +143,11 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
   const cached = getCachedTopology(cacheKey);
 
   if (cached && cached.data && cached.data.sites) {
-    if (process.env.DEBUG) {
-      console.error("[search-assets] Using cached topology for search");
-    }
+    debug("search-assets", "Using cached topology for search");
     sites = cached.data.sites as Site[];
   } else {
     // Fetch fresh topology
-    if (process.env.DEBUG) {
-      console.error("[search-assets] Fetching fresh topology for search");
-    }
+    debug("search-assets", "Fetching fresh topology for search");
 
     try {
       const result = await apolloClient.query<{ sites: SitesResponse }>({
@@ -169,8 +166,8 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
 
       // Track whether the topology data is partial (errors alongside data)
       const partialData = !!result.error;
-      if (partialData && process.env.DEBUG) {
-        console.error(`[search-assets] Warning: GraphQL errors present, data may be partial`);
+      if (partialData) {
+        debug("search-assets", "Warning: GraphQL errors present, data may be partial");
       }
 
       sites = result.data.sites.data;
@@ -178,12 +175,9 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
       // Only cache complete topology data — partial results should be re-fetched
       if (!partialData) {
         setCachedTopology(cacheKey, { sites });
-
-        if (process.env.DEBUG) {
-          console.error(`[search-assets] Cached topology with ${sites.length} sites`);
-        }
-      } else if (process.env.DEBUG) {
-        console.error(`[search-assets] Skipping cache — topology data is partial`);
+        debug("search-assets", `Cached topology with ${sites.length} sites`);
+      } else {
+        debug("search-assets", "Skipping cache — topology data is partial");
       }
     } catch (error: unknown) {
       rethrowIfGraphQLError(error);
@@ -194,20 +188,17 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
   // Flatten topology into searchable list
   const flattened = flattenTopology(sites);
 
-  if (process.env.DEBUG) {
-    console.error(`[search-assets] Flattened ${flattened.length} total assets`);
-  }
+  debug("search-assets", `Flattened ${flattened.length} total assets`);
 
   // Filter by asset types if specified
   let searchableAssets = flattened;
   if (args.asset_types && args.asset_types.length > 0) {
     searchableAssets = flattened.filter((asset) => args.asset_types!.includes(asset.type));
 
-    if (process.env.DEBUG) {
-      console.error(
-        `[search-assets] Filtered to ${searchableAssets.length} assets of types: ${args.asset_types.join(",")}`
-      );
-    }
+    debug(
+      "search-assets",
+      `Filtered to ${searchableAssets.length} assets of types: ${args.asset_types.join(",")}`
+    );
   }
 
   // Perform fuzzy search
@@ -222,9 +213,7 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
     }
   );
 
-  if (process.env.DEBUG) {
-    console.error(`[search-assets] Found ${matches.length} matches`);
-  }
+  debug("search-assets", `Found ${matches.length} matches`);
 
   // Format results with minimal fields
   const results: SearchResult[] = matches.map((match) => ({
@@ -262,15 +251,15 @@ export function registerSearchAssets(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = SearchAssetsArgsSchema.parse(args);
       const result = await executeSearchAssets(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }

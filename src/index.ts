@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerSearchAssets } from "./tools/butlr-search-assets.js";
@@ -11,9 +12,12 @@ import { registerListTopology } from "./tools/butlr-list-topology.js";
 import { registerFetchEntityDetails } from "./tools/butlr-fetch-entity-details.js";
 import { registerGetOccupancyTimeseries } from "./tools/butlr-get-occupancy-timeseries.js";
 import { registerGetCurrentOccupancy } from "./tools/butlr-get-current-occupancy.js";
+import { debug } from "./utils/debug.js";
+
+const require = createRequire(import.meta.url);
+const { version: SERVER_VERSION } = require("../package.json") as { version: string };
 
 const SERVER_NAME = "butlr-mcp-server";
-const SERVER_VERSION = "0.1.1";
 
 const server = new McpServer({
   name: SERVER_NAME,
@@ -36,10 +40,8 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  if (process.env.DEBUG === "butlr-mcp" || process.env.DEBUG === "*") {
-    console.error(`[${SERVER_NAME}] Server started on stdio transport`);
-    console.error(`[${SERVER_NAME}] Version: ${SERVER_VERSION}`);
-  }
+  debug(SERVER_NAME, "Server started on stdio transport");
+  debug(SERVER_NAME, `Version: ${SERVER_VERSION}`);
 }
 
 main().catch((error) => {

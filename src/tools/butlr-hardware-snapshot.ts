@@ -10,6 +10,8 @@ import {
   isProductionHive,
   rethrowIfGraphQLError,
 } from "../utils/graphql-helpers.js";
+import { debug } from "../utils/debug.js";
+import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   BatteryDetail,
   BatteryStatus,
@@ -243,11 +245,10 @@ interface TestDeviceCounts {
 export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
   const scopeType = args.scope_type;
 
-  if (process.env.DEBUG) {
-    console.error(
-      `[hardware-snapshot] Querying device health for scope: ${scopeType}${args.scope_id ? `:${args.scope_id}` : ""}`
-    );
-  }
+  debug(
+    "hardware-snapshot",
+    `Querying device health for scope: ${scopeType}${args.scope_id ? `:${args.scope_id}` : ""}`
+  );
 
   let floors: Floor[] = [];
   let buildings: Building[] = [];
@@ -388,11 +389,7 @@ export async function executeHardwareSnapshot(args: HardwareSnapshotArgs) {
   const allSensors = floors.flatMap((f) => f.sensors || []);
   const allHives = floors.flatMap((f) => f.hives || []);
 
-  if (process.env.DEBUG) {
-    console.error(
-      `[hardware-snapshot] Found ${allSensors.length} sensors, ${allHives.length} hives`
-    );
-  }
+  debug("hardware-snapshot", `Found ${allSensors.length} sensors, ${allHives.length} hives`);
 
   // Calculate sensor statistics
   const sensorsOnline = allSensors.filter((s) => s.is_online).length;
@@ -648,15 +645,15 @@ export function registerHardwareSnapshot(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: false, // Real-time data changes between calls
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = HardwareSnapshotArgsSchema.parse(args);
       const result = await executeHardwareSnapshot(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }

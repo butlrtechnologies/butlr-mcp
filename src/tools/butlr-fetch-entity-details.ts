@@ -4,8 +4,9 @@ import { gql } from "@apollo/client";
 import { z } from "zod";
 import { detectAssetType } from "../utils/asset-helpers.js";
 import { type EntityType, ENTITY_TYPES, getValidatedFields } from "../utils/field-validator.js";
-import { createValidationError } from "../errors/mcp-errors.js";
+import { createValidationError, withToolErrorHandling } from "../errors/mcp-errors.js";
 import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { debug } from "../utils/debug.js";
 import type { FetchEntityDetailsResponse, EntityResult } from "../types/responses.js";
 
 const FETCH_ENTITY_DETAILS_DESCRIPTION =
@@ -158,9 +159,7 @@ function buildQueryForFields(type: string, fields: string[]): ReturnType<typeof 
 export async function executeFetchEntityDetails(
   args: FetchEntityDetailsArgs
 ): Promise<FetchEntityDetailsResponse> {
-  if (process.env.DEBUG) {
-    console.error(`[butlr-fetch-entity-details] Fetching details for ${args.ids.length} asset(s)`);
-  }
+  debug("butlr-fetch-entity-details", `Fetching details for ${args.ids.length} asset(s)`);
 
   // Group IDs by type
   const assetsByType: Record<string, string[]> = {};
@@ -229,9 +228,7 @@ export async function executeFetchEntityDetails(
         const foundIds = new Set(dataArray.map((a: any) => a.id));
         for (const id of ids) {
           if (!foundIds.has(id)) {
-            if (process.env.DEBUG) {
-              console.error(`[butlr-fetch-entity-details] Asset not found: ${id}`);
-            }
+            debug("butlr-fetch-entity-details", `Asset not found: ${id}`);
             results.push({
               id,
               _type: type,
@@ -265,9 +262,7 @@ export async function executeFetchEntityDetails(
               _type: type,
             });
           } else {
-            if (process.env.DEBUG) {
-              console.error(`[butlr-fetch-entity-details] Asset not found: ${id}`);
-            }
+            debug("butlr-fetch-entity-details", `Asset not found: ${id}`);
             results.push({
               id,
               _type: type,
@@ -311,15 +306,15 @@ export function registerFetchEntityDetails(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = FetchEntityDetailsArgsSchema.parse(args);
       const result = await executeFetchEntityDetails(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }

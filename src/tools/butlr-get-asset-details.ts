@@ -6,8 +6,10 @@ import {
   translateGraphQLError,
   formatMCPError,
   createValidationError,
+  withToolErrorHandling,
 } from "../errors/mcp-errors.js";
 import { detectAssetType } from "../utils/asset-helpers.js";
+import { debug } from "../utils/debug.js";
 
 const assetIdSchema = z
   .string()
@@ -340,11 +342,10 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
   const includeDevices = args.include_devices === true; // Default false
   const includeParentContext = args.include_parent_context !== false; // Default true
 
-  if (process.env.DEBUG) {
-    console.error(
-      `[get-asset-details] Fetching details for ${args.ids.length} asset(s): ${args.ids.join(", ")}`
-    );
-  }
+  debug(
+    "get-asset-details",
+    `Fetching details for ${args.ids.length} asset(s): ${args.ids.join(", ")}`
+  );
 
   const results: Array<Record<string, unknown>> = [];
 
@@ -353,9 +354,7 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
   for (const id of args.ids) {
     const type = detectAssetType(id);
     if (type === "unknown") {
-      if (process.env.DEBUG) {
-        console.error(`[get-asset-details] Warning: Unknown asset type for ID: ${id}`);
-      }
+      debug("get-asset-details", `Warning: Unknown asset type for ID: ${id}`);
       results.push({
         id,
         _type: "unknown",
@@ -403,16 +402,14 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
       const asset = data[type];
       if (asset && typeof asset === "object") {
         results.push({ ...(asset as Record<string, unknown>), _type: type });
-      } else if (process.env.DEBUG) {
-        console.error(`[get-asset-details] Asset not found: ${id}`);
+      } else {
+        debug("get-asset-details", `Asset not found: ${id}`);
       }
     } else {
       const err = outcome.reason;
       if (err && (err.graphQLErrors || err.networkError)) {
         const mcpError = translateGraphQLError(err);
-        if (process.env.DEBUG) {
-          console.error(`[get-asset-details] Error fetching ${id}:`, formatMCPError(mcpError));
-        }
+        debug("get-asset-details", `Error fetching ${id}:`, formatMCPError(mcpError));
         results.push({ id, error: formatMCPError(mcpError), _type: type });
       } else {
         throw err;
@@ -447,15 +444,15 @@ export function registerGetAssetDetails(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = GetAssetDetailsArgsSchema.parse(args);
       const result = await executeGetAssetDetails(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }
