@@ -21,6 +21,8 @@ const FETCH_ENTITY_DETAILS_DESCRIPTION =
 const fetchEntityDetailsInputShape = {
   ids: z
     .array(z.string())
+    .min(1, "ids must contain at least 1 entity ID")
+    .max(50, "ids cannot exceed 50 entities")
     .describe(
       "Entity IDs (mixed types supported: site_, building_, floor_, room_, zone_, sensor_, hive_)"
     ),
@@ -64,71 +66,6 @@ const fetchEntityDetailsInputShape = {
 export const FetchEntityDetailsArgsSchema = z.object(fetchEntityDetailsInputShape).strict();
 
 /**
- * Tool definition for butlr_fetch_entity_details
- */
-export const fetchEntityDetailsTool = {
-  name: "butlr_fetch_entity_details",
-  description: FETCH_ENTITY_DETAILS_DESCRIPTION,
-  inputSchema: {
-    type: "object",
-    properties: {
-      ids: {
-        type: "array",
-        items: { type: "string" },
-        description:
-          "Entity IDs (mixed types supported: site_, building_, floor_, room_, zone_, sensor_, hive_)",
-      },
-      site_fields: {
-        type: "array",
-        items: { type: "string" },
-        description:
-          "Optional: Fields to fetch for sites (e.g., ['timezone', 'siteNumber', 'customID'])",
-      },
-      building_fields: {
-        type: "array",
-        items: { type: "string" },
-        description:
-          "Optional: Fields for buildings (e.g., ['capacity', 'address', 'building_number'])",
-      },
-      floor_fields: {
-        type: "array",
-        items: { type: "string" },
-        description: "Optional: Fields for floors (e.g., ['floorNumber', 'capacity', 'timezone'])",
-      },
-      room_fields: {
-        type: "array",
-        items: { type: "string" },
-        description: "Optional: Fields for rooms (e.g., ['roomType', 'capacity', 'coordinates'])",
-      },
-      zone_fields: {
-        type: "array",
-        items: { type: "string" },
-        description: "Optional: Fields for zones (e.g., ['roomID', 'capacity'])",
-      },
-      sensor_fields: {
-        type: "array",
-        items: { type: "string" },
-        description:
-          "Optional: Fields for sensors (e.g., ['name', 'mac_address', 'mode', 'is_online'])",
-      },
-      hive_fields: {
-        type: "array",
-        items: { type: "string" },
-        description: "Optional: Fields for hives (e.g., ['name', 'serialNumber', 'isOnline'])",
-      },
-    },
-    required: ["ids"],
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
-
-/**
  * Input arguments for butlr_fetch_entity_details
  */
 export interface FetchEntityDetailsArgs {
@@ -145,8 +82,13 @@ export interface FetchEntityDetailsArgs {
 /**
  * Build GraphQL query dynamically based on requested fields
  */
-function buildQueryForFields(type: string, fields: string[]): any {
-  // Always include type indicator
+function buildQueryForFields(type: string, fields: string[]): ReturnType<typeof gql> {
+  // Defense-in-depth: reject any field name that isn't a simple identifier
+  for (const field of fields) {
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(field)) {
+      throw new Error(`Invalid field name: ${field}`);
+    }
+  }
   const fieldList = fields.join("\n      ");
 
   switch (type) {

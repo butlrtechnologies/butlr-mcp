@@ -21,32 +21,6 @@ const getCurrentOccupancyInputShape = {
 export const GetCurrentOccupancyArgsSchema = z.object(getCurrentOccupancyInputShape).strict();
 
 /**
- * Tool definition for unified butlr_get_current_occupancy
- */
-export const getCurrentOccupancyTool = {
-  name: "butlr_get_current_occupancy",
-  description: GET_CURRENT_OCCUPANCY_DESCRIPTION,
-  inputSchema: {
-    type: "object",
-    properties: {
-      asset_ids: {
-        type: "array",
-        items: { type: "string" },
-        description: "Floor, room, or zone IDs",
-      },
-    },
-    required: ["asset_ids"],
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
-
-/**
  * Input arguments
  */
 export interface GetCurrentOccupancyArgs {

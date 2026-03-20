@@ -46,47 +46,6 @@ const listTopologyInputShape = {
 export const ListTopologyArgsSchema = z.object(listTopologyInputShape).strict();
 
 /**
- * Tool definition for butlr_list_topology
- */
-export const listTopologyTool = {
-  name: "butlr_list_topology",
-  description: LIST_TOPOLOGY_DESCRIPTION,
-  inputSchema: {
-    type: "object",
-    properties: {
-      asset_ids: {
-        type: "array",
-        items: { type: "string" },
-        description:
-          "Optional: Parent asset IDs to show tree for. If empty, shows all sites. " +
-          "Examples: ['site_123'], ['building_456'], ['floor_789']",
-      },
-      starting_depth: {
-        type: "number",
-        default: 0,
-        description:
-          "Depth level to start showing assets. 0=sites, 1=buildings, 2=floors, 3=rooms/zones, 4=hives, 5=sensors. " +
-          "Use with traversal_depth=0 to show only assets at this level (flat list).",
-      },
-      traversal_depth: {
-        type: "number",
-        default: 0,
-        description:
-          "How many levels below starting_depth to traverse. 0=starting level only, 1=one level below, etc. " +
-          "Default is 0 to minimize token usage. Use 10 for full tree.",
-      },
-    },
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
-
-/**
  * Input arguments for butlr_list_topology
  */
 export interface ListTopologyArgs {

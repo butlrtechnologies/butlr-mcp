@@ -68,36 +68,6 @@ const SPACE_BUSYNESS_DESCRIPTION =
   "See Also: butlr_get_current_occupancy, butlr_traffic_flow, butlr_search_assets, butlr_get_occupancy_timeseries";
 
 /**
- * Tool definition for butlr_space_busyness
- */
-export const spaceBusynessTool = {
-  name: "butlr_space_busyness",
-  description: SPACE_BUSYNESS_DESCRIPTION,
-  inputSchema: {
-    type: "object",
-    properties: {
-      space_id_or_name: {
-        type: "string",
-        description: "Space ID (room_123) or search term ('café', 'lobby')",
-      },
-      include_trend: {
-        type: "boolean",
-        default: true,
-        description: "Compare to typical occupancy for this day/time",
-      },
-    },
-    required: ["space_id_or_name"],
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
-
-/**
  * Input arguments (inferred from Zod schema)
  */
 export type SpaceBusynessArgs = z.output<typeof SpaceBusynessArgsSchema>;

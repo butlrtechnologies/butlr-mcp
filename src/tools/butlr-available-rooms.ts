@@ -99,47 +99,6 @@ const AVAILABLE_ROOMS_DESCRIPTION =
   "See Also: butlr_space_busyness, butlr_get_occupancy_timeseries, butlr_search_assets";
 
 /**
- * Tool definition for butlr_available_rooms
- */
-export const availableRoomsTool = {
-  name: "butlr_available_rooms",
-  description: AVAILABLE_ROOMS_DESCRIPTION,
-  inputSchema: {
-    type: "object",
-    properties: {
-      min_capacity: {
-        type: "number",
-        description: "Minimum room capacity (number of people)",
-      },
-      max_capacity: {
-        type: "number",
-        description: "Maximum room capacity",
-      },
-      tags: {
-        type: "array",
-        items: { type: "string" },
-        description: "Filter by room tags (e.g., ['conference', 'video-equipped'])",
-      },
-      building_id: {
-        type: "string",
-        description: "Limit to specific building",
-      },
-      floor_id: {
-        type: "string",
-        description: "Limit to specific floor",
-      },
-    },
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
-
-/**
  * Input arguments (output type from Zod schema after defaults applied)
  */
 export type AvailableRoomsArgs = z.output<typeof AvailableRoomsArgsSchema>;
@@ -477,7 +436,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   const availableRooms: AvailableRoom[] = [];
 
   for (const room of rooms) {
-    const occupancy = occupancyMap[room.id] || null;
+    const occupancy = occupancyMap[room.id] ?? null;
 
     // Consider room available if occupancy is 0 or null (no data)
     // For safety, only include if we have data and it's 0

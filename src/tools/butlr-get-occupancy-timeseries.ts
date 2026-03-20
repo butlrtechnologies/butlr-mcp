@@ -30,45 +30,6 @@ const getOccupancyTimeseriesInputShape = {
 export const GetOccupancyTimeseriesArgsSchema = z.object(getOccupancyTimeseriesInputShape).strict();
 
 /**
- * Tool definition for unified butlr_get_occupancy_timeseries
- */
-export const getOccupancyTimeseriesTool = {
-  name: "butlr_get_occupancy_timeseries",
-  description: GET_OCCUPANCY_TIMESERIES_DESCRIPTION,
-  inputSchema: {
-    type: "object",
-    properties: {
-      asset_ids: {
-        type: "array",
-        items: { type: "string" },
-        description: "Floor, room, or zone IDs",
-      },
-      interval: {
-        type: "string",
-        enum: ["1m", "1h", "1d"],
-        description: "Aggregation interval (1m=max 1hr range, 1h=max 48hrs, 1d=max 60 days)",
-      },
-      start: {
-        type: "string",
-        description: "ISO-8601 timestamp or relative time (e.g., '-24h')",
-      },
-      stop: {
-        type: "string",
-        description: "ISO-8601 timestamp or relative time (e.g., 'now')",
-      },
-    },
-    required: ["asset_ids", "interval", "start", "stop"],
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
-
-/**
  * Input arguments
  */
 export interface GetOccupancyTimeseriesArgs {

@@ -108,51 +108,6 @@ const TRAFFIC_FLOW_DESCRIPTION =
   "See Also: butlr_get_current_occupancy, butlr_space_busyness, butlr_search_assets, butlr_get_asset_details";
 
 /**
- * Tool definition for butlr_traffic_flow
- */
-export const trafficFlowTool = {
-  name: "butlr_traffic_flow",
-  description: TRAFFIC_FLOW_DESCRIPTION,
-  inputSchema: {
-    type: "object",
-    properties: {
-      space_id_or_name: {
-        type: "string",
-        description: "Space ID or search term",
-      },
-      time_window: {
-        type: "string",
-        enum: ["20m", "1h", "today", "custom"],
-        default: "today",
-        description: "Time period for traffic count",
-      },
-      custom_start: {
-        type: "string",
-        description:
-          "Custom start time (ISO-8601 or relative '-24h'). Required if time_window='custom'",
-      },
-      custom_stop: {
-        type: "string",
-        description: "Custom stop time. Defaults to 'now'",
-      },
-      include_trend: {
-        type: "boolean",
-        default: true,
-        description: "Compare to typical traffic for this period",
-      },
-    },
-    required: ["space_id_or_name"],
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
-
-/**
  * Input arguments (output type from Zod schema after defaults applied)
  */
 export type TrafficFlowArgs = z.output<typeof TrafficFlowArgsSchema>;
