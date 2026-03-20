@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 - Replace `undici` with built-in `fetch()` — lowers Node.js requirement from 20 to 18
-- Remove `BUTLR_ORG_ID` from required env vars (API tokens are already org-scoped)
+- Remove `BUTLR_ORG_ID` from required env vars
 - Update Claude Code setup docs to use `-e` flags for env vars
 - Expand "Getting API Credentials" with self-service instructions for app.butlr.io
 
