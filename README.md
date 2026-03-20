@@ -6,9 +6,25 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that connects AI assistants to [Butlr's](https://www.butlr.com) occupancy sensing platform. Query real-time space utilization, search facility assets, and analyze occupancy patterns through natural language.
 
+### What you can do
+
+- **Find available spaces** — "Are there any free conference rooms right now with capacity for 8?"
+- **Monitor occupancy** — "How busy is the cafe? Should I head there now?"
+- **Analyze trends** — "Show me occupancy patterns for Floor 3 over the past week"
+- **Search your portfolio** — "Find all rooms named 'huddle' across Building 2"
+- **Check sensor health** — "Which sensors are offline or need battery replacement?"
+- **Track foot traffic** — "How many people entered the main lobby today?"
+
+## Prerequisites
+
+- [Node.js](https://nodejs.org/) 20 or higher
+- An MCP-compatible client ([Claude Desktop](https://claude.ai/download), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [VS Code](https://code.visualstudio.com/), [Cursor](https://cursor.com/), etc.)
+- Butlr API credentials (OAuth2 client ID, client secret, and organization ID) — see [Getting API Credentials](#getting-api-credentials)
+
 ## Quick Start
 
-### Claude Desktop
+<details open>
+<summary><strong>Claude Desktop</strong></summary>
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
@@ -28,7 +44,10 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-### Claude Code
+</details>
+
+<details>
+<summary><strong>Claude Code</strong></summary>
 
 ```bash
 claude mcp add butlr -- npx -y @butlr/butlr-mcp-server@latest
@@ -42,7 +61,10 @@ export BUTLR_CLIENT_SECRET=your_client_secret
 export BUTLR_ORG_ID=your_org_id
 ```
 
-### VS Code (Copilot)
+</details>
+
+<details>
+<summary><strong>VS Code (Copilot)</strong></summary>
 
 Add to `.vscode/mcp.json`:
 
@@ -63,7 +85,10 @@ Add to `.vscode/mcp.json`:
 }
 ```
 
-### Cursor
+</details>
+
+<details>
+<summary><strong>Cursor</strong></summary>
 
 Add to `.cursor/mcp.json`:
 
@@ -83,10 +108,25 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
+</details>
+
+<details>
+<summary><strong>Other MCP clients</strong></summary>
+
+For any MCP client that supports stdio transport, use this command:
+
+```
+npx -y @butlr/butlr-mcp-server@latest
+```
+
+Pass the required environment variables (`BUTLR_CLIENT_ID`, `BUTLR_CLIENT_SECRET`, `BUTLR_ORG_ID`) through your client's configuration.
+
+</details>
+
 ## Available Tools
 
-| Tool | Description | Example Question |
-|------|-------------|-----------------|
+| Tool | Description | Try asking... |
+|------|-------------|---------------|
 | `butlr_search_assets` | Search for assets (sites, buildings, floors, rooms, sensors) by name with fuzzy matching | "Find the main lobby" |
 | `butlr_get_asset_details` | Get comprehensive details for specific assets by ID with batch support | "Show me details for Conference Room 401" |
 | `butlr_hardware_snapshot` | Device health check: online/offline status and battery levels across your portfolio | "Which sensors need battery replacement?" |
@@ -97,6 +137,8 @@ Add to `.cursor/mcp.json`:
 | `butlr_fetch_entity_details` | Retrieve specific fields for entities by ID (minimal token usage) | "What's the timezone for this site?" |
 | `butlr_get_occupancy_timeseries` | Historical occupancy data with configurable time ranges | "Show occupancy trends for Floor 3 this week" |
 | `butlr_get_current_occupancy` | Real-time occupancy snapshot (last 5 minutes median) | "How many people are on Floor 2 right now?" |
+
+All tools are **read-only** — the server cannot modify any data in your Butlr account.
 
 ## Configuration
 
@@ -112,7 +154,11 @@ Add to `.cursor/mcp.json`:
 
 ## Getting API Credentials
 
-Contact your Butlr account representative or visit [butlr.com](https://www.butlr.com) to obtain API credentials for your organization.
+To use this MCP server, you need OAuth2 API credentials from Butlr:
+
+1. **Contact your Butlr account representative** or visit [butlr.com](https://www.butlr.com) to request API access
+2. You will receive a **Client ID**, **Client Secret**, and **Organization ID**
+3. These credentials provide read-only access scoped to your organization's data
 
 ## Troubleshooting
 
