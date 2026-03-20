@@ -50,15 +50,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 <summary><strong>Claude Code</strong></summary>
 
 ```bash
-claude mcp add butlr -- npx -y @butlr/butlr-mcp-server@latest
-```
-
-Then set environment variables in your shell or `.env` file:
-
-```bash
-export BUTLR_CLIENT_ID=your_client_id
-export BUTLR_CLIENT_SECRET=your_client_secret
-export BUTLR_ORG_ID=your_org_id
+claude mcp add butlr \
+  -e BUTLR_CLIENT_ID=your_client_id \
+  -e BUTLR_CLIENT_SECRET=your_client_secret \
+  -e BUTLR_ORG_ID=your_org_id \
+  -- npx -y @butlr/butlr-mcp-server@latest
 ```
 
 </details>
