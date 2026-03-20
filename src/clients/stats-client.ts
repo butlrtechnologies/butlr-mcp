@@ -1,5 +1,6 @@
 import { authClient } from "./auth-client.js";
 import { ApiError } from "./reporting-client.js";
+import { debug } from "../utils/debug.js";
 
 const BASE_URL = process.env.BUTLR_BASE_URL || "https://api.butlr.io";
 const STATS_ENDPOINT = `${BASE_URL}/api/v4/reporting/stats`;
@@ -61,9 +62,7 @@ export interface StatsResponse {
  * under heavy load. Implement fallback to client-side calculation if needed.
  */
 export async function queryStats(statsRequest: StatsRequest): Promise<StatsResponse> {
-  if (process.env.DEBUG) {
-    console.error(`[stats-client] POST ${STATS_ENDPOINT}`, JSON.stringify(statsRequest, null, 2));
-  }
+  debug("stats-client", `POST ${STATS_ENDPOINT}`, JSON.stringify(statsRequest, null, 2));
 
   try {
     // Get auth token
@@ -84,16 +83,14 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
 
       // Special handling for 504 Gateway Timeout
       if (response.status === 504) {
-        console.error(`[stats-client] 504 Gateway Timeout - stats service may be overloaded`);
+        debug("stats-client", "504 Gateway Timeout - stats service may be overloaded");
         throw new ApiError(
           504,
           "Stats service temporarily unavailable (504). Try reducing the time range or number of assets."
         );
       }
 
-      if (process.env.DEBUG) {
-        console.error(`[stats-client] API error body: ${errorBody}`);
-      }
+      debug("stats-client", `API error body: ${errorBody}`);
       throw new ApiError(
         response.status,
         `Butlr API error (${response.status}). Enable DEBUG=butlr-mcp for details.`
@@ -102,15 +99,11 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
 
     const data = (await response.json()) as StatsResponse;
 
-    if (process.env.DEBUG) {
-      console.error(
-        `[stats-client] Response: statistics for ${Object.keys(data.data || {}).length} assets`
-      );
-    }
+    debug("stats-client", `Response: statistics for ${Object.keys(data.data || {}).length} assets`);
 
     return data;
   } catch (error: any) {
-    console.error(`[stats-client] Request failed:`, error);
+    debug("stats-client", "Request failed:", error);
 
     // Translate common errors using structured ApiError
     if (error instanceof ApiError) {

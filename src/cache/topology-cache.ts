@@ -1,4 +1,5 @@
 import { LRUCache } from "lru-cache";
+import { debug } from "../utils/debug.js";
 
 /**
  * Topology cache configuration
@@ -49,10 +50,10 @@ export function generateTopologyCacheKey(
 export function getCachedTopology(key: string): CacheEntry | undefined {
   const cached = topologyCache.get(key);
 
-  if (cached && process.env.DEBUG) {
-    console.error(`[topology-cache] Cache HIT for key: ${key}`);
-  } else if (process.env.DEBUG) {
-    console.error(`[topology-cache] Cache MISS for key: ${key}`);
+  if (cached) {
+    debug("topology-cache", `Cache HIT for key: ${key}`);
+  } else {
+    debug("topology-cache", `Cache MISS for key: ${key}`);
   }
 
   return cached;
@@ -69,11 +70,7 @@ export function setCachedTopology(key: string, data: Record<string, unknown>): v
 
   topologyCache.set(key, entry);
 
-  if (process.env.DEBUG) {
-    console.error(
-      `[topology-cache] Cached data for key: ${key} (TTL: ${CACHE_TTL_SECONDS / 1000}s)`
-    );
-  }
+  debug("topology-cache", `Cached data for key: ${key} (TTL: ${CACHE_TTL_SECONDS / 1000}s)`);
 }
 
 /**
@@ -82,9 +79,7 @@ export function setCachedTopology(key: string, data: Record<string, unknown>): v
 export function clearTopologyCache(): void {
   topologyCache.clear();
 
-  if (process.env.DEBUG) {
-    console.error("[topology-cache] Cache cleared");
-  }
+  debug("topology-cache", "Cache cleared");
 }
 
 /**

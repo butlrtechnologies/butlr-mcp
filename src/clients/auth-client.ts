@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { debug } from "../utils/debug.js";
 
 dotenv.config();
 
@@ -40,15 +41,11 @@ class ButlrAuthClient {
 
     // Return cached token if still valid (with 5 minute buffer)
     if (this.token && this.tokenExpiry && Date.now() < this.tokenExpiry.getTime() - 5 * 60 * 1000) {
-      if (process.env.DEBUG) {
-        console.error("[auth-client] Using cached token");
-      }
+      debug("auth-client", "Using cached token");
       return this.token;
     }
 
-    if (process.env.DEBUG) {
-      console.error("[auth-client] Fetching new token...");
-    }
+    debug("auth-client", "Fetching new token...");
 
     // Fetch new token
     try {
@@ -80,9 +77,7 @@ class ButlrAuthClient {
       this.token = data.access_token;
       this.tokenExpiry = new Date(Date.now() + data.expires_in * 1000);
 
-      if (process.env.DEBUG) {
-        console.error(`[auth-client] Token acquired, expires at ${this.tokenExpiry.toISOString()}`);
-      }
+      debug("auth-client", `Token acquired, expires at ${this.tokenExpiry.toISOString()}`);
 
       return this.token;
     } catch (error) {

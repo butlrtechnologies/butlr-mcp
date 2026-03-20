@@ -66,7 +66,7 @@ npm run format       # Prettier
 |----------|----------|---------|
 | `BUTLR_CLIENT_ID` | Yes | OAuth2 client ID |
 | `BUTLR_CLIENT_SECRET` | Yes | OAuth2 client secret |
-| `BUTLR_ORG_ID` | Yes | Organization ID |
+| `BUTLR_ORG_ID` | No | Organization ID (optional as of v0.1.1) |
 | `BUTLR_BASE_URL` | No | API base URL (default: `https://api.butlr.io`) |
 | `BUTLR_TIMEZONE` | No | Default timezone (default: `UTC`) |
 | `MCP_CACHE_TOPO_TTL` | No | Topology cache TTL in seconds (default: 600) |

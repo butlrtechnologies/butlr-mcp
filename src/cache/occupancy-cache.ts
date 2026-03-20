@@ -1,4 +1,5 @@
 import { LRUCache } from "lru-cache";
+import { debug } from "../utils/debug.js";
 
 /**
  * Occupancy cache configuration
@@ -60,14 +61,10 @@ export function getCachedOccupancy(
   // Track cache hit/miss metrics
   if (cached) {
     recordCacheHit();
-    if (process.env.DEBUG) {
-      console.error(`[occupancy-cache] Cache HIT for ${assetId}`);
-    }
+    debug("occupancy-cache", `Cache HIT for ${assetId}`);
   } else {
     recordCacheMiss();
-    if (process.env.DEBUG) {
-      console.error(`[occupancy-cache] Cache MISS for ${assetId}`);
-    }
+    debug("occupancy-cache", `Cache MISS for ${assetId}`);
   }
 
   return cached;
@@ -96,11 +93,7 @@ export function getBulkCachedOccupancy(
     }
   }
 
-  if (process.env.DEBUG) {
-    console.error(
-      `[occupancy-cache] Bulk query: ${Object.keys(hits).length} hits, ${misses.length} misses`
-    );
-  }
+  debug("occupancy-cache", `Bulk query: ${Object.keys(hits).length} hits, ${misses.length} misses`);
 
   return { hits, misses };
 }
@@ -126,11 +119,10 @@ export function setCachedOccupancy(
 
   occupancyCache.set(key, entry);
 
-  if (process.env.DEBUG) {
-    console.error(
-      `[occupancy-cache] Cached occupancy for ${assetId}: ${occupancy} (TTL: ${CACHE_TTL_SECONDS / 1000}s)`
-    );
-  }
+  debug(
+    "occupancy-cache",
+    `Cached occupancy for ${assetId}: ${occupancy} (TTL: ${CACHE_TTL_SECONDS / 1000}s)`
+  );
 }
 
 /**
@@ -148,9 +140,7 @@ export function setBulkCachedOccupancy(
     setCachedOccupancy(entry.assetId, entry.occupancy, entry.assetType, entry.timestamp);
   }
 
-  if (process.env.DEBUG) {
-    console.error(`[occupancy-cache] Bulk cached ${entries.length} occupancy values`);
-  }
+  debug("occupancy-cache", `Bulk cached ${entries.length} occupancy values`);
 }
 
 /**
@@ -159,9 +149,7 @@ export function setBulkCachedOccupancy(
 export function clearOccupancyCache(): void {
   occupancyCache.clear();
 
-  if (process.env.DEBUG) {
-    console.error("[occupancy-cache] Cache cleared");
-  }
+  debug("occupancy-cache", "Cache cleared");
 }
 
 /**
@@ -177,8 +165,8 @@ export function invalidateAssetOccupancy(assetId: string): void {
     }
   }
 
-  if (process.env.DEBUG && deleted > 0) {
-    console.error(`[occupancy-cache] Invalidated ${deleted} cache entries for ${assetId}`);
+  if (deleted > 0) {
+    debug("occupancy-cache", `Invalidated ${deleted} cache entries for ${assetId}`);
   }
 }
 

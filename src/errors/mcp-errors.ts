@@ -1,3 +1,27 @@
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { debug } from "../utils/debug.js";
+
+/**
+ * Wraps a tool handler to catch errors and return them as MCP tool errors
+ * with isError: true, so the LLM can see and handle the error.
+ */
+export function withToolErrorHandling(
+  handler: (args: Record<string, unknown>) => Promise<CallToolResult>
+): (args: Record<string, unknown>) => Promise<CallToolResult> {
+  return async (args) => {
+    try {
+      return await handler(args);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      debug("tool-error", message, error);
+      return {
+        content: [{ type: "text" as const, text: message }],
+        isError: true,
+      };
+    }
+  };
+}
+
 /**
  * Structural type for Apollo-like errors (ApolloError was removed in Apollo Client 4.0)
  * Narrowed from `any` to `unknown` with runtime property checks inside translateGraphQLError.
@@ -155,7 +179,7 @@ export function formatMCPError(error: MCPError): string {
     message += ` - retry after ${error.retryAfter}s`;
   }
 
-  if (error.details && process.env.DEBUG) {
+  if (error.details && (process.env.DEBUG === "butlr-mcp" || process.env.DEBUG === "*")) {
     message += `\nDetails: ${JSON.stringify(error.details, null, 2)}`;
   }
 

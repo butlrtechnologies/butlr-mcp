@@ -15,6 +15,8 @@ import {
 } from "../utils/natural-language.js";
 import { getCachedOccupancy, setCachedOccupancy } from "../cache/occupancy-cache.js";
 import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { debug } from "../utils/debug.js";
+import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type { SpaceBusynessResponse } from "../types/responses.js";
 
 /** Room with floor populated via GraphQL (includes building/site for timezone) */
@@ -144,9 +146,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
 
   // If not an ID, search for the space
   if (!spaceId.match(/^(room|zone)_/)) {
-    if (process.env.DEBUG) {
-      console.error(`[space-busyness] Searching for space: "${args.space_id_or_name}"`);
-    }
+    debug("space-busyness", `Searching for space: "${args.space_id_or_name}"`);
 
     const searchResults = await executeSearchAssets({
       query: args.space_id_or_name,
@@ -165,9 +165,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
     spaceId = bestMatch.id;
     spaceType = bestMatch.type as "room" | "zone";
 
-    if (process.env.DEBUG) {
-      console.error(`[space-busyness] Using best match: ${bestMatch.name} (${spaceId})`);
-    }
+    debug("space-busyness", `Using best match: ${bestMatch.name} (${spaceId})`);
   } else {
     // Determine type from ID prefix
     spaceType = spaceId.startsWith("room_") ? "room" : "zone";
@@ -224,9 +222,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
   const cached = getCachedOccupancy(spaceId, now);
   if (cached) {
     currentOccupancy = cached.occupancy;
-    if (process.env.DEBUG) {
-      console.error(`[space-busyness] Using cached occupancy: ${currentOccupancy}`);
-    }
+    debug("space-busyness", `Using cached occupancy: ${currentOccupancy}`);
   } else {
     try {
       const occupancyData = await getCurrentOccupancy(spaceType, [spaceId]);
@@ -235,7 +231,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
         setCachedOccupancy(spaceId, currentOccupancy, spaceType, now);
       }
     } catch (error: unknown) {
-      console.error(`[space-busyness] Failed to get occupancy:`, error);
+      debug("space-busyness", "Failed to get occupancy:", error);
       throw new Error(
         `Failed to get current occupancy for ${space.name}. The space may not have active sensors.`
       );
@@ -307,7 +303,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
         };
       }
     } catch (error: unknown) {
-      console.error(`[space-busyness] Failed to get trend data:`, error);
+      debug("space-busyness", "Failed to get trend data:", error);
       warnings.push("Could not retrieve historical trend data. Trend comparison is unavailable.");
     }
   }
@@ -347,15 +343,15 @@ export function registerSpaceBusyness(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: false,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = SpaceBusynessArgsSchema.parse(args);
       const result = await executeSpaceBusyness(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }

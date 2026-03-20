@@ -23,6 +23,8 @@ import {
   isProductionHive,
   rethrowIfGraphQLError,
 } from "../utils/graphql-helpers.js";
+import { debug } from "../utils/debug.js";
+import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type { ListTopologyResponse } from "../types/responses.js";
 
 const LIST_TOPOLOGY_DESCRIPTION =
@@ -71,11 +73,10 @@ export async function executeListTopology(
   const traversalDepth = args.traversal_depth ?? 0;
   const assetIds = args.asset_ids ?? [];
 
-  if (process.env.DEBUG) {
-    console.error(
-      `[butlr-list-topology] Fetching topology: starting_depth=${startingDepth}, traversal_depth=${traversalDepth}, assets=${assetIds.length || "all"}`
-    );
-  }
+  debug(
+    "butlr-list-topology",
+    `Fetching topology: starting_depth=${startingDepth}, traversal_depth=${traversalDepth}, assets=${assetIds.length || "all"}`
+  );
 
   // Use a cache key that includes devices
   const cacheKey = generateTopologyCacheKey(
@@ -91,15 +92,11 @@ export async function executeListTopology(
   const cached = getCachedTopology(cacheKey);
 
   if (cached && cached.data && cached.data.sites) {
-    if (process.env.DEBUG) {
-      console.error("[butlr-list-topology] Using cached topology");
-    }
+    debug("butlr-list-topology", "Using cached topology");
     sites = cached.data.sites as Site[];
   } else {
     // Fetch fresh topology
-    if (process.env.DEBUG) {
-      console.error("[butlr-list-topology] Fetching fresh topology");
-    }
+    debug("butlr-list-topology", "Fetching fresh topology");
 
     try {
       const result = await apolloClient.query<{ sites: SitesResponse }>({
@@ -118,16 +115,14 @@ export async function executeListTopology(
 
       // Track whether the topology data is partial (errors alongside data)
       partialData = !!result.error;
-      if (partialData && process.env.DEBUG) {
-        console.error(`[butlr-list-topology] Warning: GraphQL errors present, data may be partial`);
+      if (partialData) {
+        debug("butlr-list-topology", "Warning: GraphQL errors present, data may be partial");
       }
 
       sites = result.data.sites.data;
 
       // Query all sensors and hives separately (nested fields are broken)
-      if (process.env.DEBUG) {
-        console.error("[butlr-list-topology] Fetching all sensors and hives...");
-      }
+      debug("butlr-list-topology", "Fetching all sensors and hives...");
 
       const [sensorsResult, hivesResult] = await Promise.all([
         apolloClient.query<{ sensors: { data: Sensor[] } }>({
@@ -145,11 +140,10 @@ export async function executeListTopology(
       const allSensors = (sensorsResult.data?.sensors?.data || []).filter(isProductionSensor);
       const allHives = (hivesResult.data?.hives?.data || []).filter(isProductionHive);
 
-      if (process.env.DEBUG) {
-        console.error(
-          `[butlr-list-topology] Got ${allSensors.length} production sensors, ${allHives.length} production hives (test/placeholder devices filtered)`
-        );
-      }
+      debug(
+        "butlr-list-topology",
+        `Got ${allSensors.length} production sensors, ${allHives.length} production hives (test/placeholder devices filtered)`
+      );
 
       // Merge sensors and hives into topology by floor_id
       sites = mergeSensorsAndHivesIntoTopology(sites, allSensors, allHives);
@@ -157,12 +151,9 @@ export async function executeListTopology(
       // Only cache complete topology data — partial results should be re-fetched
       if (!partialData) {
         setCachedTopology(cacheKey, { sites });
-
-        if (process.env.DEBUG) {
-          console.error(`[butlr-list-topology] Cached topology with ${sites.length} sites`);
-        }
-      } else if (process.env.DEBUG) {
-        console.error(`[butlr-list-topology] Skipping cache — topology data is partial`);
+        debug("butlr-list-topology", `Cached topology with ${sites.length} sites`);
+      } else {
+        debug("butlr-list-topology", "Skipping cache — topology data is partial");
       }
     } catch (error: unknown) {
       rethrowIfGraphQLError(error);
@@ -309,15 +300,15 @@ export function registerListTopology(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = ListTopologyArgsSchema.parse(args);
       const result = await executeListTopology(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }

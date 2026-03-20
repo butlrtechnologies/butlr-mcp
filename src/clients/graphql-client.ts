@@ -2,6 +2,7 @@ import { ApolloClient, InMemoryCache, createHttpLink, from } from "@apollo/clien
 import { setContext } from "@apollo/client/link/context";
 import { onError } from "@apollo/client/link/error";
 import { authClient } from "./auth-client.js";
+import { debug } from "../utils/debug.js";
 
 const BASE_URL = process.env.BUTLR_BASE_URL || "https://api.butlr.io";
 const GRAPHQL_ENDPOINT = `${BASE_URL}/api/v3/graphql`;
@@ -27,7 +28,7 @@ const authLink = setContext(async (_, { headers }) => {
       },
     };
   } catch (error) {
-    console.error("[graphql-client] Failed to get auth token:", error);
+    debug("graphql-client", "Failed to get auth token:", error);
     throw error;
   }
 });
@@ -49,7 +50,7 @@ const errorLink = onError((errorResponse) => {
 
   if (graphQLErrors) {
     for (const err of graphQLErrors) {
-      console.error(`[graphql-client] GraphQL error in ${operation.operationName}:`, err.message);
+      debug("graphql-client", `GraphQL error in ${operation.operationName}:`, err.message);
       if (err.extensions?.code === "UNAUTHENTICATED") {
         authClient.clearToken();
       }
@@ -57,10 +58,7 @@ const errorLink = onError((errorResponse) => {
   }
 
   if (networkError) {
-    console.error(
-      `[graphql-client] Network error in ${operation.operationName}:`,
-      networkError.message
-    );
+    debug("graphql-client", `Network error in ${operation.operationName}:`, networkError.message);
     if (networkError.statusCode === 401 || networkError.statusCode === 403) {
       authClient.clearToken();
     }
@@ -68,7 +66,7 @@ const errorLink = onError((errorResponse) => {
 
   // Fallback for Apollo 4.x single error field
   if (!graphQLErrors && !networkError && topError) {
-    console.error(`[graphql-client] Error in ${operation.operationName}:`, topError.message);
+    debug("graphql-client", `Error in ${operation.operationName}:`, topError.message);
     if (
       topError.message?.includes("UNAUTHENTICATED") ||
       topError.message?.includes("401") ||

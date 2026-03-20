@@ -8,6 +8,8 @@ import { buildAvailableRoomsSummary } from "../utils/natural-language.js";
 import { getCachedOccupancy, setBulkCachedOccupancy } from "../cache/occupancy-cache.js";
 import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
 import type { AvailableRoom, AvailableRoomsResponse, BuildingContext } from "../types/responses.js";
+import { debug } from "../utils/debug.js";
+import { withToolErrorHandling } from "../errors/mcp-errors.js";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const availableRoomsInputShape = {
@@ -239,12 +241,7 @@ const GET_ALL_ROOMS = gql`
  * Execute available rooms tool
  */
 export async function executeAvailableRooms(args: AvailableRoomsArgs) {
-  if (process.env.DEBUG) {
-    console.error(
-      `[available-rooms] Finding available rooms with filters:`,
-      JSON.stringify(args, null, 2)
-    );
-  }
+  debug("available-rooms", "Finding available rooms with filters:", JSON.stringify(args, null, 2));
 
   // Query rooms based on scope
   let rooms: Room[] = [];
@@ -327,9 +324,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
     throw error;
   }
 
-  if (process.env.DEBUG) {
-    console.error(`[available-rooms] Found ${rooms.length} rooms before filtering`);
-  }
+  debug("available-rooms", `Found ${rooms.length} rooms before filtering`);
 
   // Apply capacity filters and track rooms excluded due to missing capacity data
   const warnings: string[] = [];
@@ -379,9 +374,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   // Get current occupancy for all rooms
   const roomIds = rooms.map((r) => r.id);
 
-  if (process.env.DEBUG) {
-    console.error(`[available-rooms] Querying occupancy for ${roomIds.length} rooms`);
-  }
+  debug("available-rooms", `Querying occupancy for ${roomIds.length} rooms`);
 
   // Check cache first
   const now = new Date();
@@ -399,11 +392,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   let occupancyFetchFailed = false;
 
   if (uncachedRoomIds.length > 0) {
-    if (process.env.DEBUG) {
-      console.error(
-        `[available-rooms] Cache miss for ${uncachedRoomIds.length} rooms, querying API`
-      );
-    }
+    debug("available-rooms", `Cache miss for ${uncachedRoomIds.length} rooms, querying API`);
 
     try {
       const occupancyData = await getCurrentOccupancy("room", uncachedRoomIds);
@@ -424,7 +413,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
       setBulkCachedOccupancy(cacheEntries);
     } catch (error: unknown) {
-      console.error(`[available-rooms] Failed to get occupancy data:`, error);
+      debug("available-rooms", "Failed to get occupancy data:", error);
       occupancyFetchFailed = true;
     }
   }
@@ -479,9 +468,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
     }
   }
 
-  if (process.env.DEBUG) {
-    console.error(`[available-rooms] ${availableRooms.length} rooms available (occupancy=0)`);
-  }
+  debug("available-rooms", `${availableRooms.length} rooms available (occupancy=0)`);
 
   // Sort by capacity (largest first) and limit results
   availableRooms.sort((a, b) => (b.capacity?.max || 0) - (a.capacity?.max || 0));
@@ -566,15 +553,15 @@ export function registerAvailableRooms(server: McpServer): void {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: false,
-        openWorldHint: true,
+        openWorldHint: false,
       },
     },
-    async (args) => {
+    withToolErrorHandling(async (args) => {
       const validated = AvailableRoomsArgsSchema.parse(args);
       const result = await executeAvailableRooms(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
-    }
+    })
   );
 }

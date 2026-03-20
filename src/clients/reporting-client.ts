@@ -1,4 +1,5 @@
 import { authClient } from "./auth-client.js";
+import { debug } from "../utils/debug.js";
 
 /**
  * Structured API error with status code for proper error translation
@@ -174,18 +175,18 @@ export function getMeasurement(assetType: string): string {
  */
 export function normalizeTimestamp(rfc3339: string): string {
   if (!rfc3339) {
-    console.error(`[reporting-client] Invalid timestamp received: ${rfc3339}`);
+    debug("reporting-client", `Invalid timestamp received: ${rfc3339}`);
     return "";
   }
   try {
     const date = new Date(rfc3339);
     if (isNaN(date.getTime())) {
-      console.error(`[reporting-client] Invalid timestamp received: ${rfc3339}`);
+      debug("reporting-client", `Invalid timestamp received: ${rfc3339}`);
       return "";
     }
     return date.toISOString();
   } catch (error) {
-    console.error(`[reporting-client] Failed to normalize timestamp ${rfc3339}:`, error);
+    debug("reporting-client", `Failed to normalize timestamp ${rfc3339}:`, error);
     return "";
   }
 }
@@ -194,12 +195,7 @@ export function normalizeTimestamp(rfc3339: string): string {
  * Query v3 Reporting API
  */
 export async function queryReporting(requestBody: ReportingRequest): Promise<ReportingResponse> {
-  if (process.env.DEBUG) {
-    console.error(
-      `[reporting-client] POST ${REPORTING_ENDPOINT}`,
-      JSON.stringify(requestBody, null, 2)
-    );
-  }
+  debug("reporting-client", `POST ${REPORTING_ENDPOINT}`, JSON.stringify(requestBody, null, 2));
 
   try {
     // Get auth token
@@ -217,9 +213,7 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
 
     if (!response.ok) {
       const errorBody = await response.text();
-      if (process.env.DEBUG) {
-        console.error(`[reporting-client] API error body: ${errorBody}`);
-      }
+      debug("reporting-client", `API error body: ${errorBody}`);
       throw new ApiError(
         response.status,
         `Butlr API error (${response.status}). Enable DEBUG=butlr-mcp for details.`
@@ -228,13 +222,11 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
 
     const data = (await response.json()) as ReportingResponse;
 
-    if (process.env.DEBUG) {
-      console.error(`[reporting-client] Response: ${data.data?.length || 0} data points`);
-    }
+    debug("reporting-client", `Response: ${data.data?.length || 0} data points`);
 
     return data;
   } catch (error: any) {
-    console.error(`[reporting-client] Request failed:`, error);
+    debug("reporting-client", "Request failed:", error);
 
     // Translate common errors using structured ApiError
     if (error instanceof ApiError) {
@@ -437,8 +429,9 @@ export async function getCurrentOccupancy(
   const trafficResponse = trafficResult.status === "fulfilled" ? trafficResult.value : { data: [] };
 
   if (trafficResult.status === "rejected") {
-    console.error(
-      `[reporting-client] Traffic query failed (may not have traffic sensors):`,
+    debug(
+      "reporting-client",
+      "Traffic query failed (may not have traffic sensors):",
       trafficResult.reason
     );
   }
