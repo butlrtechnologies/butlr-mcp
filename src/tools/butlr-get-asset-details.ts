@@ -10,7 +10,7 @@ import {
 import { detectAssetType } from "../utils/asset-helpers.js";
 
 /**
- * Zod validation schema for get_asset_details
+ * Zod validation for get_asset_details
  */
 const assetIdSchema = z
   .string()
@@ -26,20 +26,20 @@ const assetIdSchema = z
     }
   );
 
+/** Shared shape — used by both registerTool and full validation */
+const getAssetDetailsInputShape = {
+  ids: z
+    .array(assetIdSchema)
+    .min(1, "ids array must contain at least 1 asset ID")
+    .max(50, "ids array cannot exceed 50 assets")
+    .describe("Asset IDs to fetch (e.g., ['room_123', 'floor_456'])"),
+  include_children: z.boolean().default(true).describe("Include child assets"),
+  include_devices: z.boolean().default(false).describe("Include sensors and hives"),
+  include_parent_context: z.boolean().default(true).describe("Include parent names for context"),
+};
+
 export const GetAssetDetailsArgsSchema = z
-  .object({
-    ids: z
-      .array(assetIdSchema)
-      .min(1, "ids array must contain at least 1 asset ID")
-      .max(50, "ids array cannot exceed 50 assets")
-      .describe("Asset IDs to fetch"),
-
-    include_children: z.boolean().default(true).describe("Include child assets"),
-
-    include_devices: z.boolean().default(false).describe("Include sensors and hives"),
-
-    include_parent_context: z.boolean().default(true).describe("Include parent names for context"),
-  })
+  .object(getAssetDetailsInputShape)
   .strict()
   .refine(
     (data) => {
@@ -52,75 +52,36 @@ export const GetAssetDetailsArgsSchema = z
     }
   );
 
-/**
- * Tool definition for get_asset_details
- */
-export const getAssetDetailsTool = {
-  name: "butlr_get_asset_details",
-  description:
-    "Get comprehensive details for specific assets by ID (sites, buildings, floors, rooms, zones, sensors, hives). Automatically detects asset type from ID prefix and returns appropriate fields. Supports batch queries (multiple IDs), optional child/parent context, and device inclusion. Essential for configuration validation, integration development, and detailed asset inspection.\n\n" +
-    "Primary Users:\n" +
-    "- IT Manager: Verify sensor configurations (mode, model, online status), validate floor/building setups\n" +
-    "- Field Technician: Get sensor MAC addresses, hive serial numbers, and physical coordinates before site visits\n" +
-    "- Facilities Manager: Verify room capacities, areas, and metadata for space planning\n" +
-    "- Developer/Integrator: Fetch asset metadata for building workplace apps, dashboards, or integrations\n\n" +
-    "Example Queries:\n" +
-    '1. "Show me full details for Conference Room 401" (after finding ID via search)\n' +
-    '2. "Get sensor configuration for all sensors on Floor 3" (mode, model, MAC, online status)\n' +
-    '3. "Show me all rooms on Floor 6 with their capacities and areas"\n' +
-    '4. "Get building details including all floors and their room counts"\n' +
-    "5. \"Show me sensor MAC addresses for Room 'Café Barista' for field tech visit\"\n" +
-    '6. "Get hive serial numbers and online status for Building 2"\n' +
-    '7. "Show me site timezone and all buildings in the Chicago office"\n' +
-    '8. "Get room coordinates and rotation for floor plan mapping"\n\n' +
-    "When to Use:\n" +
-    "- Have asset IDs and need detailed configuration, metadata, or relationships\n" +
-    "- Validating sensor/hive assignments for troubleshooting (which hive is this sensor on?)\n" +
-    "- Need room capacities, areas, or coordinates for space planning or floor plan integrations\n" +
-    "- Preparing for field technician site visit (need device identifiers: MACs, serials)\n" +
-    "- Building integrations and need to fetch parent context (room → floor → building → site)\n\n" +
-    "When NOT to Use:\n" +
-    "- Don't have asset IDs yet → use butlr_search_assets first to find IDs by name\n" +
-    "- Need real-time occupancy or sensor data → use occupancy/traffic tools instead\n" +
-    "- Want to browse organizational hierarchy → use butlr_list_topology for tree view\n" +
-    "- Need to update/configure assets → this is read-only; use Butlr Dashboard for changes\n\n" +
-    "Options: include_children (default true), include_devices (default false), include_parent_context (default true)\n\n" +
-    "Batch Query: Supports multiple IDs in single call - mixed asset types supported\n\n" +
-    "See Also: butlr_search_assets, butlr_list_topology, butlr_fetch_entity_details, butlr_hardware_snapshot",
-  inputSchema: {
-    type: "object",
-    properties: {
-      ids: {
-        type: "array",
-        items: { type: "string" },
-        description: "Asset IDs to fetch (e.g., ['room_123', 'floor_456'])",
-      },
-      include_children: {
-        type: "boolean",
-        default: true,
-        description: "Include child assets (e.g., rooms for floors, sensors for rooms)",
-      },
-      include_devices: {
-        type: "boolean",
-        default: false,
-        description: "Include sensors and hives (increases response size)",
-      },
-      include_parent_context: {
-        type: "boolean",
-        default: true,
-        description: "Include parent names (e.g., site name, building name) for context",
-      },
-    },
-    required: ["ids"],
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
+const GET_ASSET_DETAILS_DESCRIPTION =
+  "Get comprehensive details for specific assets by ID (sites, buildings, floors, rooms, zones). Automatically detects asset type from ID prefix and returns appropriate fields. Supports batch queries (multiple IDs), optional child/parent context, and device inclusion. Essential for configuration validation, integration development, and detailed asset inspection.\n\n" +
+  "Primary Users:\n" +
+  "- IT Manager: Verify sensor configurations (mode, model, online status), validate floor/building setups\n" +
+  "- Field Technician: Get sensor MAC addresses, hive serial numbers, and physical coordinates before site visits\n" +
+  "- Facilities Manager: Verify room capacities, areas, and metadata for space planning\n" +
+  "- Developer/Integrator: Fetch asset metadata for building workplace apps, dashboards, or integrations\n\n" +
+  "Example Queries:\n" +
+  '1. "Show me full details for Conference Room 401" (after finding ID via search)\n' +
+  '2. "Get sensor configuration for all sensors on Floor 3" (mode, model, MAC, online status)\n' +
+  '3. "Show me all rooms on Floor 6 with their capacities and areas"\n' +
+  '4. "Get building details including all floors and their room counts"\n' +
+  "5. \"Show me sensor MAC addresses for Room 'Café Barista' for field tech visit\"\n" +
+  '6. "Get hive serial numbers and online status for Building 2"\n' +
+  '7. "Show me site timezone and all buildings in the Chicago office"\n' +
+  '8. "Get room coordinates and rotation for floor plan mapping"\n\n' +
+  "When to Use:\n" +
+  "- Have asset IDs and need detailed configuration, metadata, or relationships\n" +
+  "- Validating sensor/hive assignments for troubleshooting (which hive is this sensor on?)\n" +
+  "- Need room capacities, areas, or coordinates for space planning or floor plan integrations\n" +
+  "- Preparing for field technician site visit (need device identifiers: MACs, serials)\n" +
+  "- Building integrations and need to fetch parent context (room → floor → building → site)\n\n" +
+  "When NOT to Use:\n" +
+  "- Don't have asset IDs yet → use butlr_search_assets first to find IDs by name\n" +
+  "- Need real-time occupancy or sensor data → use occupancy/traffic tools instead\n" +
+  "- Want to browse organizational hierarchy → use butlr_list_topology for tree view\n" +
+  "- Need to update/configure assets → this is read-only; use Butlr Dashboard for changes\n\n" +
+  "Options: include_children (default true), include_devices (default false), include_parent_context (default true)\n\n" +
+  "Batch Query: Supports multiple IDs in single call - mixed asset types supported\n\n" +
+  "See Also: butlr_search_assets, butlr_list_topology, butlr_fetch_entity_details, butlr_hardware_snapshot";
 
 /**
  * Input arguments for get_asset_details (output type from Zod schema after defaults applied)
@@ -478,20 +439,8 @@ export function registerGetAssetDetails(server: McpServer): void {
     "butlr_get_asset_details",
     {
       title: "Get Butlr Asset Details",
-      description: getAssetDetailsTool.description,
-      inputSchema: {
-        ids: z
-          .array(z.string().min(1))
-          .min(1, "ids must contain at least 1 asset ID")
-          .max(50, "ids cannot exceed 50 assets")
-          .describe("Asset IDs to fetch (e.g., ['room_123', 'floor_456'])"),
-        include_children: z.boolean().default(true).describe("Include child assets"),
-        include_devices: z.boolean().default(false).describe("Include sensors and hives"),
-        include_parent_context: z
-          .boolean()
-          .default(true)
-          .describe("Include parent names for context"),
-      },
+      description: GET_ASSET_DETAILS_DESCRIPTION,
+      inputSchema: getAssetDetailsInputShape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -504,7 +453,6 @@ export function registerGetAssetDetails(server: McpServer): void {
       const result = await executeGetAssetDetails(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        structuredContent: result as unknown as Record<string, unknown>,
       };
     }
   );

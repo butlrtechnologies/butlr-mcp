@@ -8,32 +8,46 @@ import { buildHardwareSummary, daysBetween, hoursBetween } from "../utils/natura
 import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
 
 /**
- * Zod validation schema for butlr_hardware_snapshot
+ * Zod validation for butlr_hardware_snapshot
  */
+
+/** Shared shape — used by both registerTool and full validation */
+const hardwareSnapshotInputShape = {
+  scope_type: z
+    .enum(["org", "site", "building", "floor"])
+    .default("org")
+    .describe("Scope of the health check"),
+  scope_id: z
+    .string()
+    .min(1, "scope_id cannot be empty")
+    .optional()
+    .describe("Required if scope_type is not 'org'"),
+  include_battery_details: z
+    .boolean()
+    .default(false)
+    .describe("Include list of sensors needing battery service"),
+  battery_status_filter: z
+    .enum(["critical", "due_soon", "healthy", "all"])
+    .default("all")
+    .describe("Filter battery details by status"),
+  limit: z
+    .number()
+    .int("limit must be an integer")
+    .min(1, "limit must be at least 1")
+    .max(500, "limit cannot exceed 500")
+    .default(20)
+    .describe("Max devices in battery_details list"),
+  offline_devices_limit: z
+    .number()
+    .int("offline_devices_limit must be an integer")
+    .min(1)
+    .max(500)
+    .default(20)
+    .describe("Max offline devices to show"),
+};
+
 export const HardwareSnapshotArgsSchema = z
-  .object({
-    scope_type: z.enum(["org", "site", "building", "floor"]).default("org"),
-
-    scope_id: z.string().min(1, "scope_id cannot be empty").optional(),
-
-    include_battery_details: z.boolean().default(false),
-
-    battery_status_filter: z.enum(["critical", "due_soon", "healthy", "all"]).default("all"),
-
-    limit: z
-      .number()
-      .int("limit must be an integer")
-      .min(1, "limit must be at least 1")
-      .max(500, "limit cannot exceed 500")
-      .default(20),
-
-    offline_devices_limit: z
-      .number()
-      .int("offline_devices_limit must be an integer")
-      .min(1)
-      .max(500)
-      .default(20),
-  })
+  .object(hardwareSnapshotInputShape)
   .strict()
   .refine(
     (data) => {
@@ -51,80 +65,33 @@ export const HardwareSnapshotArgsSchema = z
 /**
  * Tool definition for butlr_hardware_snapshot
  */
-export const hardwareSnapshotTool = {
-  name: "butlr_hardware_snapshot",
-  description:
-    "Get unified device health check combining online/offline status and battery health across your entire portfolio or specific locations. Provides proactive maintenance insights for facilities teams managing IoT sensor infrastructure.\n\n" +
-    "Primary Users:\n" +
-    "- IT Manager: Monitor sensor/hive uptime, track device health KPIs, report on system reliability\n" +
-    "- Field Technician: Identify devices needing maintenance before site visits, prioritize battery replacements\n" +
-    "- Facilities Manager: Verify system health before quarterly reviews, validate sensor coverage\n\n" +
-    "Example Queries:\n" +
-    '1. "Show me all offline sensors in Building 2 East Tower"\n' +
-    '2. "Which sensors need battery replacements in the next 7 days?"\n' +
-    '3. "Give me a hardware health snapshot for the SF office"\n' +
-    '4. "Are there any sensors that haven\'t reported in 24 hours?"\n' +
-    '5. "What\'s the battery status for Floor 3?"\n' +
-    '6. "How many hives are offline organization-wide?"\n' +
-    '7. "Show me sensors with overdue battery changes (critical status)"\n' +
-    '8. "I\'m planning a site visit to Chicago - what devices need attention?"\n\n' +
-    "When to Use:\n" +
-    "- Quick overview of device health for planning maintenance\n" +
-    "- Preparing for site visits (know which devices need service)\n" +
-    "- Proactive battery alerts before sensor failures impact data quality\n" +
-    "- Reporting uptime metrics or system reliability to leadership\n" +
-    "- Troubleshooting missing data issues (check if sensors are online)\n\n" +
-    "When NOT to Use:\n" +
-    "- Need detailed config for specific sensor → use butlr_get_asset_details with include_devices: true\n" +
-    "- Searching for sensor by name/MAC → use butlr_search_assets first with asset_types: ['sensor']\n" +
-    "- Historical device uptime trends → this tool shows current snapshot only\n\n" +
-    "CRE Context: Battery-powered sensors typically last 1-2 years depending on mode. Proactive battery management prevents data gaps that could impact space utilization reporting and right-sizing decisions.\n\n" +
-    "See Also: butlr_search_assets, butlr_get_asset_details, butlr_list_topology",
-  inputSchema: {
-    type: "object",
-    properties: {
-      scope_type: {
-        type: "string",
-        enum: ["org", "site", "building", "floor"],
-        default: "org",
-        description: "Scope of the health check",
-      },
-      scope_id: {
-        type: "string",
-        description: "Required if scope_type != 'org'",
-      },
-      include_battery_details: {
-        type: "boolean",
-        default: false,
-        description:
-          "Include list of sensors needing battery service (context-efficient: only when needed)",
-      },
-      battery_status_filter: {
-        type: "string",
-        enum: ["critical", "due_soon", "healthy", "all"],
-        default: "all",
-        description: "Filter battery details. 'critical'=overdue, 'due_soon'=<30 days",
-      },
-      limit: {
-        type: "number",
-        default: 20,
-        description: "Max devices in battery_details list",
-      },
-      offline_devices_limit: {
-        type: "number",
-        default: 20,
-        description: "Max offline devices to show (default: 20, sorted newest first)",
-      },
-    },
-    additionalProperties: false,
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: true,
-  },
-};
+const HARDWARE_SNAPSHOT_DESCRIPTION =
+  "Get unified device health check combining online/offline status and battery health across your entire portfolio or specific locations. Provides proactive maintenance insights for facilities teams managing IoT sensor infrastructure.\n\n" +
+  "Primary Users:\n" +
+  "- IT Manager: Monitor sensor/hive uptime, track device health KPIs, report on system reliability\n" +
+  "- Field Technician: Identify devices needing maintenance before site visits, prioritize battery replacements\n" +
+  "- Facilities Manager: Verify system health before quarterly reviews, validate sensor coverage\n\n" +
+  "Example Queries:\n" +
+  '1. "Show me all offline sensors in Building 2 East Tower"\n' +
+  '2. "Which sensors need battery replacements in the next 7 days?"\n' +
+  '3. "Give me a hardware health snapshot for the SF office"\n' +
+  '4. "Are there any sensors that haven\'t reported in 24 hours?"\n' +
+  '5. "What\'s the battery status for Floor 3?"\n' +
+  '6. "How many hives are offline organization-wide?"\n' +
+  '7. "Show me sensors with overdue battery changes (critical status)"\n' +
+  '8. "I\'m planning a site visit to Chicago - what devices need attention?"\n\n' +
+  "When to Use:\n" +
+  "- Quick overview of device health for planning maintenance\n" +
+  "- Preparing for site visits (know which devices need service)\n" +
+  "- Proactive battery alerts before sensor failures impact data quality\n" +
+  "- Reporting uptime metrics or system reliability to leadership\n" +
+  "- Troubleshooting missing data issues (check if sensors are online)\n\n" +
+  "When NOT to Use:\n" +
+  "- Need detailed config for specific sensor → use butlr_get_asset_details with include_devices: true\n" +
+  "- Searching for sensor by name/MAC → use butlr_search_assets first with asset_types: ['sensor']\n" +
+  "- Historical device uptime trends → this tool shows current snapshot only\n\n" +
+  "CRE Context: Battery-powered sensors typically last 1-2 years depending on mode. Proactive battery management prevents data gaps that could impact space utilization reporting and right-sizing decisions.\n\n" +
+  "See Also: butlr_search_assets, butlr_get_asset_details, butlr_list_topology";
 
 /**
  * Input arguments (output type from Zod schema after defaults applied)
@@ -740,36 +707,8 @@ export function registerHardwareSnapshot(server: McpServer): void {
     "butlr_hardware_snapshot",
     {
       title: "Butlr Hardware Health Snapshot",
-      description: hardwareSnapshotTool.description,
-      inputSchema: {
-        scope_type: z
-          .enum(["org", "site", "building", "floor"])
-          .default("org")
-          .describe("Scope of the health check"),
-        scope_id: z.string().min(1).optional().describe("Required if scope_type is not 'org'"),
-        include_battery_details: z
-          .boolean()
-          .default(false)
-          .describe("Include list of sensors needing battery service"),
-        battery_status_filter: z
-          .enum(["critical", "due_soon", "healthy", "all"])
-          .default("all")
-          .describe("Filter battery details by status"),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(500)
-          .default(20)
-          .describe("Max devices in battery_details list"),
-        offline_devices_limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(500)
-          .default(20)
-          .describe("Max offline devices to show"),
-      },
+      description: HARDWARE_SNAPSHOT_DESCRIPTION,
+      inputSchema: hardwareSnapshotInputShape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -782,7 +721,6 @@ export function registerHardwareSnapshot(server: McpServer): void {
       const result = await executeHardwareSnapshot(validated);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-        structuredContent: result as Record<string, unknown>,
       };
     }
   );
