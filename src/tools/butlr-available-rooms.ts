@@ -332,12 +332,14 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   if (args.min_capacity !== undefined || args.max_capacity !== undefined) {
     const roomsWithoutCapacity = rooms.filter((r) => !r.capacity?.max).length;
 
-    if (args.min_capacity !== undefined) {
-      rooms = rooms.filter((r) => r.capacity?.max && r.capacity.max >= args.min_capacity!);
+    const minCapacity = args.min_capacity;
+    if (minCapacity !== undefined) {
+      rooms = rooms.filter((r) => r.capacity?.max && r.capacity.max >= minCapacity);
     }
 
-    if (args.max_capacity !== undefined) {
-      rooms = rooms.filter((r) => r.capacity?.max && r.capacity.max <= args.max_capacity!);
+    const maxCapacity = args.max_capacity;
+    if (maxCapacity !== undefined) {
+      rooms = rooms.filter((r) => r.capacity?.max && r.capacity.max <= maxCapacity);
     }
 
     if (roomsWithoutCapacity > 0) {

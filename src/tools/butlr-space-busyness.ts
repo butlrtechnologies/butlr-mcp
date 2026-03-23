@@ -239,10 +239,9 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
   }
 
   // Calculate utilization (null when capacity is not configured)
-  const capacityConfigured = !!(space.capacity?.max && space.capacity.max > 0);
-  const utilizationPercent = capacityConfigured
-    ? (currentOccupancy / space.capacity!.max!) * 100
-    : null;
+  const maxCapacity = space.capacity?.max;
+  const capacityConfigured = !!(maxCapacity && maxCapacity > 0);
+  const utilizationPercent = capacityConfigured ? (currentOccupancy / maxCapacity) * 100 : null;
   const label = utilizationPercent !== null ? getOccupancyLabel(utilizationPercent) : null;
 
   // Build response
@@ -313,7 +312,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
     response.summary = buildBusynessSummary({
       spaceName: space.name,
       occupancy: Math.round(currentOccupancy),
-      capacity: space.capacity!.max!,
+      capacity: maxCapacity,
       utilizationPercent,
       trendLabel: response.trend?.trend_label,
       dayTime: formatDayAndTime(now, spaceTimezone),
