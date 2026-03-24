@@ -1,14 +1,14 @@
 {
   "data": {
-    "room_9dc62c6d-5a80-4be8-9cce-6f00660cc750": {
+    "room_000301": {
       "occupancy_avg_presence": 0.01726361742236333,
       "occupancy_median_presence": 0
     },
-    "room_b2836260-fa36-48c3-885e-19ee65302ebe": {
+    "room_000302": {
       "occupancy_avg_presence": 0.031649965274332774,
       "occupancy_median_presence": 0
     },
-    "room_cba32a4d-3003-4abd-b987-7d9fa82e09af": {
+    "room_000303": {
       "occupancy_avg_presence": 0.025895426133544994,
       "occupancy_median_presence": 0
     }

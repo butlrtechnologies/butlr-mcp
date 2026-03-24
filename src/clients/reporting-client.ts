@@ -43,7 +43,7 @@ const MEASUREMENT_MAP: Record<string, string> = {
 
 /**
  * v3 Reporting API Request Structure
- * Based on butlr-api-container/pkg/reporting/models/request.go
+ * Based on Butlr's internal reporting API schema
  */
 export interface ReportingRequest {
   group_by?: {
@@ -209,6 +209,7 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -225,7 +226,7 @@ export async function queryReporting(requestBody: ReportingRequest): Promise<Rep
     debug("reporting-client", `Response: ${data.data?.length || 0} data points`);
 
     return data;
-  } catch (error: any) {
+  } catch (error: unknown) {
     debug("reporting-client", "Request failed:", error);
 
     // Translate common errors using structured ApiError

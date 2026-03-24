@@ -43,9 +43,7 @@ butlr-mcp/
 │   ├── cache/             # Caching layer with TTL
 │   ├── errors/            # MCP error translation
 │   └── utils/             # Shared utilities
-├── bin/
-│   └── cli.js             # CLI entry point for npx
-└── docs/                  # API docs and tool specifications
+└── dist/                  # Compiled output (bin entry: dist/index.js)
 ```
 
 ## Development Commands

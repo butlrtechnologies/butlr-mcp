@@ -7,9 +7,8 @@ const STATS_ENDPOINT = `${BASE_URL}/api/v4/reporting/stats`;
 
 /**
  * v4 Stats API Request Structure
- * Based on butlr-api-container/pkg/reporting/stats/handler.go
  *
- * Valid measurements (from query.go lines 30-37):
+ * Valid measurements:
  * - occupancy_avg_presence: Average occupancy from presence sensors
  * - occupancy_avg_traffic: Average occupancy from traffic sensors
  * - occupancy_median_presence: Median occupancy from presence sensors
@@ -76,6 +75,7 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(statsRequest),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -102,7 +102,7 @@ export async function queryStats(statsRequest: StatsRequest): Promise<StatsRespo
     debug("stats-client", `Response: statistics for ${Object.keys(data.data || {}).length} assets`);
 
     return data;
-  } catch (error: any) {
+  } catch (error: unknown) {
     debug("stats-client", "Request failed:", error);
 
     // Translate common errors using structured ApiError

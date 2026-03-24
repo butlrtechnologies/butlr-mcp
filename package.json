@@ -14,7 +14,8 @@
     "butlr-mcp": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "llms.txt"
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -26,7 +27,6 @@
     "test:watch": "vitest --watch",
     "test:coverage": "vitest --coverage",
     "test:ui": "vitest --ui",
-    "fixtures": "tsx scripts/snapshot-api-responses.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\"",

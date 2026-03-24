@@ -1,6 +1,5 @@
 /**
  * TypeScript type definitions for Butlr GraphQL API
- * Based on GraphQL schemas from butlr-api-container
  */
 
 export interface Capacity {
