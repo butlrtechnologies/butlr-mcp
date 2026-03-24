@@ -2,7 +2,6 @@ import { gql } from "@apollo/client";
 
 /**
  * GraphQL queries for topology retrieval
- * Adapted from gauntlet-app for MCP server use
  */
 
 /**

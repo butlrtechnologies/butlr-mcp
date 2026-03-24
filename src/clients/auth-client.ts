@@ -60,6 +60,7 @@ class ButlrAuthClient {
           audience: "https://butlrauth/",
           grant_type: "client_credentials",
         }),
+        signal: AbortSignal.timeout(30_000),
       });
 
       if (!response.ok) {

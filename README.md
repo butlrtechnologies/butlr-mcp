@@ -169,7 +169,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full development workflow and standar
 ```bash
 npm install          # Install dependencies
 npm run build        # Build TypeScript
-npm test             # Run tests (442 tests)
+npm test             # Run tests
 npm run typecheck    # Type checking
 npm run lint         # ESLint
 npm run dev          # Dev with hot-reload
