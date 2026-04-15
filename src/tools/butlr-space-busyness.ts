@@ -174,7 +174,8 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
   // Query space details
   let space: RoomWithFloor | ZoneWithFloor | null = null;
   let spacePath = "";
-  let spaceTimezone: string | undefined;
+  let spaceTimezone: string = process.env.BUTLR_TIMEZONE || "UTC";
+  let timezoneFallback = true;
 
   try {
     if (spaceType === "room") {
@@ -192,7 +193,10 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       const floor = space.floor;
       const building = floor?.building;
       spacePath = building ? `${building.name} > ${floor.name} > ${space.name}` : space.name;
-      spaceTimezone = building?.site?.timezone;
+      if (building?.site?.timezone) {
+        spaceTimezone = building.site.timezone;
+        timezoneFallback = false;
+      }
     } else {
       const result = await apolloClient.query<{ zone: ZoneWithFloor }>({
         query: GET_ZONE,
@@ -208,7 +212,10 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       const floor = space.floor;
       const building = floor?.building;
       spacePath = building ? `${building.name} > ${floor.name} > ${space.name}` : space.name;
-      spaceTimezone = building?.site?.timezone;
+      if (building?.site?.timezone) {
+        spaceTimezone = building.site.timezone;
+        timezoneFallback = false;
+      }
     }
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
@@ -246,6 +253,11 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
 
   // Build response
   const warnings: string[] = [];
+  if (timezoneFallback) {
+    warnings.push(
+      `Could not determine site timezone for this space. Using ${spaceTimezone} as fallback — time-based comparisons may not reflect the site's actual local time.`
+    );
+  }
   if (!capacityConfigured) {
     warnings.push(
       "Capacity is not configured for this space. Utilization percentage and busyness label are unavailable. Configure capacity in the Butlr dashboard for richer insights."
