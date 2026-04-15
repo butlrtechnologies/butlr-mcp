@@ -18,7 +18,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that co
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 18 or higher
-- An MCP-compatible client ([Claude Desktop](https://claude.ai/download), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [VS Code](https://code.visualstudio.com/), [Cursor](https://cursor.com/), etc.)
+- An MCP-compatible client ([Claude Desktop](https://claude.ai/download), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://developers.openai.com/codex/cli), [VS Code](https://code.visualstudio.com/), [Cursor](https://cursor.com/), etc.)
 - Butlr API token — see [Getting API Credentials](#getting-api-credentials)
 
 ## Quick Start
@@ -53,6 +53,32 @@ claude mcp add butlr \
   -e BUTLR_CLIENT_ID=your_client_id \
   -e BUTLR_CLIENT_SECRET=your_client_secret \
   -- npx -y @butlr/butlr-mcp-server@latest
+```
+
+</details>
+
+<details>
+<summary><strong>Codex CLI</strong></summary>
+
+Add with the `codex mcp` command:
+
+```bash
+codex mcp add butlr \
+  --env BUTLR_CLIENT_ID=your_client_id \
+  --env BUTLR_CLIENT_SECRET=your_client_secret \
+  -- npx -y @butlr/butlr-mcp-server@latest
+```
+
+Or edit `~/.codex/config.toml` directly:
+
+```toml
+[mcp_servers.butlr]
+command = "npx"
+args = ["-y", "@butlr/butlr-mcp-server@latest"]
+
+[mcp_servers.butlr.env]
+BUTLR_CLIENT_ID = "your_client_id"
+BUTLR_CLIENT_SECRET = "your_client_secret"
 ```
 
 </details>
