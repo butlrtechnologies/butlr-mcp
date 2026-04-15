@@ -30,7 +30,11 @@ import type { ListTopologyResponse } from "../types/responses.js";
 const LIST_TOPOLOGY_DESCRIPTION =
   "Display org hierarchy tree with flexible depth control. Can show full tree, specific subtrees, or flat lists. " +
   "Supports filtering by parent asset IDs. Depth levels: 0=sites, 1=buildings, 2=floors, 3=rooms/zones, 4=hives, 5=sensors. " +
-  "Use starting_depth to choose which level to show, and traversal_depth to control how many levels below to include.";
+  "Use starting_depth to choose which level to show, and traversal_depth to control how many levels below to include.\n\n" +
+  "When NOT to Use:\n" +
+  "- Searching for assets by name or keyword → use butlr_search_assets for fuzzy name-based lookups\n" +
+  "- Need detailed info for a specific asset you already have an ID for → use butlr_get_asset_details instead\n" +
+  "- Need only specific fields for known entity IDs → use butlr_fetch_entity_details for selective field fetching";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const listTopologyInputShape = {

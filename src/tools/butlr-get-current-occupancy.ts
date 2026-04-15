@@ -21,7 +21,12 @@ import type {
 const GET_CURRENT_OCCUPANCY_DESCRIPTION =
   "Get current occupancy for floors, rooms, or zones (last 5 minutes median). Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
-  "Single tool call provides complete current occupancy picture.";
+  "Single tool call provides complete current occupancy picture.\n\n" +
+  "When NOT to Use:\n" +
+  "- Historical occupancy trends or time-range analysis → use butlr_get_occupancy_timeseries instead\n" +
+  "- Qualitative busyness labels (quiet/moderate/busy) with trend comparison → use butlr_space_busyness instead\n" +
+  "- Entry/exit traffic counts → use butlr_traffic_flow instead\n" +
+  "- Finding available/empty rooms → use butlr_available_rooms instead";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const getCurrentOccupancyInputShape = {

@@ -23,7 +23,12 @@ import type {
 const GET_OCCUPANCY_TIMESERIES_DESCRIPTION =
   "Get occupancy timeseries data for floors, rooms, or zones. Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
-  "Single tool call provides complete occupancy picture without guessing measurement types.";
+  "Single tool call provides complete occupancy picture without guessing measurement types.\n\n" +
+  "When NOT to Use:\n" +
+  "- Real-time current occupancy snapshot → use butlr_get_current_occupancy instead\n" +
+  "- Qualitative busyness labels (quiet/moderate/busy) → use butlr_space_busyness instead\n" +
+  "- Entry/exit traffic counts rather than occupancy → use butlr_traffic_flow instead\n" +
+  "- Finding currently available rooms → use butlr_available_rooms instead";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const getOccupancyTimeseriesInputShape = {
