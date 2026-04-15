@@ -51,6 +51,7 @@ export async function executeGetCurrentOccupancy(
 
   // Process each asset
   const assets: AssetCurrentOccupancy[] = [];
+  let hasAnyFallback = false;
   const now = new Date();
   const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
 
@@ -132,7 +133,7 @@ export async function executeGetCurrentOccupancy(
       trafficHasData
     );
 
-    assets.push({
+    const assetEntry: AssetCurrentOccupancy = {
       asset_id: assetId,
       asset_type: asset.assetType,
       asset_name: asset.assetName,
@@ -140,13 +141,22 @@ export async function executeGetCurrentOccupancy(
       presence: presenceData,
       traffic: trafficData,
       ...recommendation,
-    });
+    };
+    if (asset.timezoneWarning) {
+      assetEntry.timezone_warning = asset.timezoneWarning;
+    }
+    if (asset.timezoneFallback) {
+      hasAnyFallback = true;
+    }
+    assets.push(assetEntry);
   }
 
   return {
     assets,
     timestamp: now.toISOString(),
-    timezone_note: "All timestamps are UTC (ISO-8601). Use site_timezone for local conversion.",
+    timezone_note: hasAnyFallback
+      ? "All timestamps are UTC (ISO-8601). WARNING: One or more assets have no site timezone configured — UTC was used as fallback. Local time conversions may not reflect the site's actual local time."
+      : "All timestamps are UTC (ISO-8601). Use site_timezone for local conversion.",
   };
 }
 

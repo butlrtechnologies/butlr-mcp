@@ -31,9 +31,11 @@ function buildTopologyResponse(opts?: {
   trafficSensors?: number;
   roomId?: string;
   floorId?: string;
+  siteTimezone?: string | null;
 }) {
   const roomId = opts?.roomId ?? "room_100";
   const floorId = opts?.floorId ?? "space_100";
+  const siteTimezone = opts?.siteTimezone !== undefined ? opts.siteTimezone : "America/New_York";
   const presenceCount = opts?.presenceSensors ?? 1;
   const trafficCount = opts?.trafficSensors ?? 0;
 
@@ -87,7 +89,7 @@ function buildTopologyResponse(opts?: {
             {
               id: "site_001",
               name: "Test Site",
-              timezone: "America/New_York",
+              timezone: siteTimezone,
               org_id: "org_001",
               buildings: [
                 {
@@ -442,6 +444,47 @@ describe("butlr_get_current_occupancy - Integration", () => {
       expect(asset.site_timezone).toBe("America/New_York");
       expect(asset.timezone_offset).toBeDefined();
       expect(asset.timezone_abbr).toBeDefined();
+    });
+  });
+
+  describe("Null site timezone fallback", () => {
+    it("falls back to UTC and includes warnings when site timezone is null", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 1, siteTimezone: null });
+      setupTopologyMocks(topo);
+
+      const builder = mockReportingBuilder({
+        data: [{ time: "2025-10-14T15:04:00Z", value: 5 }],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => builder as any);
+
+      const result = await executeGetCurrentOccupancy({
+        asset_ids: ["room_100"],
+      });
+
+      const asset = result.assets[0];
+      expect(asset.site_timezone).toBe("UTC");
+      expect(asset.timezone_warning).toMatch(/Could not determine site timezone/);
+      expect(asset.timezone_warning).toMatch(/UTC/);
+      expect(result.timezone_note).toContain("WARNING");
+      expect(result.timezone_note).toContain("fallback");
+    });
+
+    it("does not include warnings when site timezone is valid", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 1, siteTimezone: "America/New_York" });
+      setupTopologyMocks(topo);
+
+      const builder = mockReportingBuilder({
+        data: [{ time: "2025-10-14T15:04:00Z", value: 5 }],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => builder as any);
+
+      const result = await executeGetCurrentOccupancy({
+        asset_ids: ["room_100"],
+      });
+
+      const asset = result.assets[0];
+      expect(asset.timezone_warning).toBeUndefined();
+      expect(result.timezone_note).not.toContain("WARNING");
     });
   });
 });
