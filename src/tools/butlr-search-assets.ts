@@ -193,7 +193,7 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
   // Filter by asset types if specified
   let searchableAssets = flattened;
   if (args.asset_types && args.asset_types.length > 0) {
-    searchableAssets = flattened.filter((asset) => args.asset_types!.includes(asset.type));
+    searchableAssets = flattened.filter((asset) => args.asset_types?.includes(asset.type));
 
     debug(
       "search-assets",
