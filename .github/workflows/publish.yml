@@ -8,6 +8,7 @@ jobs:
   publish:
     name: Build & Publish
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: read
       id-token: write
@@ -32,6 +33,4 @@ jobs:
         run: npm run build
 
       - name: Publish
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance

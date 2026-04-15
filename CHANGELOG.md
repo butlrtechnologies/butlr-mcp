@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-14
+
+### Changed
+- Switch npm publish to OIDC trusted publishing — removes NPM_TOKEN secret in favor of GitHub Actions identity verification
+- Re-enable `--provenance` flag for cryptographic build attestation now that the repo is public
+- Add `npm-publish` GitHub environment with team reviewer gate for deployment protection
+
+### Improved
+- Add "When NOT to Use" negative guidance to all 10 tool descriptions for better LLM tool routing
+- Replace non-null assertions (`!`) with safe type narrowing via local variables in tool code
+
 ## [0.1.1] - 2026-03-20
 
 ### Changed
