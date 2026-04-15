@@ -6,9 +6,26 @@
 import type { Site, Building, Floor } from "../clients/types.js";
 import { debug } from "./debug.js";
 
+export interface ResolvedTimezone {
+  timezone: string;
+  isFallback: boolean;
+}
+
+const UTC_FALLBACK = "UTC";
+
+function resolveTimezone(siteTimezone: string | null | undefined): ResolvedTimezone {
+  if (siteTimezone) {
+    return { timezone: siteTimezone, isFallback: false };
+  }
+  const fallback = process.env.BUTLR_TIMEZONE || UTC_FALLBACK;
+  debug("timezone-helpers", `Site timezone is null/missing, falling back to ${fallback}`);
+  return { timezone: fallback, isFallback: true };
+}
+
 /**
- * Get the site timezone for any asset (floor, room, zone)
- * Traverses hierarchy to find parent site
+ * Get the site timezone for any asset (floor, room, zone).
+ * Always uses the parent site's timezone — never the floor's.
+ * Falls back to BUTLR_TIMEZONE env var or UTC if the site timezone is null.
  */
 export function getTimezoneForAsset(
   assetId: string,
@@ -16,43 +33,41 @@ export function getTimezoneForAsset(
   floors: Floor[],
   buildings: Building[],
   sites: Site[]
-): string | null {
+): ResolvedTimezone {
   if (assetType === "floor") {
     const floor = floors.find((f) => f.id === assetId);
-    if (!floor) return null;
+    if (!floor) return resolveTimezone(null);
 
     const building = buildings.find((b) => b.id === floor.building_id);
-    if (!building) return null;
+    if (!building) return resolveTimezone(null);
 
     const site = sites.find((s) => s.id === building.site_id);
-    return site?.timezone || null;
+    return resolveTimezone(site?.timezone);
   }
 
   if (assetType === "room") {
-    // Find floor for this room
     const floor = floors.find((f) => f.rooms?.some((r) => r.id === assetId));
-    if (!floor) return null;
+    if (!floor) return resolveTimezone(null);
 
     const building = buildings.find((b) => b.id === floor.building_id);
-    if (!building) return null;
+    if (!building) return resolveTimezone(null);
 
     const site = sites.find((s) => s.id === building.site_id);
-    return site?.timezone || null;
+    return resolveTimezone(site?.timezone);
   }
 
   if (assetType === "zone") {
-    // Find floor for this zone
     const floor = floors.find((f) => f.zones?.some((z) => z.id === assetId));
-    if (!floor) return null;
+    if (!floor) return resolveTimezone(null);
 
     const building = buildings.find((b) => b.id === floor.building_id);
-    if (!building) return null;
+    if (!building) return resolveTimezone(null);
 
     const site = sites.find((s) => s.id === building.site_id);
-    return site?.timezone || null;
+    return resolveTimezone(site?.timezone);
   }
 
-  return null;
+  return resolveTimezone(null);
 }
 
 /**

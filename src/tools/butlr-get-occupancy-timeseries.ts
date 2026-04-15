@@ -58,13 +58,14 @@ async function queryTimeseries(
   measurement: string,
   start: string,
   stop: string,
-  interval: string
+  interval: string,
+  timezone: string
 ): Promise<TimeseriesPoint[] | undefined> {
   const response = await new ReportingRequestBuilder()
     .assets(assetType, [assetId])
     .measurements([measurement])
     .timeRange(start, stop)
-    .window(interval, "median")
+    .window(interval, "median", timezone)
     .execute();
 
   if (response.data && Array.isArray(response.data)) {
@@ -94,6 +95,7 @@ export async function executeGetOccupancyTimeseries(
 
   // Process each asset
   const assets: AssetOccupancyTimeseries[] = [];
+  let hasAnyFallback = false;
 
   for (const assetId of args.asset_ids) {
     const asset = resolveAssetContext(assetId, ctx);
@@ -115,7 +117,8 @@ export async function executeGetOccupancyTimeseries(
           measurement,
           args.start,
           args.stop,
-          args.interval
+          args.interval,
+          asset.timezone
         );
         if (points) {
           presenceData.timeseries = points;
@@ -145,7 +148,8 @@ export async function executeGetOccupancyTimeseries(
           measurement,
           args.start,
           args.stop,
-          args.interval
+          args.interval,
+          asset.timezone
         );
         if (points) {
           trafficData.timeseries = points;
@@ -165,7 +169,7 @@ export async function executeGetOccupancyTimeseries(
       trafficData.timeseries.length > 0
     );
 
-    assets.push({
+    const assetEntry: AssetOccupancyTimeseries = {
       asset_id: assetId,
       asset_type: asset.assetType,
       asset_name: asset.assetName,
@@ -173,7 +177,14 @@ export async function executeGetOccupancyTimeseries(
       presence: presenceData,
       traffic: trafficData,
       ...recommendation,
-    });
+    };
+    if (asset.timezoneWarning) {
+      assetEntry.timezone_warning = asset.timezoneWarning;
+    }
+    if (asset.timezoneFallback) {
+      hasAnyFallback = true;
+    }
+    assets.push(assetEntry);
   }
 
   return {
@@ -181,8 +192,9 @@ export async function executeGetOccupancyTimeseries(
     interval: args.interval,
     start: args.start,
     stop: args.stop,
-    timezone_note:
-      "All timestamps are UTC (ISO-8601). Use site_timezone for each asset to convert to local time.",
+    timezone_note: hasAnyFallback
+      ? "All timestamps are UTC (ISO-8601). WARNING: One or more assets have no site timezone configured — UTC was used as fallback. Window aggregation boundaries and local time conversions may not reflect the site's actual local time."
+      : "All timestamps are UTC (ISO-8601). Use site_timezone for each asset to convert to local time.",
     timestamp: new Date().toISOString(),
   };
 }
