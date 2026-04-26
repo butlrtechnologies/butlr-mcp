@@ -12,6 +12,7 @@ import { registerListTopology } from "./tools/butlr-list-topology.js";
 import { registerFetchEntityDetails } from "./tools/butlr-fetch-entity-details.js";
 import { registerGetOccupancyTimeseries } from "./tools/butlr-get-occupancy-timeseries.js";
 import { registerGetCurrentOccupancy } from "./tools/butlr-get-current-occupancy.js";
+import { registerListTags } from "./tools/butlr-list-tags.js";
 import { debug } from "./utils/debug.js";
 
 const require = createRequire(import.meta.url);
@@ -35,6 +36,7 @@ registerListTopology(server);
 registerFetchEntityDetails(server);
 registerGetOccupancyTimeseries(server);
 registerGetCurrentOccupancy(server);
+registerListTags(server);
 
 async function main() {
   const transport = new StdioServerTransport();
