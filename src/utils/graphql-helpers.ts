@@ -5,6 +5,7 @@
  * across tool implementations.
  */
 
+import { CombinedGraphQLErrors } from "@apollo/client/errors";
 import type { Sensor, Hive } from "../clients/types.js";
 import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
 
@@ -23,6 +24,32 @@ export function rethrowIfGraphQLError(error: unknown): void {
     const mcpError = translateGraphQLError(error as Parameters<typeof translateGraphQLError>[0]);
     throw new Error(formatMCPError(mcpError));
   }
+}
+
+/**
+ * Apollo's global `errorPolicy: "all"` resolves rather than rejects on GraphQL
+ * errors, returning `{ data: <partial>, error: CombinedGraphQLErrors }`.
+ * Without an explicit check, code paths like `result.data?.tags ?? []` silently
+ * coerce a backend failure into "the org has zero rows" — a high-impact silent
+ * failure for filter/discovery tools.
+ *
+ * Call this immediately after `apolloClient.query(...)` to translate any
+ * GraphQL/network errors into the standard MCP error format.
+ */
+export function throwIfGraphQLErrors(result: { error?: unknown }): void {
+  if (!result.error) return;
+
+  if (CombinedGraphQLErrors.is(result.error)) {
+    rethrowIfGraphQLError({
+      graphQLErrors: result.error.errors.map((e) => ({
+        message: e.message,
+        extensions: e.extensions,
+      })),
+    });
+  }
+
+  // Surface other ErrorLike shapes (e.g. ServerError) for the outer catch.
+  throw result.error;
 }
 
 /**

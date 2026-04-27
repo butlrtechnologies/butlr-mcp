@@ -6,10 +6,31 @@ import type { Room, Building, Floor } from "../clients/types.js";
 import { getCurrentOccupancy } from "../clients/reporting-client.js";
 import { buildAvailableRoomsSummary } from "../utils/natural-language.js";
 import { getCachedOccupancy, setBulkCachedOccupancy } from "../cache/occupancy-cache.js";
-import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
+import {
+  GET_TAGS_MINIMAL,
+  asTagId,
+  asTagName,
+  type TagId,
+  type TagName,
+} from "../clients/queries/tags.js";
 import type { AvailableRoom, AvailableRoomsResponse, BuildingContext } from "../types/responses.js";
 import { debug } from "../utils/debug.js";
-import { withToolErrorHandling } from "../errors/mcp-errors.js";
+import {
+  withToolErrorHandling,
+  formatMCPError,
+  MCPErrorCode,
+  type MCPError,
+} from "../errors/mcp-errors.js";
+
+function throwInternalError(message: string): never {
+  const mcpError: MCPError = {
+    code: MCPErrorCode.INTERNAL_ERROR,
+    message,
+    retryable: true,
+  };
+  throw new Error(formatMCPError(mcpError));
+}
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const availableRoomsInputShape = {
@@ -33,7 +54,16 @@ const availableRoomsInputShape = {
     .array(z.string().min(1, "Tag cannot be empty").trim())
     .min(1, "tags array cannot be empty")
     .optional()
-    .describe("Filter by room tags"),
+    .describe(
+      "Filter by tag names (case-insensitive). Use butlr_list_tags to discover what tags exist."
+    ),
+
+  tag_match: z
+    .enum(["all", "any"])
+    .default("all")
+    .describe(
+      "Multi-tag semantics when tags has more than one entry: 'all' (default) requires every tag, 'any' requires at least one"
+    ),
 
   building_id: z
     .string()
@@ -94,7 +124,7 @@ const AVAILABLE_ROOMS_DESCRIPTION =
   "When to Use:\n" +
   "- Real-time room availability for immediate use (next 5-10 minutes)\n" +
   "- Filter by capacity (e.g., rooms for 6-8 people)\n" +
-  "- Filter by room types using tags (conference, collaboration, focus)\n" +
+  "- Filter by room types using tags (conference, collaboration, focus). Tag names are case-insensitive; pass tag_match='all' (default) or 'any' for multi-tag semantics. Use butlr_list_tags first to discover what tag vocabulary exists in this org.\n" +
   "- Validating room booking system accuracy against actual occupancy\n" +
   "- Analyzing meeting room demand vs. supply across buildings/floors\n\n" +
   "When NOT to Use:\n" +
@@ -169,31 +199,33 @@ const GET_ROOMS_BY_BUILDING = gql`
   }
 `;
 
-const GET_ROOMS_BY_TAG = gql`
-  query GetRoomsByTag($tags: [String!]!) {
-    roomsByTag(tags: $tags) {
-      id
-      name
-      floorID
-      roomType
-      capacity {
-        max
-        mid
-      }
-      area {
-        value
-        unit
-      }
-      coordinates
-      customID
-      floor {
+export const GET_ROOMS_BY_TAG = gql`
+  query GetRoomsByTag($tagIDs: [String!]!, $useOR: Boolean) {
+    roomsByTag(tagIDs: $tagIDs, useOR: $useOR) {
+      data {
         id
         name
-        building_id
-        building {
+        floorID
+        roomType
+        capacity {
+          max
+          mid
+        }
+        area {
+          value
+          unit
+        }
+        coordinates
+        customID
+        floor {
           id
           name
-          site_id
+          building_id
+          building {
+            id
+            name
+            site_id
+          }
         }
       }
     }
@@ -247,15 +279,17 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   let rooms: Room[] = [];
   let buildings: Building[] = [];
   let floors: Floor[] = [];
+  const warnings: string[] = [];
+  let unknownTagNames: TagName[] = [];
 
   try {
     if (args.floor_id) {
-      // Query specific floor
       const result = await apolloClient.query<{ floor: Floor }>({
         query: GET_ROOMS_BY_FLOOR,
         variables: { floorId: args.floor_id },
         fetchPolicy: "network-only",
       });
+      throwIfGraphQLErrors(result);
 
       if (!result.data?.floor) {
         throw new Error(`Floor ${args.floor_id} not found`);
@@ -265,12 +299,12 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       floors = [result.data.floor];
       buildings = result.data.floor.building ? [result.data.floor.building] : [];
     } else if (args.building_id) {
-      // Query specific building
       const result = await apolloClient.query<{ building: Building }>({
         query: GET_ROOMS_BY_BUILDING,
         variables: { buildingId: args.building_id },
         fetchPolicy: "network-only",
       });
+      throwIfGraphQLErrors(result);
 
       if (!result.data?.building) {
         throw new Error(`Building ${args.building_id} not found`);
@@ -280,18 +314,91 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       floors = result.data.building.floors || [];
       rooms = floors.flatMap((f) => f.rooms || []);
     } else if (args.tags && args.tags.length > 0) {
-      // Query by tags
-      const result = await apolloClient.query<{ roomsByTag: Room[] }>({
-        query: GET_ROOMS_BY_TAG,
-        variables: { tags: args.tags },
+      // Resolve tag names → tag IDs (the API requires IDs, not names)
+      const tagsResult = await apolloClient.query<{
+        tags: { id: string; name: string }[] | null;
+      }>({
+        query: GET_TAGS_MINIMAL,
         fetchPolicy: "network-only",
       });
+      throwIfGraphQLErrors(tagsResult);
 
-      if (!result.data?.roomsByTag) {
-        throw new Error("Invalid response structure from API");
+      const allTags = tagsResult.data?.tags ?? [];
+      // Lookup is keyed by lowercased name; values are typed TagIds so the
+      // resolver boundary cannot accidentally surface raw names downstream.
+      const lookup = new Map<string, TagId>(
+        allTags.map((t) => [t.name.toLowerCase(), asTagId(t.id)])
+      );
+
+      const resolvedIDs: TagId[] = [];
+      const unknownNames: TagName[] = [];
+      for (const rawName of args.tags) {
+        const name = asTagName(rawName);
+        const id = lookup.get(name.toLowerCase());
+        if (id) {
+          resolvedIDs.push(id);
+        } else {
+          unknownNames.push(name);
+        }
       }
 
-      rooms = result.data.roomsByTag;
+      if (resolvedIDs.length === 0) {
+        return {
+          summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
+          available_rooms: [],
+          total_available: 0,
+          showing: 0,
+          timestamp: new Date().toISOString(),
+          filtered_by: args,
+          unknown_tags: unknownNames,
+          warning:
+            `No matching tags found in this org for: ${unknownNames.join(", ")}. ` +
+            "Use butlr_list_tags to see available tag names.",
+        };
+      }
+
+      // Under tag_match='all' (the default), an unresolved tag means the AND
+      // constraint is unsatisfiable — querying with the resolved subset would
+      // return a strictly broader result that silently answers a different
+      // question. Only continue-with-warning is safe under tag_match='any'.
+      if (unknownNames.length > 0 && args.tag_match !== "any") {
+        return {
+          summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
+          available_rooms: [],
+          total_available: 0,
+          showing: 0,
+          timestamp: new Date().toISOString(),
+          filtered_by: args,
+          unknown_tags: unknownNames,
+          warning:
+            `Cannot satisfy tag_match='all': unknown tag(s) ${unknownNames.join(", ")}. ` +
+            "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match rooms tagged with any of the supplied tags.",
+        };
+      }
+
+      if (unknownNames.length > 0) {
+        unknownTagNames = unknownNames;
+        warnings.push(
+          `Unknown tag(s) ignored: ${unknownNames.join(", ")}. Use butlr_list_tags to see available tag names.`
+        );
+      }
+
+      const useOR = args.tag_match === "any";
+
+      const result = await apolloClient.query<{ roomsByTag: { data: Room[] } | null }>({
+        query: GET_ROOMS_BY_TAG,
+        variables: { tagIDs: resolvedIDs, useOR },
+        fetchPolicy: "network-only",
+      });
+      throwIfGraphQLErrors(result);
+
+      if (!result.data?.roomsByTag?.data) {
+        throwInternalError(
+          "Unexpected response shape from roomsByTag query (missing data envelope). Please retry; if persistent, the upstream API contract may have changed."
+        );
+      }
+
+      rooms = result.data.roomsByTag.data;
 
       // Extract floors and buildings from room.floor references
       for (const room of rooms) {
@@ -303,16 +410,18 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
         }
       }
     } else {
-      // Query all rooms (org-wide)
       const result = await apolloClient.query<{
         sites: { data: { buildings: Building[] }[] };
       }>({
         query: GET_ALL_ROOMS,
         fetchPolicy: "network-only",
       });
+      throwIfGraphQLErrors(result);
 
       if (!result.data?.sites?.data) {
-        throw new Error("Invalid response structure from API");
+        throwInternalError(
+          "Unexpected response shape from sites query (missing data envelope). Please retry; if persistent, the upstream API contract may have changed."
+        );
       }
 
       buildings = result.data.sites.data.flatMap((s) => s.buildings || []);
@@ -327,8 +436,6 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   debug("available-rooms", `Found ${rooms.length} rooms before filtering`);
 
   // Apply capacity filters and track rooms excluded due to missing capacity data
-  const warnings: string[] = [];
-
   if (args.min_capacity !== undefined || args.max_capacity !== undefined) {
     const roomsWithoutCapacity = rooms.filter((r) => !r.capacity?.max).length;
 
@@ -368,6 +475,10 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
     if (warnings.length > 0) {
       response.warning = warnings.join(" ");
+    }
+
+    if (unknownTagNames.length > 0) {
+      response.unknown_tags = unknownTagNames;
     }
 
     return response;
@@ -536,6 +647,10 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
   if (warnings.length > 0) {
     response.warning = warnings.join(" ");
+  }
+
+  if (unknownTagNames.length > 0) {
+    response.unknown_tags = unknownTagNames;
   }
 
   return response;

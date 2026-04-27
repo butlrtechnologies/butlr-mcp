@@ -1,0 +1,65 @@
+{
+  "tags": [
+    {
+      "__typename": "Tag",
+      "id": "tag_000001",
+      "name": "videoconf",
+      "organization_id": "org_000001",
+      "rooms": [],
+      "zones": [
+        { "__typename": "Zone", "id": "zone_000001" },
+        { "__typename": "Zone", "id": "zone_000002" },
+        { "__typename": "Zone", "id": "zone_000003" }
+      ],
+      "floors": []
+    },
+    {
+      "__typename": "Tag",
+      "id": "tag_000002",
+      "name": "focus",
+      "organization_id": "org_000001",
+      "rooms": [],
+      "zones": [
+        { "__typename": "Zone", "id": "zone_000001" },
+        { "__typename": "Zone", "id": "zone_000004" }
+      ],
+      "floors": []
+    },
+    {
+      "__typename": "Tag",
+      "id": "tag_000003",
+      "name": "huddle",
+      "organization_id": "org_000001",
+      "rooms": [
+        { "__typename": "Room", "id": "room_000001" },
+        { "__typename": "Room", "id": "room_000002" }
+      ],
+      "zones": [
+        { "__typename": "Zone", "id": "zone_000005" }
+      ],
+      "floors": [
+        { "__typename": "Floor", "id": "space_000001" }
+      ]
+    },
+    {
+      "__typename": "Tag",
+      "id": "tag_000004",
+      "name": "unused-tag",
+      "organization_id": "org_000001",
+      "rooms": [],
+      "zones": [],
+      "floors": []
+    },
+    {
+      "__typename": "Tag",
+      "id": "tag_000005",
+      "name": "videoconf-large",
+      "organization_id": "org_000001",
+      "rooms": [],
+      "zones": [
+        { "__typename": "Zone", "id": "zone_000006" }
+      ],
+      "floors": []
+    }
+  ]
+}
