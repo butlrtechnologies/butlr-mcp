@@ -82,6 +82,8 @@ export interface AvailableRoomsResponse {
   filtered_by?: Record<string, unknown>;
   building_context?: BuildingContext;
   warning?: string;
+  /** Tag names from the request that did not resolve to any tag in this org. */
+  unknown_tags?: string[];
 }
 
 // ---------------------------------------------------------------------------

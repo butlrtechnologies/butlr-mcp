@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { apolloClient } from "../clients/graphql-client.js";
 import { GET_TAGS_WITH_USAGE } from "../clients/queries/tags.js";
-import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import { debug } from "../utils/debug.js";
 
@@ -33,15 +33,15 @@ const LIST_TAGS_DESCRIPTION =
   "List every tag in the organization, with the footprint (count of rooms, zones, and floors each tag is applied to). Tags are org-scoped labels — the same tag can be attached to any mix of rooms, zones, and floors. Use this tool first to discover what tags exist and which entity types they apply to before calling tag-filtered queries.\n\n" +
   "Primary Users:\n" +
   "- All Users: Discover what tag vocabulary exists in the org and where each tag is used\n" +
-  "- Workplace Manager: Find equipment, zone-type, or department tags before filtering availability\n" +
+  "- Workplace Manager: Find room-type, zone-type, or department tags before filtering availability\n" +
   "- Facilities Coordinator: Audit tag coverage across rooms vs. zones\n\n" +
   "Example Queries:\n" +
   '1. "What tags are used in this org?" → list everything\n' +
-  '2. "Show me tags related to BSC" → name_contains: "bsc"\n' +
+  '2. "Show me video-conferencing tags" → name_contains: "videoconf"\n' +
   '3. "Which tags are actually in use?" → min_usage: 1\n' +
-  '4. "Find equipment tags applied to many zones" → list, then look at applied_to.zones\n\n' +
+  '4. "Find tags applied to many zones" → list, then look at applied_to.zones\n\n' +
   "When to Use:\n" +
-  "- Before any tag-based filter, to map a human term (e.g. 'bsc') to the right tag id and entity level\n" +
+  "- Before any tag-based filter, to map a human term (e.g. 'videoconf') to the right tag id and entity level\n" +
   "- To understand whether a tag lives on rooms, zones, floors, or several levels at once\n" +
   "- To audit tagging hygiene (unused tags, single-level tags, etc.)\n\n" +
   "When NOT to Use:\n" +
@@ -94,6 +94,7 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
       fetchPolicy: "network-only",
     });
 
+    throwIfGraphQLErrors(result);
     rawTags = result.data?.tags ?? [];
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);

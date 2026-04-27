@@ -3,7 +3,7 @@
     {
       "__typename": "Tag",
       "id": "tag_000001",
-      "name": "bsc",
+      "name": "videoconf",
       "organization_id": "org_000001",
       "rooms": [],
       "zones": [
@@ -16,7 +16,7 @@
     {
       "__typename": "Tag",
       "id": "tag_000002",
-      "name": "4ft",
+      "name": "focus",
       "organization_id": "org_000001",
       "rooms": [],
       "zones": [
@@ -28,7 +28,7 @@
     {
       "__typename": "Tag",
       "id": "tag_000003",
-      "name": "lab",
+      "name": "huddle",
       "organization_id": "org_000001",
       "rooms": [
         { "__typename": "Room", "id": "room_000001" },
@@ -53,7 +53,7 @@
     {
       "__typename": "Tag",
       "id": "tag_000005",
-      "name": "BSC-equip",
+      "name": "videoconf-large",
       "organization_id": "org_000001",
       "rooms": [],
       "zones": [

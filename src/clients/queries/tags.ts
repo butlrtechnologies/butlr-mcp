@@ -9,6 +9,21 @@ import { gql } from "@apollo/client";
  */
 
 /**
+ * Branded string types for tag identifiers.
+ *
+ * The Butlr API filter `roomsByTag` accepts tag *IDs*, not tag *names*.
+ * These two are both `string` at runtime, which previously led to silent
+ * filter failures when names were sent in the IDs slot. Branding them keeps
+ * the distinction visible at the type level so the wrong one cannot be
+ * passed by accident.
+ */
+export type TagId = string & { readonly __brand: "TagId" };
+export type TagName = string & { readonly __brand: "TagName" };
+
+export const asTagId = (value: string): TagId => value as TagId;
+export const asTagName = (value: string): TagName => value as TagName;
+
+/**
  * List every tag in the org along with its application footprint.
  *
  * Each tag's `rooms`, `zones`, and `floors` arrays are returned with
