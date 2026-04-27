@@ -29,7 +29,7 @@ export interface Area {
 export interface Site {
   id: string;
   name: string;
-  timezone: string;
+  timezone: string | null;
   org_id: string;
   siteNumber?: number;
   customID?: string;
@@ -62,7 +62,7 @@ export interface Floor {
   name: string;
   building_id: string;
   floorNumber?: number;
-  timezone: string;
+  timezone: string | null;
   installation_date: number;
   installation_status?: string;
   service_status?: string;

@@ -66,6 +66,8 @@ export interface AssetContext {
   assetName: string | undefined;
   timezone: string;
   tzMetadata: TimezoneMetadata;
+  timezoneFallback: boolean;
+  timezoneWarning?: string;
   presenceSensors: Sensor[];
   trafficSensors: Sensor[];
 }
@@ -82,8 +84,8 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
 
   const typedAssetType = assetType as "floor" | "room" | "zone";
 
-  // Resolve timezone
-  const timezone = getTimezoneForAsset(
+  // Resolve timezone (always returns a value; falls back to UTC if site timezone is null)
+  const resolved = getTimezoneForAsset(
     assetId,
     typedAssetType,
     ctx.floors,
@@ -91,11 +93,11 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
     ctx.sites
   );
 
-  if (!timezone) {
-    throw new Error(`Could not determine timezone for asset ${assetId}`);
-  }
-
+  const timezone = resolved.timezone;
   const tzMetadata = buildTimezoneMetadata(timezone);
+  const timezoneWarning = resolved.isFallback
+    ? `Could not determine site timezone for asset ${assetId}. Using ${timezone} as fallback — timestamps may not reflect the site's actual local time.`
+    : undefined;
 
   // Resolve asset name
   const assetName = findAssetName(assetId, typedAssetType, ctx.floors);
@@ -135,6 +137,8 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
     assetName,
     timezone,
     tzMetadata,
+    timezoneFallback: resolved.isFallback,
+    timezoneWarning,
     presenceSensors,
     trafficSensors,
   };

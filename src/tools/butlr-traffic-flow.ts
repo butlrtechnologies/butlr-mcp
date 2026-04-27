@@ -158,6 +158,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   let roomPath = "";
   let timezone: string;
   let tzMetadata: TimezoneMetadata;
+  let timezoneFallback = false;
   let trafficSensors: Sensor[] = [];
 
   try {
@@ -191,13 +192,10 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     const buildings = sites.flatMap((s) => s.buildings || []);
     const floors = buildings.flatMap((b) => b.floors || []);
 
-    const roomTimezone = getTimezoneForAsset(spaceId, "room", floors, buildings, sites);
+    const resolved = getTimezoneForAsset(spaceId, "room", floors, buildings, sites);
 
-    if (!roomTimezone) {
-      throw new Error(`Could not determine timezone for room ${spaceId}`);
-    }
-
-    timezone = roomTimezone;
+    timezone = resolved.timezone;
+    timezoneFallback = resolved.isFallback;
     tzMetadata = buildTimezoneMetadata(timezone);
 
     // Analyze traffic sensors for this room
@@ -223,7 +221,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   let start: string;
   let stop: string = "now";
   let periodDescription: string;
-  let usedUtcFallback = false;
+  let usedUtcFallback = timezoneFallback;
 
   if (timeWindow === "custom") {
     if (!args.custom_start) {

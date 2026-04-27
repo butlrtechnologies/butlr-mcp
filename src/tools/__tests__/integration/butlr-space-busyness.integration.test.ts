@@ -386,4 +386,87 @@ describe("butlr_space_busyness - Integration", () => {
       );
     });
   });
+
+  describe("Null site timezone fallback", () => {
+    it("includes timezone fallback warning when site has no timezone", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: {
+          room: {
+            id: "room_123",
+            name: "Conference Room A",
+            capacity: { max: 10 },
+            floor: {
+              id: "floor_456",
+              name: "Floor 2",
+              building: {
+                id: "building_789",
+                name: "HQ Tower",
+                site_id: "site_001",
+                site: { timezone: null },
+              },
+            },
+          },
+        },
+        loading: false,
+        networkStatus: 7,
+      } as any);
+
+      vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([
+        {
+          start: "2025-10-14T15:00:00Z",
+          measurement: "room_occupancy",
+          value: 3,
+          asset_id: "room_123",
+        },
+      ]);
+
+      const result = await executeSpaceBusyness({
+        space_id_or_name: "room_123",
+        include_trend: false,
+      });
+
+      expect(result.warning).toMatch(/Could not determine site timezone/);
+      expect(result.warning).toMatch(/fallback/);
+    });
+
+    it("no timezone warning when site has valid timezone", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: {
+          room: {
+            id: "room_123",
+            name: "Conference Room A",
+            capacity: { max: 10 },
+            floor: {
+              id: "floor_456",
+              name: "Floor 2",
+              building: {
+                id: "building_789",
+                name: "HQ Tower",
+                site_id: "site_001",
+                site: { timezone: "America/New_York" },
+              },
+            },
+          },
+        },
+        loading: false,
+        networkStatus: 7,
+      } as any);
+
+      vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([
+        {
+          start: "2025-10-14T15:00:00Z",
+          measurement: "room_occupancy",
+          value: 3,
+          asset_id: "room_123",
+        },
+      ]);
+
+      const result = await executeSpaceBusyness({
+        space_id_or_name: "room_123",
+        include_trend: false,
+      });
+
+      expect(result.warning).toBeUndefined();
+    });
+  });
 });

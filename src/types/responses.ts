@@ -203,6 +203,7 @@ export type AssetOccupancyTimeseries = AssetIdentifier &
   MeasurementRecommendation & {
     presence: TimeseriesMeasurementData;
     traffic: TimeseriesMeasurementData;
+    timezone_warning?: string;
   };
 
 export interface OccupancyTimeseriesResponse {
@@ -223,6 +224,7 @@ export type AssetCurrentOccupancy = AssetIdentifier &
   MeasurementRecommendation & {
     presence: CurrentMeasurementData;
     traffic: CurrentMeasurementData;
+    timezone_warning?: string;
   };
 
 export interface CurrentOccupancyResponse {
