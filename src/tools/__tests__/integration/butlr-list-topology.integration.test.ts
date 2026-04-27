@@ -657,6 +657,89 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toMatch(/No rooms, zones, or floors are currently tagged/i);
     });
 
+    // Per R4: when a tag sits on an ANCESTOR of an asset_ids entry, the
+    // asset is inside the tagged subtree and must qualify. A raw-ID
+    // intersection (R3 v1) missed this because asset_ids and tagged_ids
+    // didn't share a literal id. Symmetric closure expansion fixes it.
+    it("matches asset_ids when the tag is on an ancestor floor of the asset", async () => {
+      const tagsOnFloor = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_floor_exec",
+            name: "floor-executive",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [],
+            floors: [{ __typename: "Floor", id: "space_001", name: "Floor 1" }],
+          },
+        ],
+      };
+      setupTagFilteredMocks(tagsOnFloor);
+
+      const result = await executeListTopology({
+        asset_ids: ["room_001"], // room is descendant of tagged Floor 1
+        tag_names: ["floor-executive"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      expect(result.warning).toBeUndefined();
+    });
+
+    // Per R4: sensor/hive asset_ids must compose against floor-level tags.
+    // The original closure did not include sensors/hives at all and would
+    // misreport assetScopeEmpty even though the device exists.
+    it("matches sensor/hive asset_ids when the tag is on the floor they live on", async () => {
+      const tagsOnFloor = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_floor_exec",
+            name: "floor-executive",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [],
+            floors: [{ __typename: "Floor", id: "space_001", name: "Floor 1" }],
+          },
+        ],
+      };
+      setupTagFilteredMocks(tagsOnFloor);
+
+      const result = await executeListTopology({
+        asset_ids: ["sensor_001"], // sensor on Floor 1 (space_001)
+        tag_names: ["floor-executive"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("sensor_001");
+      expect(result.warning).toBeUndefined();
+    });
+
+    // Per R4: a tag on a room implicitly covers devices bound to that
+    // room via room_id, even though the topology attaches them at floor
+    // level. asset_ids=[sensor_001] (room_id=room_001) + tag on room_001
+    // should match.
+    it("matches sensor asset_ids when the tag is on its room (sensor.room_id)", async () => {
+      // Default huddle fixture already tags room_001; sensor_001.room_id = room_001.
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["sensor_001"],
+        tag_names: ["huddle"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("sensor_001");
+      expect(result.warning).toBeUndefined();
+    });
+
     // Per R3 §1: leaf-level asset_ids must AND with tag_names strictly.
     // filterTopologyByAssets's contextual expansion would otherwise leak
     // siblings of the asset_ids leaf — e.g. asset_ids=[room_002] expands

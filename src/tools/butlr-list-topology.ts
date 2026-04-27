@@ -134,35 +134,45 @@ function collectTaggedEntityIds(
 
 /**
  * Walk the topology and collect every entity ID that is descendant of (or
- * equal to) the supplied `assetIds`. Used to compose `asset_ids` with
- * `tag_names` as a true AND.
+ * equal to) the supplied `rootIds`. Used to compose `asset_ids` with
+ * `tag_names` as a true subtree-overlap AND.
  *
- * Per R3 §1: a leaf-level `asset_ids` (e.g. a single room) cannot rely on
- * `filterTopologyByAssets` for composition because that function expands
- * a matched leaf to the whole containing floor (siblings retained for
- * context). Intersecting tag-matched IDs against this closure first
- * eliminates the sibling leak.
+ * Per R3 §1 (initial fix) and R4 (symmetric expansion): closure must be
+ * applied to BOTH asset_ids AND tagged-entity IDs because a tag can sit on
+ * an ancestor of an asset (e.g. tag on Floor 1, asset_ids=[room_001]) — the
+ * room is then inside the tagged subtree even though their raw IDs don't
+ * intersect. Closure-vs-closure intersection captures that overlap.
  *
- * Tags only attach to rooms, zones, and floors, so we do not enumerate
- * hives or sensors here — they cannot intersect a tag set anyway.
+ * Coverage by entity type:
+ *   site      → site + every building/floor/room/zone/hive/sensor under it
+ *   building  → building + every floor/room/zone/hive/sensor under it
+ *   floor     → floor + its rooms, zones, hives, sensors
+ *   room      → room + sensors/hives whose room_id points at it (devices
+ *               are attached to floors in the in-memory topology, but
+ *               logically belong to their room_id room when one is set)
+ *   zone      → zone alone
+ *   hive      → hive alone
+ *   sensor    → sensor alone
  */
-function expandAssetScopeIds(sites: Site[], assetIds: string[]): Set<string> {
-  const target = new Set(assetIds);
-  const scope = new Set<string>();
+function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
+  const target = new Set(rootIds);
+  const closure = new Set<string>();
 
   const addFloor = (floor: Floor) => {
-    scope.add(floor.id);
-    for (const room of floor.rooms ?? []) scope.add(room.id);
-    for (const zone of floor.zones ?? []) scope.add(zone.id);
+    closure.add(floor.id);
+    for (const room of floor.rooms ?? []) closure.add(room.id);
+    for (const zone of floor.zones ?? []) closure.add(zone.id);
+    for (const hive of floor.hives ?? []) closure.add(hive.id);
+    for (const sensor of floor.sensors ?? []) closure.add(sensor.id);
   };
   const addBuilding = (building: Building) => {
-    scope.add(building.id);
+    closure.add(building.id);
     for (const floor of building.floors ?? []) addFloor(floor);
   };
 
   for (const site of sites) {
     if (target.has(site.id)) {
-      scope.add(site.id);
+      closure.add(site.id);
       for (const building of site.buildings ?? []) addBuilding(building);
       continue;
     }
@@ -176,16 +186,32 @@ function expandAssetScopeIds(sites: Site[], assetIds: string[]): Set<string> {
           addFloor(floor);
           continue;
         }
+        // Floor-level leaf scan: rooms, zones, hives, sensors. A targeted
+        // room also pulls in its room_id-bound devices because a tag-on-
+        // room implicitly applies to the devices in that room.
         for (const room of floor.rooms ?? []) {
-          if (target.has(room.id)) scope.add(room.id);
+          if (!target.has(room.id)) continue;
+          closure.add(room.id);
+          for (const sensor of floor.sensors ?? []) {
+            if (sensor.room_id === room.id) closure.add(sensor.id);
+          }
+          for (const hive of floor.hives ?? []) {
+            if (hive.room_id === room.id) closure.add(hive.id);
+          }
         }
         for (const zone of floor.zones ?? []) {
-          if (target.has(zone.id)) scope.add(zone.id);
+          if (target.has(zone.id)) closure.add(zone.id);
+        }
+        for (const hive of floor.hives ?? []) {
+          if (target.has(hive.id)) closure.add(hive.id);
+        }
+        for (const sensor of floor.sensors ?? []) {
+          if (target.has(sensor.id)) closure.add(sensor.id);
         }
       }
     }
   }
-  return scope;
+  return closure;
 }
 
 /**
@@ -384,27 +410,29 @@ export async function executeListTopology(
     }
   }
 
-  // Per R3 §1: compose asset_ids and tag filters as a true AND by
-  // intersecting tag-matched IDs against the asset_ids closure BEFORE
-  // running filterTopologyByAssets. The previous two-pass approach
-  // leaked siblings of leaf-level asset_ids: filterTopologyByAssets
-  // expands a matched room to the whole floor, and the second pass would
-  // then catch the floor's other (non-asset_ids) rooms via the tag set.
+  // Per R3 §1 + R4: compose asset_ids and tag_names as a true AND via
+  // subtree-overlap intersection. Both sides are expanded to their full
+  // descendant closure (including sensors/hives, plus devices bound to a
+  // targeted room via room_id). Two surviving closures are then intersected
+  // — this catches the case where a tag sits on an ancestor of an asset
+  // (e.g. tag on a floor, asset_ids=[room_001] within that floor) which a
+  // raw-ID intersection would miss.
   //
-  // assetScopeEmpty / assetTagDisjoint are surfaced separately (R3 §2)
-  // so the empty-tree warning can distinguish "asset_ids didn't resolve"
-  // from "filters scope disjoint subtrees".
+  // assetScopeEmpty / assetTagDisjoint are tracked separately so the
+  // empty-tree warning can distinguish "asset_ids didn't resolve in this
+  // org" from "filters scope disjoint subtrees" (R3 §2).
   let filterIds: string[] | undefined;
   let assetScopeEmpty = false;
   let assetTagDisjoint = false;
 
   if (assetIds.length > 0) {
-    const assetScope = expandAssetScopeIds(sites, assetIds);
-    assetScopeEmpty = assetScope.size === 0;
+    const assetClosure = expandToSubtreeClosure(sites, assetIds);
+    assetScopeEmpty = assetClosure.size === 0;
 
     if (taggedEntityIds && taggedEntityIds.size > 0) {
+      const tagClosure = expandToSubtreeClosure(sites, [...taggedEntityIds]);
       const intersection: string[] = [];
-      for (const id of taggedEntityIds) if (assetScope.has(id)) intersection.push(id);
+      for (const id of assetClosure) if (tagClosure.has(id)) intersection.push(id);
       if (!assetScopeEmpty && intersection.length === 0) {
         assetTagDisjoint = true;
       }
