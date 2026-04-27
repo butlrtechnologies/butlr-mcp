@@ -429,7 +429,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(floors[0][0]).toBe("space_002");
     });
 
-    it("returns empty tree when asset_ids match nothing", async () => {
+    it("returns empty tree with explanatory warning when asset_ids match nothing", async () => {
       setupFullTopologyMocks();
 
       const result = await executeListTopology({
@@ -439,6 +439,9 @@ describe("butlr_list_topology - Integration", () => {
       });
 
       expect(result.tree).toHaveLength(0);
+      // Per R3 §2: the warning helps the LLM distinguish typo'd asset_ids
+      // from a genuinely empty subtree.
+      expect(result.warning).toMatch(/asset_ids matched no entities/i);
     });
   });
 
@@ -652,6 +655,46 @@ describe("butlr_list_topology - Integration", () => {
 
       expect(result.tree).toEqual([]);
       expect(result.warning).toMatch(/No rooms, zones, or floors are currently tagged/i);
+    });
+
+    // Per R3 §1: leaf-level asset_ids must AND with tag_names strictly.
+    // filterTopologyByAssets's contextual expansion would otherwise leak
+    // siblings of the asset_ids leaf — e.g. asset_ids=[room_002] expands
+    // to Floor 1 with all rooms (incl. room_001), and a naive second-pass
+    // tag filter would then catch room_001 and silently broaden the result.
+    it("composes AND-style at leaf level: sibling tag matches don't leak through asset_ids", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["room_002"], // Floor 1 sibling of huddle's room_001
+        tag_names: ["huddle"], // huddle is on room_001 only
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // True AND: room_002 is not tagged huddle, so the result is empty —
+      // the sibling room_001 (which IS huddle) must NOT pull anything in.
+      expect(result.tree).toEqual([]);
+      expect(result.warning).toMatch(/disjoint subtrees/i);
+      expect(result.warning).not.toMatch(/matched no entities/i);
+    });
+
+    // Per R3 §2: invalid asset_ids must surface a clearer warning, not the
+    // misleading "disjoint subtrees" — the asset_ids didn't resolve at all,
+    // so there's no scope to be disjoint from.
+    it("emits 'asset_ids matched no entities' (not 'disjoint') for invalid asset_ids alongside tag_names", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["room_definitely_does_not_exist"],
+        tag_names: ["huddle"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.warning).toMatch(/asset_ids matched no entities/i);
+      expect(result.warning).not.toMatch(/disjoint subtrees/i);
     });
 
     // Per R1 §2.4: tag matches a room outside the asset_ids scope, no overlap.

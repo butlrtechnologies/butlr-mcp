@@ -133,6 +133,62 @@ function collectTaggedEntityIds(
 }
 
 /**
+ * Walk the topology and collect every entity ID that is descendant of (or
+ * equal to) the supplied `assetIds`. Used to compose `asset_ids` with
+ * `tag_names` as a true AND.
+ *
+ * Per R3 §1: a leaf-level `asset_ids` (e.g. a single room) cannot rely on
+ * `filterTopologyByAssets` for composition because that function expands
+ * a matched leaf to the whole containing floor (siblings retained for
+ * context). Intersecting tag-matched IDs against this closure first
+ * eliminates the sibling leak.
+ *
+ * Tags only attach to rooms, zones, and floors, so we do not enumerate
+ * hives or sensors here — they cannot intersect a tag set anyway.
+ */
+function expandAssetScopeIds(sites: Site[], assetIds: string[]): Set<string> {
+  const target = new Set(assetIds);
+  const scope = new Set<string>();
+
+  const addFloor = (floor: Floor) => {
+    scope.add(floor.id);
+    for (const room of floor.rooms ?? []) scope.add(room.id);
+    for (const zone of floor.zones ?? []) scope.add(zone.id);
+  };
+  const addBuilding = (building: Building) => {
+    scope.add(building.id);
+    for (const floor of building.floors ?? []) addFloor(floor);
+  };
+
+  for (const site of sites) {
+    if (target.has(site.id)) {
+      scope.add(site.id);
+      for (const building of site.buildings ?? []) addBuilding(building);
+      continue;
+    }
+    for (const building of site.buildings ?? []) {
+      if (target.has(building.id)) {
+        addBuilding(building);
+        continue;
+      }
+      for (const floor of building.floors ?? []) {
+        if (target.has(floor.id)) {
+          addFloor(floor);
+          continue;
+        }
+        for (const room of floor.rooms ?? []) {
+          if (target.has(room.id)) scope.add(room.id);
+        }
+        for (const zone of floor.zones ?? []) {
+          if (target.has(zone.id)) scope.add(zone.id);
+        }
+      }
+    }
+  }
+  return scope;
+}
+
+/**
  * Execute butlr_list_topology tool
  */
 export async function executeListTopology(
@@ -328,15 +384,41 @@ export async function executeListTopology(
     }
   }
 
-  // Apply asset_ids and tag filters sequentially — both narrow the tree
-  // AND-style. asset_ids first scopes the org to a subtree; the tag filter
-  // then keeps only branches containing tagged entities within that scope.
-  let filteredSites = sites;
+  // Per R3 §1: compose asset_ids and tag filters as a true AND by
+  // intersecting tag-matched IDs against the asset_ids closure BEFORE
+  // running filterTopologyByAssets. The previous two-pass approach
+  // leaked siblings of leaf-level asset_ids: filterTopologyByAssets
+  // expands a matched room to the whole floor, and the second pass would
+  // then catch the floor's other (non-asset_ids) rooms via the tag set.
+  //
+  // assetScopeEmpty / assetTagDisjoint are surfaced separately (R3 §2)
+  // so the empty-tree warning can distinguish "asset_ids didn't resolve"
+  // from "filters scope disjoint subtrees".
+  let filterIds: string[] | undefined;
+  let assetScopeEmpty = false;
+  let assetTagDisjoint = false;
+
   if (assetIds.length > 0) {
-    filteredSites = filterTopologyByAssets(filteredSites, assetIds);
+    const assetScope = expandAssetScopeIds(sites, assetIds);
+    assetScopeEmpty = assetScope.size === 0;
+
+    if (taggedEntityIds && taggedEntityIds.size > 0) {
+      const intersection: string[] = [];
+      for (const id of taggedEntityIds) if (assetScope.has(id)) intersection.push(id);
+      if (!assetScopeEmpty && intersection.length === 0) {
+        assetTagDisjoint = true;
+      }
+      filterIds = intersection;
+    } else {
+      filterIds = assetIds;
+    }
+  } else if (taggedEntityIds && taggedEntityIds.size > 0) {
+    filterIds = [...taggedEntityIds];
   }
-  if (taggedEntityIds && taggedEntityIds.size > 0) {
-    filteredSites = filterTopologyByAssets(filteredSites, [...taggedEntityIds]);
+
+  let filteredSites = sites;
+  if (filterIds !== undefined) {
+    filteredSites = filterTopologyByAssets(filteredSites, filterIds);
   }
 
   // Format as tree with depth controls
@@ -362,15 +444,21 @@ export async function executeListTopology(
   if (tagWarning) {
     warnings.push(tagWarning);
   }
-  // Per R1 §2.7.2: when both filters resolve to non-empty input sets but
-  // their composition produces an empty tree, distinguish "filters disagree"
-  // from the unconditional empty-tree case so the caller knows the two
-  // scopes don't overlap rather than guessing.
-  if (tree.length === 0 && assetIds.length > 0 && taggedEntityIds && taggedEntityIds.size > 0) {
-    warnings.push(
-      "No tree node satisfies both asset_ids and tag_names — the two filters scope disjoint subtrees. " +
-        "Try removing one filter or use butlr_list_tags { include_entities: true } to see where the tags live."
-    );
+  // Per R3 §2: distinguish "asset_ids didn't resolve to anything in the
+  // org" from "asset_ids and tag_names scope disjoint subtrees" — the
+  // earlier blanket disjoint warning misdiagnosed typos in asset_ids.
+  if (tree.length === 0 && assetIds.length > 0) {
+    if (assetScopeEmpty) {
+      warnings.push(
+        "asset_ids matched no entities in the org — verify the IDs exist " +
+          "(use butlr_search_assets if unsure)."
+      );
+    } else if (assetTagDisjoint) {
+      warnings.push(
+        "No tree node satisfies both asset_ids and tag_names — the two filters scope disjoint subtrees. " +
+          "Try removing one filter or use butlr_list_tags { include_entities: true } to see where the tags live."
+      );
+    }
   }
   if (warnings.length > 0) {
     response.warning = warnings.join(" ");
