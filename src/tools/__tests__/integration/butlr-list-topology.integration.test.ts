@@ -236,9 +236,11 @@ function setupTagFilteredMocks(
 
 /**
  * Set up mocks for a tag-filter call that short-circuits before fetching
- * topology. Queues only the tags fetch — queuing more would leak into the
- * next test because `vi.clearAllMocks()` doesn't drain the
- * `mockResolvedValueOnce` queue.
+ * topology. Queues only the tags fetch — `beforeEach` uses `mockReset()`
+ * (which DOES drain the once-queue), so leftover mocks would not cross
+ * tests, but queuing only what we consume keeps the test self-documenting:
+ * if the production short-circuit moves below the topology fetch later,
+ * we want it to fail loudly here instead of silently pulling a stale mock.
  */
 function setupTagsOnlyMock(tagsData?: any) {
   const tags = tagsData ?? buildTagsFixture();
@@ -645,7 +647,10 @@ describe("butlr_list_topology - Integration", () => {
     });
 
     it("returns empty with warning when resolved tags have no associations", async () => {
-      setupTagFilteredMocks();
+      // Per R3 §3.3: short-circuits on taggedEntityIds.size === 0 before the
+      // topology fetch — queue only the tags mock and assert the call count
+      // so a future regression that drops the short-circuit is caught here.
+      setupTagsOnlyMock();
 
       const result = await executeListTopology({
         tag_names: ["unused"],
@@ -655,6 +660,7 @@ describe("butlr_list_topology - Integration", () => {
 
       expect(result.tree).toEqual([]);
       expect(result.warning).toMatch(/No rooms, zones, or floors are currently tagged/i);
+      expect(apolloClient.query).toHaveBeenCalledTimes(1);
     });
 
     // Per R4: when a tag sits on an ANCESTOR of an asset_ids entry, the
@@ -842,6 +848,62 @@ describe("butlr_list_topology - Integration", () => {
       const ids = flattenIds(result.tree);
       expect(ids).toContain("sensor_camel_001");
       expect(result.warning).toBeUndefined();
+    });
+
+    // Per R3 §3.5: when both inputs are typos, surface the asset_ids note
+    // alongside the tag-typo warning — but only if we can verify cheaply
+    // (warm topology cache). Without the cache we don't pay for a fetch
+    // just for the diagnostic.
+    it("hints at invalid asset_ids alongside unknown-tag warning when topology cache is warm", async () => {
+      // Prime the cache with a successful no-tag call.
+      setupFullTopologyMocks();
+      await executeListTopology({ starting_depth: 0, traversal_depth: 0 });
+
+      // Now run a dual-typo call. Only the tags fetch should happen
+      // (cache hit gives us asset verification for free).
+      setupTagsOnlyMock();
+
+      const result = await executeListTopology({
+        asset_ids: ["asset_does_not_exist"],
+        tag_names: ["does-not-exist"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.warning).toMatch(/No matching tags/i);
+      expect(result.warning).toMatch(/asset_ids also matched no entities/i);
+      expect(result.warning).toMatch(/butlr_search_assets/i);
+    });
+
+    // Per R3 §3.1: a tag with associations to entities that aren't in
+    // the active topology (deleted entity, test device filtered, etc.)
+    // must produce an explanatory warning rather than a silent empty tree.
+    it("warns when tag associations point at entities missing from the active topology", async () => {
+      const tagsWithGhostRoom = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_ghost",
+            name: "ghost-tag",
+            organization_id: "org_001",
+            rooms: [{ __typename: "Room", id: "room_does_not_exist", name: "Ghost" }],
+            zones: [],
+            floors: [],
+          },
+        ],
+      };
+      setupTagFilteredMocks(tagsWithGhostRoom);
+
+      const result = await executeListTopology({
+        tag_names: ["ghost-tag"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.warning).toMatch(/none are present in the active topology/i);
+      expect(result.warning).toMatch(/butlr_list_tags/i);
     });
 
     // Per R6: sensors reach a room transitively through a room-bound hive

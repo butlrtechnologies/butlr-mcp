@@ -223,7 +223,18 @@ function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
           if (target.has(zone.id)) closure.add(zone.id);
         }
         for (const hive of floor.hives ?? []) {
-          if (target.has(hive.id)) closure.add(hive.id);
+          if (!target.has(hive.id)) continue;
+          closure.add(hive.id);
+          // Per R3 §3.2: defensive symmetry with the room→hive→sensor
+          // chain above. Tags can't currently attach to sensors per the
+          // GraphQL schema, so this branch has no observable effect on
+          // current data, but it closes the symmetric-closure invariant
+          // claimed in the comment block above and matches what the
+          // formatter renders under a hive (formatHive children).
+          if (!hive.serialNumber) continue;
+          for (const sensor of floor.sensors ?? []) {
+            if (sensor.hive_serial === hive.serialNumber) closure.add(sensor.id);
+          }
         }
         for (const sensor of floor.sensors ?? []) {
           if (target.has(sensor.id)) closure.add(sensor.id);
@@ -290,13 +301,33 @@ export async function executeListTopology(
     };
 
     if (resolvedRows.length === 0) {
+      // Per R3 §3.5: if asset_ids was also supplied, opportunistically check
+      // it against a warm topology cache so a dual-typo input (tag wrong AND
+      // asset_ids wrong) surfaces both. Don't pay for a fresh topology fetch
+      // just for this diagnostic — it would dwarf the actual short-circuit.
+      let assetHint = "";
+      if (assetIds.length > 0) {
+        const cacheKey = generateTopologyCacheKey(
+          process.env.BUTLR_ORG_ID || "default",
+          true,
+          true,
+          undefined
+        );
+        const cached = getCachedTopology(cacheKey);
+        const cachedSites = cached?.data?.sites as Site[] | undefined;
+        if (cachedSites && expandToSubtreeClosure(cachedSites, assetIds).size === 0) {
+          assetHint =
+            " asset_ids also matched no entities in the org — verify those IDs with butlr_search_assets.";
+        }
+      }
       return {
         tree: [],
         query_params: baseQueryParams,
         timestamp: new Date().toISOString(),
         warning:
           `No matching tags found in this org for: ${unknownNames.join(", ")}. ` +
-          "Use butlr_list_tags to see available tag names.",
+          "Use butlr_list_tags to see available tag names." +
+          assetHint,
         unknown_tags: unknownNames,
       };
     }
@@ -507,6 +538,23 @@ export async function executeListTopology(
           "Try removing one filter or use butlr_list_tags { include_entities: true } to see where the tags live."
       );
     }
+  } else if (
+    tree.length === 0 &&
+    assetIds.length === 0 &&
+    taggedEntityIds &&
+    taggedEntityIds.size > 0
+  ) {
+    // Per R3 §3.1: tag-only path can produce an empty tree when the tag's
+    // associations point at entities that aren't present in the active
+    // topology — typically a deleted entity whose tag link survives, or a
+    // device that was filtered out (isProductionSensor / isProductionHive).
+    // Without this branch the user gets `tree: []` with no diagnostic.
+    warnings.push(
+      `Tag matched ${taggedEntityIds.size} entit${taggedEntityIds.size === 1 ? "y" : "ies"} ` +
+        "in the tag table, but none are present in the active topology — " +
+        "they may have been deleted or filtered. " +
+        "Use butlr_list_tags { include_entities: true } to inspect the raw associations."
+    );
   }
   if (warnings.length > 0) {
     response.warning = warnings.join(" ");
