@@ -106,7 +106,17 @@ function collectTaggedEntityIds(
 
   const kinds = ["rooms", "zones", "floors"] as const;
   for (const kind of kinds) {
-    const sets = resolvedRows.map((row) => new Set((row[kind] ?? []).map((e) => e.id)));
+    // Per R1 §2.2: drop refs whose `id` is null/undefined (stale tag→entity
+    // associations after a hard delete, or partial GraphQL responses) so
+    // they can't pollute the matched-id Set.
+    const sets = resolvedRows.map(
+      (row) =>
+        new Set(
+          (row[kind] ?? []).flatMap((e) =>
+            typeof e.id === "string" && e.id.length > 0 ? [e.id] : []
+          )
+        )
+    );
     let acc: Set<string>;
     if (match === "all") {
       acc = new Set(sets[0]);

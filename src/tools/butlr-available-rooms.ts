@@ -318,10 +318,14 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       });
       throwIfGraphQLErrors(tagsResult);
 
-      const { resolvedIds, unknownNames } = resolveTagNames({
+      // Apply tag_match default at the call site so direct invocations
+      // (tests bypassing Zod parsing, downstream programmatic callers)
+      // get the same semantics as the schema default.
+      const tagMatch = args.tag_match ?? "all";
+      const { resolvedIds, unknownNames, unsatisfiable } = resolveTagNames({
         allTags: tagsResult.data?.tags ?? [],
         requestedNames: args.tags,
-        match: args.tag_match,
+        match: tagMatch,
       });
 
       if (resolvedIds.length === 0) {
@@ -339,11 +343,10 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
         };
       }
 
-      // Under tag_match='all' (the default), an unresolved tag means the AND
-      // constraint is unsatisfiable — querying with the resolved subset would
-      // return a strictly broader result that silently answers a different
-      // question. Only continue-with-warning is safe under tag_match='any'.
-      if (unknownNames.length > 0 && args.tag_match !== "any") {
+      // Per R1 §2.6: gate on the resolver's `unsatisfiable` flag rather than
+      // re-deriving the rule inline, so the all-vs-any semantics live in one
+      // place (resolveTagNames) and can't drift between tools.
+      if (unsatisfiable) {
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
           available_rooms: [],
@@ -365,7 +368,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
         );
       }
 
-      const useOR = args.tag_match === "any";
+      const useOR = tagMatch === "any";
 
       const result = await apolloClient.query<{ roomsByTag: { data: Room[] } | null }>({
         query: GET_ROOMS_BY_TAG,

@@ -60,7 +60,7 @@ const LIST_TAGS_DESCRIPTION =
   "When NOT to Use:\n" +
   "- You want full topology browsing — use butlr_list_topology (supports tag_names filter for tagged-only views)\n" +
   "- You only need available rooms by tag — use butlr_available_rooms\n\n" +
-  "Response Shape: { tags: [{ id, name, applied_to: { rooms, zones, floors }, applied_to_entities? }], total, timestamp }. Tags are sorted by total usage descending. `applied_to_entities` is present only when include_entities=true and contains arrays of { id, name } for each tagged room, zone, and floor.\n\n" +
+  "Response Shape: { tags: [{ id, name, applied_to: { rooms: number, zones: number, floors: number }, applied_to_entities?: { rooms: [{id, name}], zones: [{id, name}], floors: [{id, name}] } }], total, timestamp }. Tags are sorted by total usage descending. `applied_to_entities` is present only when include_entities=true.\n\n" +
   "Note on coverage: spot-level tags exist in the data model but are not yet exposed by this tool — applied_to and applied_to_entities cover rooms, zones, and floors only.\n\n" +
   "See Also: butlr_list_topology (tag_names filter for tagged subtrees), butlr_available_rooms (uses tag names from this tool), butlr_search_assets";
 
@@ -112,22 +112,32 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
     throw error;
   }
 
+  // Per R1 §2.2: filter out refs without a usable id (dangling associations
+  // after a hard delete, or partial GraphQL responses). Counts and the
+  // optional entity array are computed off the same filtered list so they
+  // can never disagree within a single response.
+  const project = (refs: RawTagWithUsage["rooms"]): TaggedEntityRef[] =>
+    (refs ?? []).flatMap((e) =>
+      typeof e.id === "string" && e.id.length > 0
+        ? [typeof e.name === "string" ? { id: e.id, name: e.name } : { id: e.id }]
+        : []
+    );
+
   let tags: TagSummary[] = rawTags.map((t) => {
+    const rooms = project(t.rooms);
+    const zones = project(t.zones);
+    const floors = project(t.floors);
     const summary: TagSummary = {
       id: t.id,
       name: t.name,
       applied_to: {
-        rooms: t.rooms?.length ?? 0,
-        zones: t.zones?.length ?? 0,
-        floors: t.floors?.length ?? 0,
+        rooms: rooms.length,
+        zones: zones.length,
+        floors: floors.length,
       },
     };
     if (args.include_entities) {
-      summary.applied_to_entities = {
-        rooms: (t.rooms ?? []).map(({ id, name }) => ({ id, name })),
-        zones: (t.zones ?? []).map(({ id, name }) => ({ id, name })),
-        floors: (t.floors ?? []).map(({ id, name }) => ({ id, name })),
-      };
+      summary.applied_to_entities = { rooms, zones, floors };
     }
     return summary;
   });

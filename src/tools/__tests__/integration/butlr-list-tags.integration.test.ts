@@ -191,6 +191,41 @@ describe("butlr_list_tags - Integration", () => {
       expect(unused?.applied_to_entities).toEqual({ rooms: [], zones: [], floors: [] });
     });
 
+    // Per R1 §2.2: a dangling tag→entity association (deleted entity, partial
+    // GraphQL response) should be elided from both `applied_to_entities` and
+    // the `applied_to` count, not surfaced as { id: null } / inflated counts.
+    it("drops dangling tagged-entity refs (null id) from entities and counts", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: {
+          tags: [
+            {
+              __typename: "Tag",
+              id: "tag_dirty",
+              name: "dirty",
+              organization_id: "org_dirty",
+              rooms: [
+                { __typename: "Room", id: "room_real", name: "Real Room" },
+                { __typename: "Room", id: null, name: null },
+                { __typename: "Room", id: "" },
+              ],
+              zones: [{ __typename: "Zone", id: "zone_real" }],
+              floors: [],
+            },
+          ],
+        },
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ include_entities: true });
+
+      const dirty = result.tags.find((t) => t.name === "dirty");
+      expect(dirty?.applied_to_entities?.rooms).toEqual([{ id: "room_real", name: "Real Room" }]);
+      expect(dirty?.applied_to_entities?.zones).toEqual([{ id: "zone_real" }]);
+      // Counts must agree with the filtered entity arrays
+      expect(dirty?.applied_to).toEqual({ rooms: 1, zones: 1, floors: 0 });
+    });
+
     it("composes with name_contains filter", async () => {
       const fixture = loadGraphQLFixture("tags-list");
       vi.mocked(apolloClient.query).mockResolvedValue({

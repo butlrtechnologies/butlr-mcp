@@ -41,7 +41,15 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
 ): ResolveTagNamesResult<Row> {
   const { allTags, requestedNames, match } = input;
 
-  const lookup = new Map<string, Row>(allTags.map((t) => [t.name.toLowerCase(), t]));
+  // Per R1 §2.1: defensively skip rows whose `name` is not a string. The type
+  // contract says it's required, but a missing field on a partial GraphQL
+  // response would otherwise throw on `.toLowerCase()` and crash every
+  // tag-using tool. Cheaper to ignore the bad row than to crash the request.
+  const lookup = new Map<string, Row>();
+  for (const t of allTags) {
+    if (typeof t.name !== "string") continue;
+    lookup.set(t.name.toLowerCase(), t);
+  }
 
   const resolvedRows: Row[] = [];
   const resolvedIds: TagId[] = [];

@@ -85,4 +85,25 @@ describe("resolveTagNames", () => {
     expect(result.unknownNames).toEqual([]);
     expect(result.unsatisfiable).toBe(false);
   });
+
+  // Per R1 §2.1: a tag row with null/missing `name` previously crashed the
+  // .toLowerCase() call. Now we skip such rows defensively.
+  it("skips tag rows whose name is null or missing without crashing", () => {
+    const dirty = [
+      { id: "tag_a", name: "huddle" },
+      { id: "tag_x", name: null as unknown as string },
+      { id: "tag_y" } as unknown as { id: string; name: string },
+      { id: "tag_b", name: "focus" },
+    ];
+
+    const result = resolveTagNames({
+      allTags: dirty,
+      requestedNames: ["huddle", "focus"],
+      match: "all",
+    });
+
+    expect(result.resolvedIds).toEqual(["tag_a", "tag_b"]);
+    expect(result.unknownNames).toEqual([]);
+    expect(result.unsatisfiable).toBe(false);
+  });
 });

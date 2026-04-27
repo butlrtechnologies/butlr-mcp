@@ -92,8 +92,16 @@ function buildSensorsFixture() {
  * Build a tags fixture aligned with the topology fixture IDs.
  *  - "huddle"   → room_001 (Floor 1)
  *  - "focus"    → room_001 (Floor 1) + room_003 (Floor 2)
+ *  - "broad"    → room_001 (Floor 1) + room_003 (Floor 2)
+ *  - "executive"→ room_001 (Floor 1) + room_002 (Floor 1)
  *  - "video"    → zone_001 (Floor 1)
  *  - "unused"   → no associations
+ *
+ * "focus" ∩ "broad" ∩ "executive" subtracts step-by-step: 2-tag intersection
+ * is {room_001, room_003}; adding "executive" prunes room_003 → {room_001}.
+ * A fence-post in the fold loop (skipping the third tag) would leave
+ * {room_001, room_003} and pull Floor 2 into the result — the 3-tag test
+ * detects exactly that.
  */
 function buildTagsFixture() {
   return {
@@ -115,6 +123,30 @@ function buildTagsFixture() {
         rooms: [
           { __typename: "Room", id: "room_001", name: "Conf A" },
           { __typename: "Room", id: "room_003", name: "Board Room" },
+        ],
+        zones: [],
+        floors: [],
+      },
+      {
+        __typename: "Tag",
+        id: "tag_broad",
+        name: "broad",
+        organization_id: "org_001",
+        rooms: [
+          { __typename: "Room", id: "room_001", name: "Conf A" },
+          { __typename: "Room", id: "room_003", name: "Board Room" },
+        ],
+        zones: [],
+        floors: [],
+      },
+      {
+        __typename: "Tag",
+        id: "tag_executive",
+        name: "executive",
+        organization_id: "org_001",
+        rooms: [
+          { __typename: "Room", id: "room_001", name: "Conf A" },
+          { __typename: "Room", id: "room_002", name: "Conf B" },
         ],
         zones: [],
         floors: [],
@@ -503,6 +535,29 @@ describe("butlr_list_topology - Integration", () => {
       expect(ids).not.toContain("room_003");
     });
 
+    // Per R1 §2.3: 3-tag intersection exercises the fold loop in
+    // collectTaggedEntityIds at i >= 2 — a 2-tag test only exercises i=1.
+    // Designed so the third tag is load-bearing: focus ∩ broad already
+    // contains room_003, and only the third tag (executive) prunes it.
+    // A fence-post that skips i=2 leaves room_003 in and pulls Floor 2 in.
+    it("tag_match='all' folds intersection across 3+ tags", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        tag_names: ["focus", "broad", "executive"],
+        tag_match: "all",
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // focus={001,003} ∩ broad={001,003} = {001,003}; ∩ executive={001,002} = {001}.
+      // Floor 2 (only room_003) must be excluded — that's the load-bearing assertion.
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      expect(ids).not.toContain("space_002");
+      expect(ids).not.toContain("room_003");
+    });
+
     it("returns empty tree with warning when no tag names match", async () => {
       setupTagsOnlyMock();
 
@@ -551,6 +606,41 @@ describe("butlr_list_topology - Integration", () => {
       expect(flattenIds(result.tree)).toContain("room_001");
     });
 
+    // Per R1 §2.2: an upstream that returns a dangling { id: null } in a
+    // tag→entity association must not crash or pull spurious entries into
+    // the matched-id set. Real refs alongside the bad ones still resolve.
+    it("ignores tagged-entity refs with null id when filtering the topology", async () => {
+      const dirtyTags = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_huddle",
+            name: "huddle",
+            organization_id: "org_001",
+            rooms: [
+              { __typename: "Room", id: "room_001", name: "Conf A" },
+              { __typename: "Room", id: null, name: null },
+              { __typename: "Room", id: "" },
+            ],
+            zones: [],
+            floors: [],
+          },
+        ],
+      };
+      setupTagFilteredMocks(dirtyTags);
+
+      const result = await executeListTopology({
+        tag_names: ["huddle"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      expect(ids).not.toContain("space_002");
+      expect(result.warning).toBeUndefined();
+    });
+
     it("returns empty with warning when resolved tags have no associations", async () => {
       setupTagFilteredMocks();
 
@@ -562,6 +652,25 @@ describe("butlr_list_topology - Integration", () => {
 
       expect(result.tree).toEqual([]);
       expect(result.warning).toMatch(/No rooms, zones, or floors are currently tagged/i);
+    });
+
+    // Per R1 §2.4: tag matches a room outside the asset_ids scope, no overlap.
+    // Pins down the intersection semantics so a future refactor that turns
+    // composition into a union would be caught (current test would still pass
+    // because the in-scope tag also matches).
+    it("returns empty tree when tag matches no entity inside the asset_ids scope", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["space_002"],
+        tag_names: ["huddle"], // huddle is on room_001 only (Floor 1)
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.query_params.asset_filter).toEqual(["space_002"]);
+      expect(result.query_params.tag_filter).toEqual({ names: ["huddle"], match: "any" });
     });
 
     it("composes AND-style with asset_ids — tag matches outside the scope are pruned", async () => {
