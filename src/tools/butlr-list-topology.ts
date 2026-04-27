@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { GET_FULL_TOPOLOGY, GET_ALL_SENSORS, GET_ALL_HIVES } from "../clients/queries/topology.js";
+import { GET_TAGS_WITH_USAGE, type RawTagWithUsage } from "../clients/queries/tags.js";
 import type {
   SitesResponse,
   Site,
@@ -22,19 +23,26 @@ import {
   isProductionSensor,
   isProductionHive,
   rethrowIfGraphQLError,
+  throwIfGraphQLErrors,
 } from "../utils/graphql-helpers.js";
+import { resolveTagNames } from "../utils/tag-resolver.js";
 import { debug } from "../utils/debug.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type { ListTopologyResponse } from "../types/responses.js";
 
 const LIST_TOPOLOGY_DESCRIPTION =
   "Display org hierarchy tree with flexible depth control. Can show full tree, specific subtrees, or flat lists. " +
-  "Supports filtering by parent asset IDs. Depth levels: 0=sites, 1=buildings, 2=floors, 3=rooms/zones, 4=hives, 5=sensors. " +
+  "Supports filtering by parent asset IDs and by tag names. Depth levels: 0=sites, 1=buildings, 2=floors, 3=rooms/zones, 4=hives, 5=sensors. " +
   "Use starting_depth to choose which level to show, and traversal_depth to control how many levels below to include.\n\n" +
+  "Tag filter:\n" +
+  "- Pass tag_names (case-insensitive) to scope the tree to subtrees containing rooms, zones, or floors with those tags. Combines AND-style with asset_ids when both are supplied.\n" +
+  "- tag_match defaults to 'any' (entity tagged with at least one of the names) — note this differs from butlr_available_rooms, which defaults to 'all' because it filters a single entity type.\n" +
+  "- Use butlr_list_tags to discover what tag vocabulary exists in this org.\n\n" +
   "When NOT to Use:\n" +
   "- Searching for assets by name or keyword → use butlr_search_assets for fuzzy name-based lookups\n" +
   "- Need detailed info for a specific asset you already have an ID for → use butlr_get_asset_details instead\n" +
-  "- Need only specific fields for known entity IDs → use butlr_fetch_entity_details for selective field fetching";
+  "- Need only specific fields for known entity IDs → use butlr_fetch_entity_details for selective field fetching\n" +
+  "- Want every tagged entity (not the surrounding hierarchy) → use butlr_list_tags with include_entities=true";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const listTopologyInputShape = {
@@ -61,11 +69,58 @@ const listTopologyInputShape = {
       "How many levels below starting_depth to traverse. 0=starting level only, 1=one level below, etc. " +
         "Default is 0 to minimize token usage. Use 10 for full tree."
     ),
+
+  tag_names: z
+    .array(z.string().min(1, "Tag cannot be empty").trim())
+    .min(1, "tag_names array cannot be empty")
+    .optional()
+    .describe(
+      "Filter tree to subtrees containing rooms, zones, or floors with these tag names (case-insensitive). " +
+        "Combines AND-style with asset_ids. Use butlr_list_tags to discover available tag names."
+    ),
+
+  tag_match: z
+    .enum(["all", "any"])
+    .default("any")
+    .describe(
+      "Multi-tag semantics when tag_names has more than one entry: 'any' (default) keeps entities tagged with at least one of the names, 'all' keeps only entities tagged with every name (within the same entity type). Defaults to 'any' here, unlike butlr_available_rooms which defaults to 'all'."
+    ),
 };
 
 export const ListTopologyArgsSchema = z.object(listTopologyInputShape).strict();
 
 type ListTopologyArgs = z.output<typeof ListTopologyArgsSchema>;
+
+/**
+ * Build the union/intersection of tagged-entity IDs across resolved tag rows.
+ * Intersection (`all`) is taken per entity type — a single entity can only be
+ * tagged within its own type — and the resulting per-type sets are unioned
+ * into a flat ID set suitable for `filterTopologyByAssets`.
+ */
+function collectTaggedEntityIds(
+  resolvedRows: RawTagWithUsage[],
+  match: "all" | "any"
+): Set<string> {
+  const matched = new Set<string>();
+  if (resolvedRows.length === 0) return matched;
+
+  const kinds = ["rooms", "zones", "floors"] as const;
+  for (const kind of kinds) {
+    const sets = resolvedRows.map((row) => new Set((row[kind] ?? []).map((e) => e.id)));
+    let acc: Set<string>;
+    if (match === "all") {
+      acc = new Set(sets[0]);
+      for (let i = 1; i < sets.length; i++) {
+        for (const id of acc) if (!sets[i].has(id)) acc.delete(id);
+      }
+    } else {
+      acc = new Set();
+      for (const s of sets) for (const id of s) acc.add(id);
+    }
+    for (const id of acc) matched.add(id);
+  }
+  return matched;
+}
 
 /**
  * Execute butlr_list_topology tool
@@ -76,11 +131,92 @@ export async function executeListTopology(
   const startingDepth = args.starting_depth ?? 0;
   const traversalDepth = args.traversal_depth ?? 0;
   const assetIds = args.asset_ids ?? [];
+  const tagNames = args.tag_names ?? [];
+  const tagMatch = args.tag_match ?? "any";
 
   debug(
     "butlr-list-topology",
-    `Fetching topology: starting_depth=${startingDepth}, traversal_depth=${traversalDepth}, assets=${assetIds.length || "all"}`
+    `Fetching topology: starting_depth=${startingDepth}, traversal_depth=${traversalDepth}, assets=${assetIds.length || "all"}, tags=${tagNames.length ? `${tagMatch}:${tagNames.join(",")}` : "none"}`
   );
+
+  // Resolve tag filter (if any) up-front so we can short-circuit on
+  // unsatisfiable / no-match cases without paying for the topology fetch.
+  let taggedEntityIds: Set<string> | undefined;
+  let unknownTagNames: string[] = [];
+  let tagWarning: string | undefined;
+
+  if (tagNames.length > 0) {
+    let tagsRaw: RawTagWithUsage[] = [];
+    try {
+      const tagsResult = await apolloClient.query<{ tags: RawTagWithUsage[] | null }>({
+        query: GET_TAGS_WITH_USAGE,
+        fetchPolicy: "network-only",
+      });
+      throwIfGraphQLErrors(tagsResult);
+      tagsRaw = tagsResult.data?.tags ?? [];
+    } catch (error: unknown) {
+      rethrowIfGraphQLError(error);
+      throw error;
+    }
+
+    const { resolvedRows, unknownNames, unsatisfiable } = resolveTagNames({
+      allTags: tagsRaw,
+      requestedNames: tagNames,
+      match: tagMatch,
+    });
+    unknownTagNames = unknownNames;
+
+    const baseQueryParams = {
+      starting_depth: startingDepth,
+      traversal_depth: traversalDepth,
+      asset_filter: assetIds.length > 0 ? assetIds : ("all" as const),
+      tag_filter: { names: tagNames, match: tagMatch },
+    };
+
+    if (resolvedRows.length === 0) {
+      return {
+        tree: [],
+        query_params: baseQueryParams,
+        timestamp: new Date().toISOString(),
+        warning:
+          `No matching tags found in this org for: ${unknownNames.join(", ")}. ` +
+          "Use butlr_list_tags to see available tag names.",
+        unknown_tags: unknownNames,
+      };
+    }
+
+    if (unsatisfiable) {
+      return {
+        tree: [],
+        query_params: baseQueryParams,
+        timestamp: new Date().toISOString(),
+        warning:
+          `Cannot satisfy tag_match='all': unknown tag(s) ${unknownNames.join(", ")}. ` +
+          "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match entities tagged with any of the supplied tags.",
+        unknown_tags: unknownNames,
+      };
+    }
+
+    taggedEntityIds = collectTaggedEntityIds(resolvedRows, tagMatch);
+
+    if (taggedEntityIds.size === 0) {
+      return {
+        tree: [],
+        query_params: baseQueryParams,
+        timestamp: new Date().toISOString(),
+        warning:
+          `No rooms, zones, or floors are currently tagged with ${tagMatch === "all" ? "all of" : "any of"} ` +
+          `[${tagNames.join(", ")}]. Use butlr_list_tags { include_entities: true } to see what is tagged.`,
+        unknown_tags: unknownNames.length > 0 ? unknownNames : undefined,
+      };
+    }
+
+    if (unknownNames.length > 0) {
+      tagWarning =
+        `Unknown tag(s) ignored: ${unknownNames.join(", ")}. ` +
+        "Use butlr_list_tags to see available tag names.";
+    }
+  }
 
   // Use a cache key that includes devices
   const cacheKey = generateTopologyCacheKey(
@@ -165,10 +301,15 @@ export async function executeListTopology(
     }
   }
 
-  // Filter topology by asset_ids if provided
+  // Apply asset_ids and tag filters sequentially — both narrow the tree
+  // AND-style. asset_ids first scopes the org to a subtree; the tag filter
+  // then keeps only branches containing tagged entities within that scope.
   let filteredSites = sites;
   if (assetIds.length > 0) {
-    filteredSites = filterTopologyByAssets(sites, assetIds);
+    filteredSites = filterTopologyByAssets(filteredSites, assetIds);
+  }
+  if (taggedEntityIds && taggedEntityIds.size > 0) {
+    filteredSites = filterTopologyByAssets(filteredSites, [...taggedEntityIds]);
   }
 
   // Format as tree with depth controls
@@ -180,13 +321,25 @@ export async function executeListTopology(
       starting_depth: startingDepth,
       traversal_depth: traversalDepth,
       asset_filter: assetIds.length > 0 ? assetIds : "all",
+      ...(tagNames.length > 0 ? { tag_filter: { names: tagNames, match: tagMatch } } : {}),
     },
     timestamp: new Date().toISOString(),
   };
 
+  const warnings: string[] = [];
   if (partialData) {
-    response.warning =
-      "Topology data may be incomplete — the API returned partial results due to upstream errors.";
+    warnings.push(
+      "Topology data may be incomplete — the API returned partial results due to upstream errors."
+    );
+  }
+  if (tagWarning) {
+    warnings.push(tagWarning);
+  }
+  if (warnings.length > 0) {
+    response.warning = warnings.join(" ");
+  }
+  if (unknownTagNames.length > 0) {
+    response.unknown_tags = unknownTagNames;
   }
 
   return response;

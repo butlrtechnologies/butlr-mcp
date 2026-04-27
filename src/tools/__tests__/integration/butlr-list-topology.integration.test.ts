@@ -88,6 +88,59 @@ function buildSensorsFixture() {
   };
 }
 
+/**
+ * Build a tags fixture aligned with the topology fixture IDs.
+ *  - "huddle"   → room_001 (Floor 1)
+ *  - "focus"    → room_001 (Floor 1) + room_003 (Floor 2)
+ *  - "video"    → zone_001 (Floor 1)
+ *  - "unused"   → no associations
+ */
+function buildTagsFixture() {
+  return {
+    tags: [
+      {
+        __typename: "Tag",
+        id: "tag_huddle",
+        name: "huddle",
+        organization_id: "org_001",
+        rooms: [{ __typename: "Room", id: "room_001", name: "Conf A" }],
+        zones: [],
+        floors: [],
+      },
+      {
+        __typename: "Tag",
+        id: "tag_focus",
+        name: "focus",
+        organization_id: "org_001",
+        rooms: [
+          { __typename: "Room", id: "room_001", name: "Conf A" },
+          { __typename: "Room", id: "room_003", name: "Board Room" },
+        ],
+        zones: [],
+        floors: [],
+      },
+      {
+        __typename: "Tag",
+        id: "tag_video",
+        name: "video",
+        organization_id: "org_001",
+        rooms: [],
+        zones: [{ __typename: "Zone", id: "zone_001", name: "Reception" }],
+        floors: [],
+      },
+      {
+        __typename: "Tag",
+        id: "tag_unused",
+        name: "unused",
+        organization_id: "org_001",
+        rooms: [],
+        zones: [],
+        floors: [],
+      },
+    ],
+  };
+}
+
 function buildHivesFixture() {
   return {
     hives: {
@@ -130,9 +183,57 @@ function setupFullTopologyMocks(topologyData?: any, sensorsData?: any, hivesData
     } as any); // GET_ALL_HIVES
 }
 
+/**
+ * Set up mocks for a tag-filtered call: tags fetched FIRST (used to short-circuit
+ * before topology fetch), then topology / sensors / hives in the usual order.
+ */
+function setupTagFilteredMocks(
+  tagsData?: any,
+  topologyData?: any,
+  sensorsData?: any,
+  hivesData?: any
+) {
+  const tags = tagsData ?? buildTagsFixture();
+  vi.mocked(apolloClient.query).mockResolvedValueOnce({
+    data: tags,
+    loading: false,
+    networkStatus: 7,
+  } as any); // GET_TAGS_WITH_USAGE
+  setupFullTopologyMocks(topologyData, sensorsData, hivesData);
+}
+
+/**
+ * Set up mocks for a tag-filter call that short-circuits before fetching
+ * topology. Queues only the tags fetch — queuing more would leak into the
+ * next test because `vi.clearAllMocks()` doesn't drain the
+ * `mockResolvedValueOnce` queue.
+ */
+function setupTagsOnlyMock(tagsData?: any) {
+  const tags = tagsData ?? buildTagsFixture();
+  vi.mocked(apolloClient.query).mockResolvedValueOnce({
+    data: tags,
+    loading: false,
+    networkStatus: 7,
+  } as any);
+}
+
+/** Recursively collect every node id from a tree response. */
+function flattenIds(nodes: any[]): string[] {
+  const ids: string[] = [];
+  for (const node of nodes) {
+    ids.push(node[0]);
+    if (node[2]) ids.push(...flattenIds(node[2]));
+  }
+  return ids;
+}
+
 describe("butlr_list_topology - Integration", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // mockReset (not just clearAllMocks) is required to drain leftover
+    // `mockResolvedValueOnce` entries between tests — clearAllMocks resets
+    // call history but not the once-queue, which would otherwise leak from
+    // a short-circuiting tag test into the next one.
+    vi.mocked(apolloClient.query).mockReset();
     clearTopologyCache();
   });
 
@@ -331,6 +432,155 @@ describe("butlr_list_topology - Integration", () => {
       const allIds = flattenIds(result.tree);
       expect(allIds).toContain("sensor_001");
       expect(allIds).not.toContain("sensor_mirror");
+    });
+  });
+
+  describe("Tag-based filtering", () => {
+    it("filters tree to subtrees containing rooms with the named tag", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        tag_names: ["huddle"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // huddle is on room_001 only (Floor 1) → Floor 2 (room_003) must be pruned
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      expect(ids).not.toContain("space_002");
+      expect(ids).not.toContain("room_003");
+
+      expect(result.query_params.tag_filter).toEqual({ names: ["huddle"], match: "any" });
+      expect(result.unknown_tags).toBeUndefined();
+    });
+
+    it("matches case-insensitively", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        tag_names: ["HUDDLE"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(flattenIds(result.tree)).toContain("room_001");
+    });
+
+    it("default tag_match='any' returns the union across multiple tags", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        tag_names: ["huddle", "video"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // huddle → room_001 ; video → zone_001 ; both live on Floor 1.
+      // Existing filterTopologyByAssets keeps any subtree containing a match,
+      // so Floor 1 stays with all its children.
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      expect(ids).toContain("zone_001");
+      expect(ids).not.toContain("space_002");
+    });
+
+    it("tag_match='all' returns the per-entity-type intersection", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        tag_names: ["huddle", "focus"],
+        tag_match: "all",
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // huddle ∩ focus on rooms = {room_001}; tags don't apply to zones/floors
+      // here, so room_003 (only focus) must NOT pull Floor 2 into the result.
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      expect(ids).not.toContain("space_002");
+      expect(ids).not.toContain("room_003");
+    });
+
+    it("returns empty tree with warning when no tag names match", async () => {
+      setupTagsOnlyMock();
+
+      const result = await executeListTopology({
+        tag_names: ["does-not-exist"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.warning).toMatch(/No matching tags/i);
+      expect(result.unknown_tags).toEqual(["does-not-exist"]);
+      // Topology fetch should not happen on the no-match short-circuit
+      expect(apolloClient.query).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns empty tree with unsatisfiable warning under tag_match='all'", async () => {
+      setupTagsOnlyMock();
+
+      const result = await executeListTopology({
+        tag_names: ["huddle", "does-not-exist"],
+        tag_match: "all",
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.warning).toMatch(/Cannot satisfy tag_match='all'/);
+      expect(result.unknown_tags).toEqual(["does-not-exist"]);
+      expect(apolloClient.query).toHaveBeenCalledTimes(1);
+    });
+
+    it("warns but still returns results when an unknown tag is mixed under tag_match='any'", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        tag_names: ["huddle", "does-not-exist"],
+        tag_match: "any",
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toHaveLength(1);
+      expect(result.unknown_tags).toEqual(["does-not-exist"]);
+      expect(result.warning).toMatch(/Unknown tag\(s\) ignored/);
+      expect(flattenIds(result.tree)).toContain("room_001");
+    });
+
+    it("returns empty with warning when resolved tags have no associations", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        tag_names: ["unused"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.warning).toMatch(/No rooms, zones, or floors are currently tagged/i);
+    });
+
+    it("composes AND-style with asset_ids — tag matches outside the scope are pruned", async () => {
+      // focus is on room_001 (Floor 1) and room_003 (Floor 2). Scope to Floor 2
+      // and only room_003 should remain.
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["space_002"],
+        tag_names: ["focus"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_003");
+      expect(ids).not.toContain("room_001");
+      expect(result.query_params.asset_filter).toEqual(["space_002"]);
+      expect(result.query_params.tag_filter).toEqual({ names: ["focus"], match: "any" });
     });
   });
 });

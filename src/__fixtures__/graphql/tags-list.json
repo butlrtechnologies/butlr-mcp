@@ -7,9 +7,9 @@
       "organization_id": "org_000001",
       "rooms": [],
       "zones": [
-        { "__typename": "Zone", "id": "zone_000001" },
-        { "__typename": "Zone", "id": "zone_000002" },
-        { "__typename": "Zone", "id": "zone_000003" }
+        { "__typename": "Zone", "id": "zone_000001", "name": "Conf Zone Alpha" },
+        { "__typename": "Zone", "id": "zone_000002", "name": "Conf Zone Beta" },
+        { "__typename": "Zone", "id": "zone_000003", "name": "Conf Zone Gamma" }
       ],
       "floors": []
     },
@@ -20,8 +20,8 @@
       "organization_id": "org_000001",
       "rooms": [],
       "zones": [
-        { "__typename": "Zone", "id": "zone_000001" },
-        { "__typename": "Zone", "id": "zone_000004" }
+        { "__typename": "Zone", "id": "zone_000001", "name": "Conf Zone Alpha" },
+        { "__typename": "Zone", "id": "zone_000004", "name": "Quiet Zone" }
       ],
       "floors": []
     },
@@ -31,14 +31,14 @@
       "name": "huddle",
       "organization_id": "org_000001",
       "rooms": [
-        { "__typename": "Room", "id": "room_000001" },
-        { "__typename": "Room", "id": "room_000002" }
+        { "__typename": "Room", "id": "room_000001", "name": "Huddle Room A" },
+        { "__typename": "Room", "id": "room_000002", "name": "Huddle Room B" }
       ],
       "zones": [
-        { "__typename": "Zone", "id": "zone_000005" }
+        { "__typename": "Zone", "id": "zone_000005", "name": "Huddle Zone" }
       ],
       "floors": [
-        { "__typename": "Floor", "id": "space_000001" }
+        { "__typename": "Floor", "id": "space_000001", "name": "Huddle Floor" }
       ]
     },
     {
@@ -57,7 +57,7 @@
       "organization_id": "org_000001",
       "rooms": [],
       "zones": [
-        { "__typename": "Zone", "id": "zone_000006" }
+        { "__typename": "Zone", "id": "zone_000006", "name": "Large Conf Zone" }
       ],
       "floors": []
     }

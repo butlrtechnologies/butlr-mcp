@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { apolloClient } from "../clients/graphql-client.js";
-import { GET_TAGS_WITH_USAGE } from "../clients/queries/tags.js";
+import {
+  GET_TAGS_WITH_USAGE,
+  type RawTagWithUsage,
+  type TaggedEntityRef,
+} from "../clients/queries/tags.js";
 import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import { debug } from "../utils/debug.js";
@@ -23,6 +27,13 @@ const listTagsInputShape = {
     .describe(
       "Exclude tags whose total application count (rooms + zones + floors) is below this threshold"
     ),
+
+  include_entities: z
+    .boolean()
+    .default(false)
+    .describe(
+      "When true, each tag's response includes `applied_to_entities` with the id and name of every tagged room, zone, and floor (not just counts). Default false to keep the default response token-light; set true when you need to know exactly which entities are tagged without follow-up calls."
+    ),
 };
 
 export const ListTagsArgsSchema = z.object(listTagsInputShape).strict();
@@ -39,17 +50,19 @@ const LIST_TAGS_DESCRIPTION =
   '1. "What tags are used in this org?" → list everything\n' +
   '2. "Show me video-conferencing tags" → name_contains: "videoconf"\n' +
   '3. "Which tags are actually in use?" → min_usage: 1\n' +
-  '4. "Find tags applied to many zones" → list, then look at applied_to.zones\n\n' +
+  '4. "Find tags applied to many zones" → list, then look at applied_to.zones\n' +
+  '5. "What rooms and zones are tagged \'huddle\'?" → name_contains: "huddle", include_entities: true\n\n' +
   "When to Use:\n" +
   "- Before any tag-based filter, to map a human term (e.g. 'videoconf') to the right tag id and entity level\n" +
   "- To understand whether a tag lives on rooms, zones, floors, or several levels at once\n" +
-  "- To audit tagging hygiene (unused tags, single-level tags, etc.)\n\n" +
+  "- To audit tagging hygiene (unused tags, single-level tags, etc.)\n" +
+  "- With include_entities=true, to enumerate every tagged entity in one call (avoids per-tag follow-up to butlr_get_asset_details)\n\n" +
   "When NOT to Use:\n" +
-  "- You already have tag IDs and want the actual tagged rooms/zones — call the appropriate tag-filtered tool instead\n" +
-  "- You want full topology browsing — use butlr_list_topology\n\n" +
-  "Response Shape: { tags: [{ id, name, applied_to: { rooms, zones, floors } }], total, timestamp }. Tags are sorted by total usage descending (most-used first).\n\n" +
-  "Note on coverage: spot-level tags exist in the data model but are not yet exposed by this tool — applied_to includes rooms, zones, and floors only.\n\n" +
-  "See Also: butlr_available_rooms (uses tag IDs from this tool), butlr_search_assets, butlr_list_topology";
+  "- You want full topology browsing — use butlr_list_topology (supports tag_names filter for tagged-only views)\n" +
+  "- You only need available rooms by tag — use butlr_available_rooms\n\n" +
+  "Response Shape: { tags: [{ id, name, applied_to: { rooms, zones, floors }, applied_to_entities? }], total, timestamp }. Tags are sorted by total usage descending. `applied_to_entities` is present only when include_entities=true and contains arrays of { id, name } for each tagged room, zone, and floor.\n\n" +
+  "Note on coverage: spot-level tags exist in the data model but are not yet exposed by this tool — applied_to and applied_to_entities cover rooms, zones, and floors only.\n\n" +
+  "See Also: butlr_list_topology (tag_names filter for tagged subtrees), butlr_available_rooms (uses tag names from this tool), butlr_search_assets";
 
 export interface TagFootprint {
   rooms: number;
@@ -57,10 +70,17 @@ export interface TagFootprint {
   floors: number;
 }
 
+export interface TaggedEntities {
+  rooms: TaggedEntityRef[];
+  zones: TaggedEntityRef[];
+  floors: TaggedEntityRef[];
+}
+
 export interface TagSummary {
   id: string;
   name: string;
   applied_to: TagFootprint;
+  applied_to_entities?: TaggedEntities;
 }
 
 export interface ListTagsResponse {
@@ -70,15 +90,6 @@ export interface ListTagsResponse {
   filtered_by?: Record<string, unknown>;
 }
 
-interface RawTag {
-  id: string;
-  name: string;
-  organization_id?: string;
-  rooms?: Array<{ id: string }> | null;
-  zones?: Array<{ id: string }> | null;
-  floors?: Array<{ id: string }> | null;
-}
-
 function totalUsage(t: TagSummary): number {
   return t.applied_to.rooms + t.applied_to.zones + t.applied_to.floors;
 }
@@ -86,10 +97,10 @@ function totalUsage(t: TagSummary): number {
 export async function executeListTags(args: ListTagsArgs): Promise<ListTagsResponse> {
   debug("list-tags", "Listing tags with args:", JSON.stringify(args));
 
-  let rawTags: RawTag[] = [];
+  let rawTags: RawTagWithUsage[] = [];
 
   try {
-    const result = await apolloClient.query<{ tags: RawTag[] | null }>({
+    const result = await apolloClient.query<{ tags: RawTagWithUsage[] | null }>({
       query: GET_TAGS_WITH_USAGE,
       fetchPolicy: "network-only",
     });
@@ -101,15 +112,25 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
     throw error;
   }
 
-  let tags: TagSummary[] = rawTags.map((t) => ({
-    id: t.id,
-    name: t.name,
-    applied_to: {
-      rooms: t.rooms?.length ?? 0,
-      zones: t.zones?.length ?? 0,
-      floors: t.floors?.length ?? 0,
-    },
-  }));
+  let tags: TagSummary[] = rawTags.map((t) => {
+    const summary: TagSummary = {
+      id: t.id,
+      name: t.name,
+      applied_to: {
+        rooms: t.rooms?.length ?? 0,
+        zones: t.zones?.length ?? 0,
+        floors: t.floors?.length ?? 0,
+      },
+    };
+    if (args.include_entities) {
+      summary.applied_to_entities = {
+        rooms: (t.rooms ?? []).map(({ id, name }) => ({ id, name })),
+        zones: (t.zones ?? []).map(({ id, name }) => ({ id, name })),
+        floors: (t.floors ?? []).map(({ id, name }) => ({ id, name })),
+      };
+    }
+    return summary;
+  });
 
   if (args.name_contains) {
     const needle = args.name_contains.toLowerCase();
@@ -129,8 +150,16 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
     timestamp: new Date().toISOString(),
   };
 
-  if (Object.keys(args).length > 0) {
-    response.filtered_by = args;
+  // Surface the args used to filter, but only when at least one filter was
+  // actually supplied. `include_entities` defaults to false at the schema
+  // layer so it's always set on `args`; treat the all-defaults case as
+  // "no filter applied".
+  const explicitFilters = { ...args };
+  if (explicitFilters.include_entities === false) {
+    delete (explicitFilters as Partial<typeof args>).include_entities;
+  }
+  if (Object.keys(explicitFilters).length > 0) {
+    response.filtered_by = explicitFilters;
   }
 
   return response;

@@ -136,6 +136,79 @@ describe("butlr_list_tags - Integration", () => {
     });
   });
 
+  describe("include_entities flag", () => {
+    it("omits applied_to_entities by default", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({});
+
+      for (const tag of result.tags) {
+        expect(tag.applied_to_entities).toBeUndefined();
+      }
+    });
+
+    it("returns id and name for every tagged room, zone, and floor when true", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ include_entities: true });
+
+      const huddle = result.tags.find((t) => t.name === "huddle");
+      expect(huddle?.applied_to_entities).toEqual({
+        rooms: [
+          { id: "room_000001", name: "Huddle Room A" },
+          { id: "room_000002", name: "Huddle Room B" },
+        ],
+        zones: [{ id: "zone_000005", name: "Huddle Zone" }],
+        floors: [{ id: "space_000001", name: "Huddle Floor" }],
+      });
+      // counts and entities stay consistent
+      expect(huddle?.applied_to.rooms).toBe(huddle?.applied_to_entities?.rooms.length);
+      expect(huddle?.applied_to.zones).toBe(huddle?.applied_to_entities?.zones.length);
+      expect(huddle?.applied_to.floors).toBe(huddle?.applied_to_entities?.floors.length);
+    });
+
+    it("returns empty arrays for tags with no associations", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ include_entities: true });
+
+      const unused = result.tags.find((t) => t.name === "unused-tag");
+      expect(unused?.applied_to_entities).toEqual({ rooms: [], zones: [], floors: [] });
+    });
+
+    it("composes with name_contains filter", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({
+        include_entities: true,
+        name_contains: "huddle",
+      });
+
+      expect(result.tags).toHaveLength(1);
+      expect(result.tags[0].applied_to_entities?.rooms).toHaveLength(2);
+    });
+  });
+
   describe("Empty org", () => {
     it("returns total=0 and empty tags array when org has no tags", async () => {
       vi.mocked(apolloClient.query).mockResolvedValue({

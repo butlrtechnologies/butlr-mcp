@@ -24,10 +24,36 @@ export const asTagId = (value: string): TagId => value as TagId;
 export const asTagName = (value: string): TagName => value as TagName;
 
 /**
+ * Shape of each tagged-entity reference returned by `GET_TAGS_WITH_USAGE`.
+ * `name` is best-effort: older API responses or partial entity records may
+ * omit it, so consumers must treat it as optional.
+ */
+export interface TaggedEntityRef {
+  id: string;
+  name?: string;
+}
+
+/**
+ * Raw `tags` row returned by `GET_TAGS_WITH_USAGE`. Used by `butlr_list_tags`
+ * and the shared tag resolver — kept here so the GraphQL shape lives next
+ * to the query that produces it.
+ */
+export interface RawTagWithUsage {
+  id: string;
+  name: string;
+  organization_id?: string;
+  rooms?: TaggedEntityRef[] | null;
+  zones?: TaggedEntityRef[] | null;
+  floors?: TaggedEntityRef[] | null;
+}
+
+/**
  * List every tag in the org along with its application footprint.
  *
- * Each tag's `rooms`, `zones`, and `floors` arrays are returned with
- * id-only payloads so the response stays bounded by tag count.
+ * Each tag's `rooms`, `zones`, and `floors` arrays carry both `id` and
+ * `name` so callers (e.g. `butlr_list_tags { include_entities: true }`,
+ * `butlr_list_topology { tag_names: [...] }`) can render the tagged
+ * entities without an extra resolution step.
  */
 export const GET_TAGS_WITH_USAGE = gql`
   query GetTagsWithUsage {
@@ -37,12 +63,15 @@ export const GET_TAGS_WITH_USAGE = gql`
       organization_id
       rooms {
         id
+        name
       }
       zones {
         id
+        name
       }
       floors {
         id
+        name
       }
     }
   }

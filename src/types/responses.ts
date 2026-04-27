@@ -170,9 +170,14 @@ export interface ListTopologyResponse {
     starting_depth: number;
     traversal_depth: number;
     asset_filter: string[] | "all";
+    tag_filter?: {
+      names: string[];
+      match: "all" | "any";
+    };
   };
   timestamp: string;
   warning?: string;
+  unknown_tags?: string[];
 }
 
 // ---------------------------------------------------------------------------

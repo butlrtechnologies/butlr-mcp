@@ -7,13 +7,8 @@ import { getCurrentOccupancy } from "../clients/reporting-client.js";
 import { buildAvailableRoomsSummary } from "../utils/natural-language.js";
 import { getCachedOccupancy, setBulkCachedOccupancy } from "../cache/occupancy-cache.js";
 import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
-import {
-  GET_TAGS_MINIMAL,
-  asTagId,
-  asTagName,
-  type TagId,
-  type TagName,
-} from "../clients/queries/tags.js";
+import { GET_TAGS_MINIMAL, type TagName } from "../clients/queries/tags.js";
+import { resolveTagNames } from "../utils/tag-resolver.js";
 import type { AvailableRoom, AvailableRoomsResponse, BuildingContext } from "../types/responses.js";
 import { debug } from "../utils/debug.js";
 import {
@@ -323,26 +318,13 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       });
       throwIfGraphQLErrors(tagsResult);
 
-      const allTags = tagsResult.data?.tags ?? [];
-      // Lookup is keyed by lowercased name; values are typed TagIds so the
-      // resolver boundary cannot accidentally surface raw names downstream.
-      const lookup = new Map<string, TagId>(
-        allTags.map((t) => [t.name.toLowerCase(), asTagId(t.id)])
-      );
+      const { resolvedIds, unknownNames } = resolveTagNames({
+        allTags: tagsResult.data?.tags ?? [],
+        requestedNames: args.tags,
+        match: args.tag_match,
+      });
 
-      const resolvedIDs: TagId[] = [];
-      const unknownNames: TagName[] = [];
-      for (const rawName of args.tags) {
-        const name = asTagName(rawName);
-        const id = lookup.get(name.toLowerCase());
-        if (id) {
-          resolvedIDs.push(id);
-        } else {
-          unknownNames.push(name);
-        }
-      }
-
-      if (resolvedIDs.length === 0) {
+      if (resolvedIds.length === 0) {
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
           available_rooms: [],
@@ -387,7 +369,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
       const result = await apolloClient.query<{ roomsByTag: { data: Room[] } | null }>({
         query: GET_ROOMS_BY_TAG,
-        variables: { tagIDs: resolvedIDs, useOR },
+        variables: { tagIDs: resolvedIds, useOR },
         fetchPolicy: "network-only",
       });
       throwIfGraphQLErrors(result);
