@@ -740,6 +740,110 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toBeUndefined();
     });
 
+    // Per R5 §1: a zone with room_id pointing at a targeted room must be
+    // pulled into the room's closure, mirroring the formatter's behaviour
+    // (zones with roomID/room_id render as room children).
+    it("matches asset_ids when the tag is on a room-bound zone (zone.room_id → room)", async () => {
+      // Topology: add a zone whose room_id binds it to room_001.
+      const topoWithRoomZone = {
+        sites: {
+          data: [
+            {
+              id: "site_001",
+              name: "HQ Campus",
+              timezone: "America/New_York",
+              org_id: "org_001",
+              buildings: [
+                {
+                  id: "building_001",
+                  name: "Main Tower",
+                  site_id: "site_001",
+                  floors: [
+                    {
+                      id: "space_001",
+                      name: "Floor 1",
+                      building_id: "building_001",
+                      rooms: [
+                        { id: "room_001", name: "Conf A", floorID: "space_001" },
+                        { id: "room_002", name: "Conf B", floorID: "space_001" },
+                      ],
+                      zones: [
+                        {
+                          id: "zone_in_room_001",
+                          name: "Privacy Booth",
+                          floorID: "space_001",
+                          room_id: "room_001",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      };
+      const tagsOnZone = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_priv",
+            name: "privacy",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [{ __typename: "Zone", id: "zone_in_room_001", name: "Privacy Booth" }],
+            floors: [],
+          },
+        ],
+      };
+      setupTagFilteredMocks(tagsOnZone, topoWithRoomZone);
+
+      const result = await executeListTopology({
+        asset_ids: ["room_001"],
+        tag_names: ["privacy"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("zone_in_room_001");
+      expect(result.warning).toBeUndefined();
+    });
+
+    // Per R5 §2: device room links may arrive as camelCase `roomID` instead
+    // of snake_case `room_id` (cached payloads, alternate API shape). The
+    // closure must match the formatter and accept either.
+    it("matches sensor asset_ids using camelCase roomID when the tag is on its room", async () => {
+      const sensorsCamelCase = {
+        sensors: {
+          data: [
+            {
+              id: "sensor_camel_001",
+              mac_address: "aa:bb:cc:dd:ee:99",
+              mode: "presence",
+              floor_id: "space_001",
+              roomID: "room_001", // camelCase only — no snake_case room_id
+              hive_serial: "HIVE001",
+              is_online: true,
+              is_entrance: false,
+            },
+          ],
+        },
+      };
+      setupTagFilteredMocks(undefined, undefined, sensorsCamelCase);
+
+      const result = await executeListTopology({
+        asset_ids: ["sensor_camel_001"],
+        tag_names: ["huddle"], // huddle is on room_001 in the default fixture
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("sensor_camel_001");
+      expect(result.warning).toBeUndefined();
+    });
+
     // Per R3 §1: leaf-level asset_ids must AND with tag_names strictly.
     // filterTopologyByAssets's contextual expansion would otherwise leak
     // siblings of the asset_ids leaf — e.g. asset_ids=[room_002] expands

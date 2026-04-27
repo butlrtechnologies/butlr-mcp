@@ -187,16 +187,23 @@ function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
           continue;
         }
         // Floor-level leaf scan: rooms, zones, hives, sensors. A targeted
-        // room also pulls in its room_id-bound devices because a tag-on-
-        // room implicitly applies to the devices in that room.
+        // room also pulls in its room_id-bound zones, sensors, and hives —
+        // a tag-on-room implicitly applies to children of that room, and
+        // the formatter renders those entities under the room. Both
+        // snake_case (`room_id`) and camelCase (`roomID`) link fields are
+        // checked because the upstream API and cached payloads can carry
+        // either shape (per R5 §2; mirrors src/utils/tree-formatter.ts).
         for (const room of floor.rooms ?? []) {
           if (!target.has(room.id)) continue;
           closure.add(room.id);
+          for (const zone of floor.zones ?? []) {
+            if ((zone.room_id ?? zone.roomID) === room.id) closure.add(zone.id);
+          }
           for (const sensor of floor.sensors ?? []) {
-            if (sensor.room_id === room.id) closure.add(sensor.id);
+            if ((sensor.room_id ?? sensor.roomID) === room.id) closure.add(sensor.id);
           }
           for (const hive of floor.hives ?? []) {
-            if (hive.room_id === room.id) closure.add(hive.id);
+            if ((hive.room_id ?? hive.roomID) === room.id) closure.add(hive.id);
           }
         }
         for (const zone of floor.zones ?? []) {
