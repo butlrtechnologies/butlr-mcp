@@ -844,6 +844,56 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toBeUndefined();
     });
 
+    // Per R6: sensors reach a room transitively through a room-bound hive
+    // (sensor.hive_serial → hive.serialNumber, hive.room_id → room). The
+    // formatter renders such sensors under their hive under the room, so
+    // they must be in the room's tag closure even without a direct
+    // room_id/roomID link of their own.
+    it("matches sensor asset_ids attached via room-bound hive (no direct room_id)", async () => {
+      const sensorViaHive = {
+        sensors: {
+          data: [
+            {
+              id: "sensor_via_hive",
+              mac_address: "aa:bb:cc:dd:ee:77",
+              mode: "presence",
+              floor_id: "space_001",
+              // No room_id / roomID — link to room is purely through the hive.
+              hive_serial: "HIVE001",
+              is_online: true,
+              is_entrance: false,
+            },
+          ],
+        },
+      };
+      const hiveBoundToRoom = {
+        hives: {
+          data: [
+            {
+              id: "hive_in_room_001",
+              serialNumber: "HIVE001",
+              floor_id: "space_001",
+              room_id: "room_001", // hive sits in room_001
+              isOnline: true,
+              installed: true,
+            },
+          ],
+        },
+      };
+      setupTagFilteredMocks(undefined, undefined, sensorViaHive, hiveBoundToRoom);
+
+      const result = await executeListTopology({
+        asset_ids: ["sensor_via_hive"],
+        tag_names: ["huddle"], // huddle is on room_001 in the default fixture
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("sensor_via_hive");
+      expect(result.warning).toBeUndefined();
+    });
+
     // Per R3 §1: leaf-level asset_ids must AND with tag_names strictly.
     // filterTopologyByAssets's contextual expansion would otherwise leak
     // siblings of the asset_ids leaf — e.g. asset_ids=[room_002] expands

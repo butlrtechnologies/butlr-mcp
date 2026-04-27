@@ -202,8 +202,21 @@ function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
           for (const sensor of floor.sensors ?? []) {
             if ((sensor.room_id ?? sensor.roomID) === room.id) closure.add(sensor.id);
           }
+          // Per R6: sensors reach a room two ways — directly via room_id, or
+          // transitively through a room-bound hive (sensor.hive_serial ===
+          // hive.serialNumber). The formatter renders both shapes under the
+          // room (tree-formatter.ts:310 nests sensors under hives by
+          // hive_serial, and a hive nests under its room by room_id), so
+          // closure must follow the same chain. Otherwise a sensor with no
+          // direct room link but attached to a room-bound hive falls out
+          // of the room's tag closure entirely.
           for (const hive of floor.hives ?? []) {
-            if ((hive.room_id ?? hive.roomID) === room.id) closure.add(hive.id);
+            if ((hive.room_id ?? hive.roomID) !== room.id) continue;
+            closure.add(hive.id);
+            if (!hive.serialNumber) continue;
+            for (const sensor of floor.sensors ?? []) {
+              if (sensor.hive_serial === hive.serialNumber) closure.add(sensor.id);
+            }
           }
         }
         for (const zone of floor.zones ?? []) {
