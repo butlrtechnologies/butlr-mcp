@@ -41,13 +41,17 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
 ): ResolveTagNamesResult<Row> {
   const { allTags, requestedNames, match } = input;
 
-  // Per R1 §2.1: defensively skip rows whose `name` is not a string. The type
-  // contract says it's required, but a missing field on a partial GraphQL
-  // response would otherwise throw on `.toLowerCase()` and crash every
-  // tag-using tool. Cheaper to ignore the bad row than to crash the request.
+  // Per R1 §2.1 / R2 §2.2: defensively skip rows whose `name` or `id` is
+  // not a usable string. The type contract says both are required, but a
+  // missing field on a partial GraphQL response would otherwise throw on
+  // `.toLowerCase()` (name) or surface a null branded TagId downstream
+  // (id), crashing every tag-using tool. Empty strings are rejected too —
+  // they can never match a Zod-validated request and would sit as dead
+  // weight in the lookup.
   const lookup = new Map<string, Row>();
   for (const t of allTags) {
-    if (typeof t.name !== "string") continue;
+    if (typeof t.name !== "string" || t.name.length === 0) continue;
+    if (typeof t.id !== "string" || t.id.length === 0) continue;
     lookup.set(t.name.toLowerCase(), t);
   }
 

@@ -86,24 +86,27 @@ describe("resolveTagNames", () => {
     expect(result.unsatisfiable).toBe(false);
   });
 
-  // Per R1 §2.1: a tag row with null/missing `name` previously crashed the
-  // .toLowerCase() call. Now we skip such rows defensively.
-  it("skips tag rows whose name is null or missing without crashing", () => {
+  // Per R1 §2.1 / R2 §2.2: a tag row missing a usable `name` or `id`
+  // previously could crash (.toLowerCase() on null) or surface a null
+  // branded TagId downstream. Now both are filtered defensively.
+  it("skips tag rows missing a usable name or id without crashing", () => {
     const dirty = [
       { id: "tag_a", name: "huddle" },
-      { id: "tag_x", name: null as unknown as string },
-      { id: "tag_y" } as unknown as { id: string; name: string },
+      { id: "tag_x", name: null as unknown as string }, // null name
+      { id: "tag_y" } as unknown as { id: string; name: string }, // missing name
+      { id: "tag_z", name: "" }, // empty name
+      { id: null as unknown as string, name: "ghost" }, // null id
+      { id: "", name: "ghost-empty" }, // empty id
       { id: "tag_b", name: "focus" },
     ];
 
     const result = resolveTagNames({
       allTags: dirty,
-      requestedNames: ["huddle", "focus"],
-      match: "all",
+      requestedNames: ["huddle", "focus", "ghost", "ghost-empty"],
+      match: "any",
     });
 
     expect(result.resolvedIds).toEqual(["tag_a", "tag_b"]);
-    expect(result.unknownNames).toEqual([]);
-    expect(result.unsatisfiable).toBe(false);
+    expect(result.unknownNames).toEqual(["ghost", "ghost-empty"]);
   });
 });
