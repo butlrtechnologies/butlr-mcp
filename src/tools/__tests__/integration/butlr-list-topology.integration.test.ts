@@ -671,6 +671,9 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.tree).toEqual([]);
       expect(result.query_params.asset_filter).toEqual(["space_002"]);
       expect(result.query_params.tag_filter).toEqual({ names: ["huddle"], match: "any" });
+      // Per R1 §2.7.2: disjoint scopes yield an explanatory warning so the
+      // caller can distinguish "filters disagree" from a generic empty-tree.
+      expect(result.warning).toMatch(/disjoint subtrees/i);
     });
 
     it("composes AND-style with asset_ids — tag matches outside the scope are pruned", async () => {

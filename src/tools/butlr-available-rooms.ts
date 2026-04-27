@@ -321,6 +321,13 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       // Apply tag_match default at the call site so direct invocations
       // (tests bypassing Zod parsing, downstream programmatic callers)
       // get the same semantics as the schema default.
+      //
+      // Per R2 §2.4: this default ("all") DIFFERS from butlr_list_topology's
+      // default ("any") on purpose — available-rooms filters one entity type
+      // (rooms), where AND is intuitive; list-topology filters across rooms,
+      // zones, and floors, where AND is rarely satisfied. Do not unify these
+      // defaults via a shared helper without changing the user-facing
+      // semantics described in each tool's description string.
       const tagMatch = args.tag_match ?? "all";
       const { resolvedIds, unknownNames, unsatisfiable } = resolveTagNames({
         allTags: tagsResult.data?.tags ?? [],

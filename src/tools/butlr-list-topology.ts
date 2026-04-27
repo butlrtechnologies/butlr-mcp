@@ -142,6 +142,10 @@ export async function executeListTopology(
   const traversalDepth = args.traversal_depth ?? 0;
   const assetIds = args.asset_ids ?? [];
   const tagNames = args.tag_names ?? [];
+  // Per R2 §2.4: default is "any" here, in contrast to butlr_available_rooms
+  // which defaults to "all". The asymmetry is intentional — list-topology
+  // filters across rooms/zones/floors where intersection is rarely
+  // satisfied; available-rooms filters a single entity type. Don't unify.
   const tagMatch = args.tag_match ?? "any";
 
   debug(
@@ -210,13 +214,19 @@ export async function executeListTopology(
     taggedEntityIds = collectTaggedEntityIds(resolvedRows, tagMatch);
 
     if (taggedEntityIds.size === 0) {
+      // Per R1 §2.7.3: "any of [tag1]" reads awkwardly for the single-tag
+      // case — drop the all/any preamble when there's only one name.
+      const tagList =
+        tagNames.length === 1
+          ? `"${tagNames[0]}"`
+          : `${tagMatch === "all" ? "all of" : "any of"} [${tagNames.join(", ")}]`;
       return {
         tree: [],
         query_params: baseQueryParams,
         timestamp: new Date().toISOString(),
         warning:
-          `No rooms, zones, or floors are currently tagged with ${tagMatch === "all" ? "all of" : "any of"} ` +
-          `[${tagNames.join(", ")}]. Use butlr_list_tags { include_entities: true } to see what is tagged.`,
+          `No rooms, zones, or floors are currently tagged with ${tagList}. ` +
+          "Use butlr_list_tags { include_entities: true } to see what is tagged.",
         unknown_tags: unknownNames.length > 0 ? unknownNames : undefined,
       };
     }
@@ -228,7 +238,14 @@ export async function executeListTopology(
     }
   }
 
-  // Use a cache key that includes devices
+  // Use a cache key that includes devices.
+  //
+  // Per R1 §2.7.5: tag_filter (tag_names / tag_match) and asset_ids are
+  // INTENTIONALLY excluded from the cache key. The cache stores raw
+  // org-scoped topology only; both filters are applied client-side
+  // post-fetch via filterTopologyByAssets, so different filter shapes
+  // share the same cached tree. Don't extend this key with filter inputs
+  // without first separating the cache layers.
   const cacheKey = generateTopologyCacheKey(
     process.env.BUTLR_ORG_ID || "default",
     true, // include devices
@@ -344,6 +361,16 @@ export async function executeListTopology(
   }
   if (tagWarning) {
     warnings.push(tagWarning);
+  }
+  // Per R1 §2.7.2: when both filters resolve to non-empty input sets but
+  // their composition produces an empty tree, distinguish "filters disagree"
+  // from the unconditional empty-tree case so the caller knows the two
+  // scopes don't overlap rather than guessing.
+  if (tree.length === 0 && assetIds.length > 0 && taggedEntityIds && taggedEntityIds.size > 0) {
+    warnings.push(
+      "No tree node satisfies both asset_ids and tag_names — the two filters scope disjoint subtrees. " +
+        "Try removing one filter or use butlr_list_tags { include_entities: true } to see where the tags live."
+    );
   }
   if (warnings.length > 0) {
     response.warning = warnings.join(" ");
