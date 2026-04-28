@@ -24,12 +24,20 @@ export const topologyCache = new LRUCache<string, CacheEntry>({
 });
 
 /**
- * Generate cache key for topology queries
+ * Generate cache key for topology queries.
+ *
+ * `devicesMerged` is part of the key because two consumers prime this cache
+ * with different shapes: `butlr_list_topology` runs sensors/hives through
+ * `mergeSensorsAndHivesIntoTopology` (so every floor carries `sensors` and
+ * `hives` arrays); `butlr_search_assets` writes the raw `sites` tree
+ * unmodified. A device-aware reader cannot trust an unmerged entry, so the
+ * two shapes must live under separate keys.
  */
 export function generateTopologyCacheKey(
   orgId: string,
   includeDevices: boolean,
   includeZones: boolean,
+  devicesMerged: boolean,
   siteIds?: string[]
 ): string {
   const parts = ["topo", orgId];
@@ -40,6 +48,7 @@ export function generateTopologyCacheKey(
 
   parts.push(`devices:${includeDevices}`);
   parts.push(`zones:${includeZones}`);
+  parts.push(`merged:${devicesMerged}`);
 
   return parts.join(":");
 }

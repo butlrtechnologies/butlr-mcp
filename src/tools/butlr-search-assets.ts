@@ -130,11 +130,17 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
       ` (max: ${maxResults})`
   );
 
-  // Use a generic cache key for full topology (we'll search across it)
+  // Use a generic cache key for full topology (we'll search across it).
+  // `devicesMerged: false` because this tool intentionally caches the raw
+  // `sites` tree without running mergeSensorsAndHivesIntoTopology — flattening
+  // for fuzzy search doesn't need the per-floor sensors/hives arrays. The
+  // distinct cache key prevents `butlr_list_topology` from reading this
+  // device-incomplete shape and silently dropping device-level matches.
   const cacheKey = generateTopologyCacheKey(
     process.env.BUTLR_ORG_ID || "default",
     true, // include devices for comprehensive search
     true, // include zones
+    false, // devicesMerged: search_assets does not merge sensors/hives
     undefined
   );
 

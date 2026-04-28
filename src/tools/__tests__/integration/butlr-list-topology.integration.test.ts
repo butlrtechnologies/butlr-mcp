@@ -518,11 +518,12 @@ describe("butlr_list_topology - Integration", () => {
       });
 
       // huddle → room_001 ; video → zone_001 ; both live on Floor 1.
-      // Existing filterTopologyByAssets keeps any subtree containing a match,
-      // so Floor 1 stays with all its children.
+      // filterTopologyByAssets prunes Floor 1 to only the matched children,
+      // so room_002 (untagged sibling on the same floor) does NOT leak in.
       const ids = flattenIds(result.tree);
       expect(ids).toContain("room_001");
       expect(ids).toContain("zone_001");
+      expect(ids).not.toContain("room_002");
       expect(ids).not.toContain("space_002");
     });
 
@@ -885,19 +886,28 @@ describe("butlr_list_topology - Integration", () => {
       expect(apolloClient.query).toHaveBeenCalledTimes(4);
     });
 
-    // Per R4 §1: butlr_search_assets writes to the same cache key but does
-    // NOT merge sensors/hives. Reading device-aware closure from that
-    // cache shape would false-positive a real sensor/hive asset_id as
-    // missing. The §3.5 hint must skip when the cache lacks the merged-
-    // devices sentinel.
-    it("does NOT emit asset_ids hint when the cached topology lacks merged devices", async () => {
+    // butlr_search_assets writes to a separate cache key (devicesMerged:false)
+    // than butlr_list_topology (devicesMerged:true). When only the search-
+    // assets shape is primed, the list-topology read MUST miss the merged-
+    // shape cache and surface the dual-typo "asset_ids were not validated"
+    // hint instead of false-positively reporting a real device id as missing.
+    it("does NOT false-positive asset_ids hint when only search_assets primed the cache", async () => {
       // Prime the cache as butlr_search_assets does: sites tree only,
       // sensors/hives never merged → floor.sensors stays undefined.
       const { sites } = buildTopologyFixture();
       const orgId = process.env.BUTLR_ORG_ID || "default";
-      setCachedTopology(generateTopologyCacheKey(orgId, true, true, undefined), {
-        sites: sites.data,
-      });
+      setCachedTopology(
+        generateTopologyCacheKey(
+          orgId,
+          true,
+          true,
+          false, // devicesMerged: false — mirrors butlr_search_assets cache shape
+          undefined
+        ),
+        {
+          sites: sites.data,
+        }
+      );
 
       setupTagsOnlyMock();
 
@@ -910,9 +920,11 @@ describe("butlr_list_topology - Integration", () => {
 
       expect(result.tree).toEqual([]);
       expect(result.warning).toMatch(/No matching tags/i);
-      // Critically: NO false-positive asset hint, because the cached
-      // topology can't authoritatively answer device-id questions.
+      // Critically: NO false-positive "matched no entities" assertion. The
+      // unverified hint surfaces instead, telling the caller to retry after
+      // fixing the tag — at which point the merged-shape cache will exist.
       expect(result.warning).not.toMatch(/asset_ids also matched no entities/i);
+      expect(result.warning).toMatch(/asset_ids were not validated/i);
     });
 
     // Per R3 §3.1: a tag with associations to entities that aren't in
@@ -1109,6 +1121,96 @@ describe("butlr_list_topology - Integration", () => {
       expect(ids).not.toContain("room_001");
       expect(result.query_params.asset_filter).toEqual(["space_002"]);
       expect(result.query_params.tag_filter).toEqual({ names: ["focus"], match: "any" });
+    });
+
+    // H2 regression: filterTopologyByAssets must prune siblings of a matched
+    // room — pre-fix it pushed the entire raw floor into the result, which
+    // re-broadened tag-composition AND back into "every node on the floor".
+    // The fixture below pins the Codex acceptance test (untagged sibling
+    // room_extra must NOT appear when filtering by huddle).
+    it("strict prune: untagged sibling rooms on a tag-matched floor do NOT leak in", async () => {
+      const topoWithSibling = {
+        sites: {
+          data: [
+            {
+              id: "site_001",
+              name: "HQ Campus",
+              timezone: "America/New_York",
+              org_id: "org_001",
+              buildings: [
+                {
+                  id: "building_001",
+                  name: "Main Tower",
+                  site_id: "site_001",
+                  floors: [
+                    {
+                      id: "space_001",
+                      name: "Floor 1",
+                      building_id: "building_001",
+                      rooms: [
+                        { id: "room_001", name: "Conf A", floorID: "space_001" }, // huddle-tagged
+                        { id: "room_002", name: "Conf B", floorID: "space_001" }, // untagged sibling
+                        { id: "room_extra", name: "Extra", floorID: "space_001" }, // untagged sibling
+                      ],
+                      zones: [{ id: "zone_001", name: "Reception", floorID: "space_001" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      };
+      setupTagFilteredMocks(undefined, topoWithSibling);
+
+      const result = await executeListTopology({
+        tag_names: ["huddle"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      // Untagged siblings on the same floor must be pruned.
+      expect(ids).not.toContain("room_002");
+      expect(ids).not.toContain("room_extra");
+      // zone_001 has no huddle tag and is not bound to room_001 (no room_id),
+      // so it must also be pruned.
+      expect(ids).not.toContain("zone_001");
+    });
+
+    // H1 regression: butlr_search_assets and butlr_list_topology cache to
+    // SEPARATE keys (devicesMerged true vs false). A search-assets-primed
+    // cache must NOT cause list-topology to read a device-incomplete shape
+    // and silently drop sensor/hive matches. This test primes the search-
+    // assets cache, then runs a sensor-targeted list-topology call and
+    // asserts the sensor is returned (i.e., a fresh fetch happened).
+    it("does not read search_assets cache shape — sensor asset_ids resolve correctly after search prime", async () => {
+      // Step 1: prime the search-assets cache shape (devicesMerged:false).
+      const { sites } = buildTopologyFixture();
+      const orgId = process.env.BUTLR_ORG_ID || "default";
+      setCachedTopology(generateTopologyCacheKey(orgId, true, true, false, undefined), {
+        sites: sites.data,
+      });
+
+      // Step 2: list_topology must re-fetch under its own merged-devices key.
+      // Queue topology + sensors + hives mocks (no tag fetch — asset-only call).
+      setupFullTopologyMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["sensor_001"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      // sensor_001 lives on room_001 / hive HIVE001 in the default fixture.
+      // A device-aware fetch + closure resolves it; a stale-cache read would
+      // see floor.sensors === undefined and silently return tree=[].
+      expect(ids).toContain("sensor_001");
+      // Three calls: topology + sensors + hives. Search-assets-shape cache
+      // was correctly ignored.
+      expect(apolloClient.query).toHaveBeenCalledTimes(3);
     });
   });
 });

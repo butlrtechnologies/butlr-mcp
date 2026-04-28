@@ -304,38 +304,39 @@ export async function executeListTopology(
     };
 
     if (resolvedRows.length === 0) {
-      // Per R3 §3.5: if asset_ids was also supplied, opportunistically check
-      // it against a warm topology cache so a dual-typo input (tag wrong AND
-      // asset_ids wrong) surfaces both. Don't pay for a fresh topology fetch
-      // just for this diagnostic — it would dwarf the actual short-circuit.
+      // When asset_ids was also supplied, opportunistically validate it
+      // against a warm topology cache so a dual-typo input (tag wrong AND
+      // asset_ids wrong) surfaces both diagnostics in a single round-trip.
+      // We deliberately read only from the merged-devices cache — that is
+      // the cache key `butlr_list_topology` itself writes — so the lookup
+      // is authoritative for sensor/hive ids. `butlr_search_assets` writes
+      // a separate, device-incomplete shape under a different key (see
+      // `generateTopologyCacheKey(..., devicesMerged)`); reading that here
+      // would false-positive a real device id as missing.
       //
-      // Per R4 §1: butlr_search_assets writes to the SAME cache key but
-      // without merging sensors/hives, so a search_assets-primed cache will
-      // have sensors/hives undefined on every floor. Trusting that shape
-      // would false-positive a real sensor/hive asset_id as missing. Detect
-      // the unmerged shape via a sentinel (any defined floor.sensors array
-      // means mergeSensorsAndHivesIntoTopology ran) and skip the hint when
-      // the cache can't authoritatively answer device-id questions.
+      // Cache miss is treated as "couldn't verify" — an explicit
+      // unverified-asset hint is appended instead so the caller knows the
+      // asset typo (if any) wasn't checked. Paying for a full topology
+      // fetch on the dual-typo path would dwarf the actual short-circuit.
       let assetHint = "";
       if (assetIds.length > 0) {
         const cacheKey = generateTopologyCacheKey(
           process.env.BUTLR_ORG_ID || "default",
           true,
           true,
+          true, // devicesMerged: only the merged-shape cache is authoritative for device ids
           undefined
         );
         const cached = getCachedTopology(cacheKey);
         const cachedSites = cached?.data?.sites as Site[] | undefined;
-        const hasMergedDevices = cachedSites?.some((s) =>
-          (s.buildings ?? []).some((b) => (b.floors ?? []).some((f) => Array.isArray(f.sensors)))
-        );
-        if (
-          cachedSites &&
-          hasMergedDevices &&
-          expandToSubtreeClosure(cachedSites, assetIds).size === 0
-        ) {
+        if (cachedSites) {
+          if (expandToSubtreeClosure(cachedSites, assetIds).size === 0) {
+            assetHint =
+              " asset_ids also matched no entities in the org — verify those IDs with butlr_search_assets.";
+          }
+        } else {
           assetHint =
-            " asset_ids also matched no entities in the org — verify those IDs with butlr_search_assets.";
+            " asset_ids were not validated (topology not yet cached) — re-run after correcting the tag names to confirm they exist.";
         }
       }
       return {
@@ -389,18 +390,22 @@ export async function executeListTopology(
     }
   }
 
-  // Use a cache key that includes devices.
+  // tag_filter (tag_names / tag_match) and asset_ids are intentionally
+  // excluded from the cache key. The cache stores raw org-scoped topology
+  // only; both filters are applied client-side post-fetch via
+  // filterTopologyByAssets, so different filter shapes share one cached
+  // tree. Do not extend this key with filter inputs without first
+  // separating the cache layers.
   //
-  // Per R1 §2.7.5: tag_filter (tag_names / tag_match) and asset_ids are
-  // INTENTIONALLY excluded from the cache key. The cache stores raw
-  // org-scoped topology only; both filters are applied client-side
-  // post-fetch via filterTopologyByAssets, so different filter shapes
-  // share the same cached tree. Don't extend this key with filter inputs
-  // without first separating the cache layers.
+  // `devicesMerged: true` because this read path requires every floor to
+  // carry its `sensors`/`hives` arrays (post-mergeSensorsAndHivesIntoTopology).
+  // `butlr_search_assets` writes a separate device-incomplete shape under a
+  // distinct key — the two consumers can never collide.
   const cacheKey = generateTopologyCacheKey(
     process.env.BUTLR_ORG_ID || "default",
     true, // include devices
     true, // include zones
+    true, // devicesMerged: list-topology requires merged sensors/hives
     undefined
   );
 
@@ -670,8 +675,24 @@ function mergeSensorsAndHivesIntoTopology(
 }
 
 /**
- * Filter topology to only include assets matching the provided IDs
- * Returns a subset of the topology tree
+ * Filter topology to only include assets matching the provided IDs.
+ *
+ * Pruning is strict at every level so untargeted siblings do not leak
+ * through (a regression vector for `asset_ids` ∩ `tag_names` composition,
+ * where `expandToSubtreeClosure` precomputes a leaf-level intersection):
+ *   - If a site/building/floor id is itself in `assetIds`, the whole
+ *     subtree is preserved (caller asked for that branch as a whole).
+ *   - Otherwise the floor is shallow-cloned with each child collection
+ *     filtered to ids in `assetIds`.
+ *
+ * Rendering ancestors are pulled back in after pruning so the tree
+ * formatter can place each matched leaf at its expected position. Without
+ * this, a matched zone/sensor whose parent room wasn't itself targeted
+ * would silently fall out of the tree (the formatter renders zones and
+ * room-bound sensors under their parent room, and hive-bound sensors
+ * under their hive — none of which appear if the parent isn't present).
+ * The added ancestors are always parents of an already-matched node, so
+ * sibling leakage cannot occur.
  */
 function filterTopologyByAssets(sites: Site[], assetIds: string[]): Site[] {
   const idSet = new Set(assetIds);
@@ -697,14 +718,8 @@ function filterTopologyByAssets(sites: Site[], assetIds: string[]): Site[] {
           continue;
         }
 
-        const hasMatchedRoom = floor.rooms?.some((r: Room) => idSet.has(r.id));
-        const hasMatchedZone = floor.zones?.some((z: Zone) => idSet.has(z.id));
-        const hasMatchedHive = floor.hives?.some((h: Hive) => idSet.has(h.id));
-        const hasMatchedSensor = floor.sensors?.some((s: Sensor) => idSet.has(s.id));
-
-        if (hasMatchedRoom || hasMatchedZone || hasMatchedHive || hasMatchedSensor) {
-          matchedFloors.push(floor);
-        }
+        const prunedFloor = pruneFloorToMatches(floor, idSet);
+        if (prunedFloor) matchedFloors.push(prunedFloor);
       }
 
       if (matchedFloors.length > 0) {
@@ -718,6 +733,64 @@ function filterTopologyByAssets(sites: Site[], assetIds: string[]): Site[] {
   }
 
   return filtered;
+}
+
+/**
+ * Build a shallow-cloned floor containing only matched leaves and their
+ * rendering ancestors. Returns `undefined` when nothing on the floor matched.
+ */
+function pruneFloorToMatches(floor: Floor, idSet: Set<string>): Floor | undefined {
+  const matchedRooms: Room[] = (floor.rooms ?? []).filter((r) => idSet.has(r.id));
+  const matchedZones: Zone[] = (floor.zones ?? []).filter((z) => idSet.has(z.id));
+  const matchedHives: Hive[] = (floor.hives ?? []).filter((h) => idSet.has(h.id));
+  const matchedSensors: Sensor[] = (floor.sensors ?? []).filter((s) => idSet.has(s.id));
+
+  if (
+    matchedRooms.length === 0 &&
+    matchedZones.length === 0 &&
+    matchedHives.length === 0 &&
+    matchedSensors.length === 0
+  ) {
+    return undefined;
+  }
+
+  const ancestorRoomIds = new Set<string>();
+  const collectRoomAncestor = (entity: { roomID?: string; room_id?: string }) => {
+    const roomId = entity.roomID ?? entity.room_id;
+    if (roomId) ancestorRoomIds.add(roomId);
+  };
+  matchedZones.forEach(collectRoomAncestor);
+  matchedHives.forEach(collectRoomAncestor);
+  matchedSensors.forEach(collectRoomAncestor);
+
+  const matchedHiveIds = new Set(matchedHives.map((h) => h.id));
+  const ancestorHiveSerials = new Set<string>();
+  for (const sensor of matchedSensors) {
+    if (sensor.hive_serial) ancestorHiveSerials.add(sensor.hive_serial);
+  }
+  const ancestorHives: Hive[] = [];
+  for (const hive of floor.hives ?? []) {
+    if (matchedHiveIds.has(hive.id)) continue;
+    if (hive.serialNumber && ancestorHiveSerials.has(hive.serialNumber)) {
+      ancestorHives.push(hive);
+      collectRoomAncestor(hive);
+    }
+  }
+
+  const matchedRoomIds = new Set(matchedRooms.map((r) => r.id));
+  const ancestorRooms: Room[] = [];
+  for (const room of floor.rooms ?? []) {
+    if (matchedRoomIds.has(room.id)) continue;
+    if (ancestorRoomIds.has(room.id)) ancestorRooms.push(room);
+  }
+
+  return {
+    ...floor,
+    rooms: [...matchedRooms, ...ancestorRooms],
+    zones: matchedZones,
+    hives: [...matchedHives, ...ancestorHives],
+    sensors: matchedSensors,
+  };
 }
 
 /**
