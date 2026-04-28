@@ -876,13 +876,20 @@ describe("butlr_list_topology - Integration", () => {
       });
 
       expect(result.tree).toEqual([]);
+      // Both the rendered prose and the structured diagnostics carry the
+      // dual cause. We assert on the structured form (kind discriminants)
+      // because it's robust to rewording; the prose is a derived view.
       expect(result.warning).toMatch(/No matching tags/i);
-      expect(result.warning).toMatch(/asset_ids also matched no entities/i);
-      expect(result.warning).toMatch(/butlr_search_assets/i);
-      // Per R4 §5: prime (3 calls) + dual-typo tags fetch (1 call) = 4.
-      // Locks in the cache-hit path so a regression that loses the cache
-      // and triggers a fresh topology fetch fails this assertion loudly
-      // instead of returning an unrelated error.
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "tag_no_match" }),
+          expect.objectContaining({ kind: "asset_scope_empty" }),
+        ])
+      );
+      // 3 priming calls (topology + sensors + hives) + 1 dual-typo tags
+      // fetch = 4. Locks in the cache-hit path so a regression that loses
+      // the merged-cache lookup and triggers a fresh topology fetch fails
+      // this assertion loudly instead of returning an unrelated error.
       expect(apolloClient.query).toHaveBeenCalledTimes(4);
     });
 
@@ -1177,6 +1184,70 @@ describe("butlr_list_topology - Integration", () => {
       // zone_001 has no huddle tag and is not bound to room_001 (no room_id),
       // so it must also be pruned.
       expect(ids).not.toContain("zone_001");
+    });
+
+    // M1 regression: when both the asset-side filter is empty AND the tag
+    // is dangling (points only at deleted entities), the response must
+    // emit the ghost-tag diagnostic — not the misleading "disjoint
+    // subtrees" warning. The two diagnostics now evaluate independently.
+    it("emits ghost-tag diagnostic when asset_ids + dangling-tag both apply (not 'disjoint')", async () => {
+      const tagsWithGhostRoom = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_ghost",
+            name: "ghost-tag",
+            organization_id: "org_001",
+            rooms: [{ __typename: "Room", id: "room_does_not_exist", name: "Ghost" }],
+            zones: [],
+            floors: [],
+          },
+        ],
+      };
+      setupTagFilteredMocks(tagsWithGhostRoom);
+
+      const result = await executeListTopology({
+        asset_ids: ["building_001"], // valid asset scope (early-return preserves whole building)
+        tag_names: ["ghost-tag"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      // Tag-side ghost diagnostic surfaces; asset-side disjoint warning is
+      // suppressed because the ghost is the root cause.
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "tag_associations_all_ghost", total: 1 }),
+        ])
+      );
+      expect(result.warnings).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "asset_tag_disjoint" })])
+      );
+      // Prose mirrors the structured form.
+      expect(result.warning).toMatch(/none are present in the active topology/i);
+      expect(result.warning).not.toMatch(/disjoint subtrees/i);
+    });
+
+    // M5 regression: warnings[] is a discriminated union of TopologyDiagnostic
+    // — programmatic consumers branch on `kind`. The legacy `warning` string
+    // is rendered from the same set so the two are always in lock-step.
+    it("emits structured warnings[] alongside the rendered warning string", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        tag_names: ["huddle", "does-not-exist"],
+        tag_match: "any",
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.warnings).toBeDefined();
+      expect(result.warnings).toEqual([{ kind: "unknown_tags", names: ["does-not-exist"] }]);
+      // The rendered string is derived from the structured list; both fields
+      // describe the same diagnostic surface.
+      expect(result.warning).toContain("Unknown tag(s) ignored");
+      expect(result.warning).toContain("does-not-exist");
     });
 
     // H1 regression: butlr_search_assets and butlr_list_topology cache to

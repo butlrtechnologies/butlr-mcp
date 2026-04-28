@@ -164,6 +164,34 @@ export interface TrafficFlowResponse {
 /** Ultra-compact tree node: [id, displayName] or [id, displayName, children] */
 export type TopologyNode = [string, string] | [string, string, TopologyNode[]];
 
+/**
+ * Structured diagnostic emitted by `butlr_list_topology`. Callers should
+ * branch on `kind` instead of parsing the prose `warning` string. The
+ * prose `warning` remains the human-readable rendering of the same set —
+ * both fields describe the same condition.
+ */
+export type TopologyDiagnostic =
+  /** Upstream returned errors alongside data; tree may be incomplete. */
+  | { kind: "partial_topology" }
+  /** Every supplied `tag_names` was unknown — no tag-side match possible. */
+  | { kind: "tag_no_match"; unknown_names: string[] }
+  /** One or more `tag_names` did not resolve; the resolved subset still applies. */
+  | { kind: "unknown_tags"; names: string[] }
+  /** `tag_match='all'` cannot be satisfied because at least one tag is unknown. */
+  | { kind: "tag_match_all_unsatisfiable"; unknown_names: string[] }
+  /** Every supplied tag resolved but none have associated entities. */
+  | { kind: "tag_no_associations"; tag_match: "all" | "any"; tag_names: string[] }
+  /** `asset_ids` did not resolve to any entity in the org. */
+  | { kind: "asset_scope_empty"; asset_ids: string[] }
+  /** `asset_ids` and `tag_names` both resolved but their subtrees do not overlap. */
+  | { kind: "asset_tag_disjoint" }
+  /** Every tagged-entity association points at entities missing from the active topology. */
+  | { kind: "tag_associations_all_ghost"; total: number }
+  /** Some tagged-entity associations point at missing entities; others resolved. */
+  | { kind: "tag_associations_partial_ghost"; ghost: number; total: number }
+  /** Dual-typo path with a cold topology cache — `asset_ids` were not validated. */
+  | { kind: "asset_ids_unverified" };
+
 export interface ListTopologyResponse {
   tree: TopologyNode[];
   query_params: {
@@ -176,7 +204,10 @@ export interface ListTopologyResponse {
     };
   };
   timestamp: string;
+  /** Human-readable summary of every diagnostic emitted; back-compat with v0.1.x. */
   warning?: string;
+  /** Structured diagnostics — preferred over `warning` for programmatic consumers. */
+  warnings?: TopologyDiagnostic[];
   unknown_tags?: string[];
 }
 

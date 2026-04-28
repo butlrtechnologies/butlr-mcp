@@ -28,7 +28,7 @@ import {
 import { resolveTagNames } from "../utils/tag-resolver.js";
 import { debug } from "../utils/debug.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
-import type { ListTopologyResponse } from "../types/responses.js";
+import type { ListTopologyResponse, TopologyDiagnostic } from "../types/responses.js";
 
 const LIST_TOPOLOGY_DESCRIPTION =
   "Display org hierarchy tree with flexible depth control. Can show full tree, specific subtrees, or flat lists. " +
@@ -273,7 +273,7 @@ export async function executeListTopology(
   // unsatisfiable / no-match cases without paying for the topology fetch.
   let taggedEntityIds: Set<string> | undefined;
   let unknownTagNames: string[] = [];
-  let tagWarning: string | undefined;
+  let tagWarning: TopologyDiagnostic | undefined;
 
   if (tagNames.length > 0) {
     let tagsRaw: RawTagWithUsage[] = [];
@@ -304,89 +304,66 @@ export async function executeListTopology(
     };
 
     if (resolvedRows.length === 0) {
+      const diagnostics: TopologyDiagnostic[] = [
+        { kind: "tag_no_match", unknown_names: unknownNames },
+      ];
       // When asset_ids was also supplied, opportunistically validate it
-      // against a warm topology cache so a dual-typo input (tag wrong AND
-      // asset_ids wrong) surfaces both diagnostics in a single round-trip.
-      // We deliberately read only from the merged-devices cache — that is
-      // the cache key `butlr_list_topology` itself writes — so the lookup
-      // is authoritative for sensor/hive ids. `butlr_search_assets` writes
-      // a separate, device-incomplete shape under a different key (see
-      // `generateTopologyCacheKey(..., devicesMerged)`); reading that here
-      // would false-positive a real device id as missing.
-      //
-      // Cache miss is treated as "couldn't verify" — an explicit
-      // unverified-asset hint is appended instead so the caller knows the
-      // asset typo (if any) wasn't checked. Paying for a full topology
-      // fetch on the dual-typo path would dwarf the actual short-circuit.
-      let assetHint = "";
+      // against a warm topology cache so the user sees both diagnostics in
+      // one round-trip. The lookup reads only from the merged-devices cache
+      // (the key `butlr_list_topology` writes) so it is authoritative for
+      // device ids; `butlr_search_assets` writes a separate device-incomplete
+      // shape under a different key. Cache miss → emit `asset_ids_unverified`
+      // so the caller knows the asset typo (if any) wasn't checked. Paying
+      // for a full topology fetch here would dwarf the actual short-circuit.
       if (assetIds.length > 0) {
-        const cacheKey = generateTopologyCacheKey(
-          process.env.BUTLR_ORG_ID || "default",
-          true,
-          true,
-          true, // devicesMerged: only the merged-shape cache is authoritative for device ids
-          undefined
+        const cached = getCachedTopology(
+          generateTopologyCacheKey(
+            process.env.BUTLR_ORG_ID || "default",
+            true,
+            true,
+            true,
+            undefined
+          )
         );
-        const cached = getCachedTopology(cacheKey);
         const cachedSites = cached?.data?.sites as Site[] | undefined;
         if (cachedSites) {
           if (expandToSubtreeClosure(cachedSites, assetIds).size === 0) {
-            assetHint =
-              " asset_ids also matched no entities in the org — verify those IDs with butlr_search_assets.";
+            diagnostics.push({ kind: "asset_scope_empty", asset_ids: assetIds });
           }
         } else {
-          assetHint =
-            " asset_ids were not validated (topology not yet cached) — re-run after correcting the tag names to confirm they exist.";
+          diagnostics.push({ kind: "asset_ids_unverified" });
         }
       }
-      return {
+      return buildTopologyResponse({
         tree: [],
-        query_params: baseQueryParams,
-        timestamp: new Date().toISOString(),
-        warning:
-          `No matching tags found in this org for: ${unknownNames.join(", ")}. ` +
-          "Use butlr_list_tags to see available tag names." +
-          assetHint,
-        unknown_tags: unknownNames,
-      };
+        queryParams: baseQueryParams,
+        diagnostics,
+        unknownTagNames: unknownNames,
+      });
     }
 
     if (unsatisfiable) {
-      return {
+      return buildTopologyResponse({
         tree: [],
-        query_params: baseQueryParams,
-        timestamp: new Date().toISOString(),
-        warning:
-          `Cannot satisfy tag_match='all': unknown tag(s) ${unknownNames.join(", ")}. ` +
-          "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match entities tagged with any of the supplied tags.",
-        unknown_tags: unknownNames,
-      };
+        queryParams: baseQueryParams,
+        diagnostics: [{ kind: "tag_match_all_unsatisfiable", unknown_names: unknownNames }],
+        unknownTagNames: unknownNames,
+      });
     }
 
     taggedEntityIds = collectTaggedEntityIds(resolvedRows, tagMatch);
 
     if (taggedEntityIds.size === 0) {
-      // Per R1 §2.7.3: "any of [tag1]" reads awkwardly for the single-tag
-      // case — drop the all/any preamble when there's only one name.
-      const tagList =
-        tagNames.length === 1
-          ? `"${tagNames[0]}"`
-          : `${tagMatch === "all" ? "all of" : "any of"} [${tagNames.join(", ")}]`;
-      return {
+      return buildTopologyResponse({
         tree: [],
-        query_params: baseQueryParams,
-        timestamp: new Date().toISOString(),
-        warning:
-          `No rooms, zones, or floors are currently tagged with ${tagList}. ` +
-          "Use butlr_list_tags { include_entities: true } to see what is tagged.",
-        unknown_tags: unknownNames.length > 0 ? unknownNames : undefined,
-      };
+        queryParams: baseQueryParams,
+        diagnostics: [{ kind: "tag_no_associations", tag_match: tagMatch, tag_names: tagNames }],
+        unknownTagNames: unknownNames,
+      });
     }
 
     if (unknownNames.length > 0) {
-      tagWarning =
-        `Unknown tag(s) ignored: ${unknownNames.join(", ")}. ` +
-        "Use butlr_list_tags to see available tag names.";
+      tagWarning = { kind: "unknown_tags", names: unknownNames };
     }
   }
 
@@ -526,104 +503,181 @@ export async function executeListTopology(
   // Format as tree with depth controls
   const tree = formatTopologyTree(filteredSites, startingDepth, traversalDepth);
 
-  const response: ListTopologyResponse = {
-    tree,
-    query_params: {
-      starting_depth: startingDepth,
-      traversal_depth: traversalDepth,
-      asset_filter: assetIds.length > 0 ? assetIds : "all",
-      ...(tagNames.length > 0 ? { tag_filter: { names: tagNames, match: tagMatch } } : {}),
-    },
-    timestamp: new Date().toISOString(),
-  };
+  const diagnostics: TopologyDiagnostic[] = [];
+  if (partialData) diagnostics.push({ kind: "partial_topology" });
+  if (tagWarning) diagnostics.push(tagWarning);
 
-  const warnings: string[] = [];
-  if (partialData) {
-    warnings.push(
-      "Topology data may be incomplete — the API returned partial results due to upstream errors."
-    );
-  }
-  if (tagWarning) {
-    warnings.push(tagWarning);
-  }
-
-  // Per R4 §3: compute how many tagged-entity IDs aren't present in the
-  // active topology. Used both for the full-empty diagnostic below and for
-  // a softer partial-ghost warning when the tree is non-empty (some tag
-  // links resolve to real entities, some don't). Without this, a partially
+  // Compute how many tagged-entity IDs aren't present in the active
+  // topology. Used both for the all-ghost diagnostic (tree empty, every
+  // association dangling) and for the partial-ghost soft warning (tree
+  // non-empty, some associations dangling). Without this a partially
   // dangling tag silently includes the real entries and hides the ghosts.
   let ghostTagCount = 0;
   if (taggedEntityIds && taggedEntityIds.size > 0) {
-    const presentIds = new Set<string>();
-    for (const site of sites) {
-      presentIds.add(site.id);
-      for (const building of site.buildings ?? []) {
-        presentIds.add(building.id);
-        for (const floor of building.floors ?? []) {
-          presentIds.add(floor.id);
-          for (const room of floor.rooms ?? []) presentIds.add(room.id);
-          for (const zone of floor.zones ?? []) presentIds.add(zone.id);
-          for (const hive of floor.hives ?? []) presentIds.add(hive.id);
-          for (const sensor of floor.sensors ?? []) presentIds.add(sensor.id);
-        }
-      }
-    }
+    const presentIds = collectAllTopologyIds(sites);
     for (const id of taggedEntityIds) {
       if (!presentIds.has(id)) ghostTagCount++;
     }
   }
 
-  // Per R3 §2: distinguish "asset_ids didn't resolve to anything in the
-  // org" from "asset_ids and tag_names scope disjoint subtrees" — the
-  // earlier blanket disjoint warning misdiagnosed typos in asset_ids.
-  if (tree.length === 0 && assetIds.length > 0) {
+  // Tag-side ghost diagnostic — evaluated independently of the asset-side
+  // branch so a dual-cause empty tree (bad asset_ids AND ghost tag) doesn't
+  // mask the underlying ghost-association problem behind a misleading
+  // "disjoint subtrees" warning.
+  const ghostKind: "all" | "partial" | "none" =
+    taggedEntityIds && taggedEntityIds.size > 0
+      ? ghostTagCount === taggedEntityIds.size
+        ? "all"
+        : ghostTagCount > 0
+          ? "partial"
+          : "none"
+      : "none";
+  if (ghostKind === "all") {
+    diagnostics.push({
+      kind: "tag_associations_all_ghost",
+      total: taggedEntityIds!.size,
+    });
+  } else if (ghostKind === "partial") {
+    diagnostics.push({
+      kind: "tag_associations_partial_ghost",
+      ghost: ghostTagCount,
+      total: taggedEntityIds!.size,
+    });
+  }
+
+  // Asset-side diagnostic — mutually exclusive within `assetIds.length>0`.
+  // Skip when the empty tree is already explained by an all-ghost tag
+  // (root-cause attribution): "your tag is dangling" is more actionable
+  // than "your filters disagree" when the latter is a downstream symptom.
+  if (tree.length === 0 && assetIds.length > 0 && ghostKind !== "all") {
     if (assetScopeEmpty) {
-      warnings.push(
-        "asset_ids matched no entities in the org — verify the IDs exist " +
-          "(use butlr_search_assets if unsure)."
-      );
+      diagnostics.push({ kind: "asset_scope_empty", asset_ids: assetIds });
     } else if (assetTagDisjoint) {
-      warnings.push(
-        "No tree node satisfies both asset_ids and tag_names — the two filters scope disjoint subtrees. " +
-          "Try removing one filter or use butlr_list_tags { include_entities: true } to see where the tags live."
+      diagnostics.push({ kind: "asset_tag_disjoint" });
+    }
+  }
+
+  return buildTopologyResponse({
+    tree,
+    queryParams: {
+      starting_depth: startingDepth,
+      traversal_depth: traversalDepth,
+      asset_filter: assetIds.length > 0 ? assetIds : "all",
+      ...(tagNames.length > 0 ? { tag_filter: { names: tagNames, match: tagMatch } } : {}),
+    },
+    diagnostics,
+    unknownTagNames,
+  });
+}
+
+/**
+ * Collect every entity id present in the active topology so we can detect
+ * tag associations pointing at deleted (or otherwise filtered-out) entities.
+ */
+function collectAllTopologyIds(sites: Site[]): Set<string> {
+  const ids = new Set<string>();
+  for (const site of sites) {
+    ids.add(site.id);
+    for (const building of site.buildings ?? []) {
+      ids.add(building.id);
+      for (const floor of building.floors ?? []) {
+        ids.add(floor.id);
+        for (const room of floor.rooms ?? []) ids.add(room.id);
+        for (const zone of floor.zones ?? []) ids.add(zone.id);
+        for (const hive of floor.hives ?? []) ids.add(hive.id);
+        for (const sensor of floor.sensors ?? []) ids.add(sensor.id);
+      }
+    }
+  }
+  return ids;
+}
+
+/** Render a structured diagnostic as the human-readable prose used in `warning`. */
+function renderDiagnostic(d: TopologyDiagnostic): string {
+  switch (d.kind) {
+    case "partial_topology":
+      return "Topology data may be incomplete — the API returned partial results due to upstream errors.";
+    case "tag_no_match":
+      return (
+        `No matching tags found in this org for: ${d.unknown_names.join(", ")}. ` +
+        "Use butlr_list_tags to see available tag names."
+      );
+    case "unknown_tags":
+      return (
+        `Unknown tag(s) ignored: ${d.names.join(", ")}. ` +
+        "Use butlr_list_tags to see available tag names."
+      );
+    case "tag_match_all_unsatisfiable":
+      return (
+        `Cannot satisfy tag_match='all': unknown tag(s) ${d.unknown_names.join(", ")}. ` +
+        "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match entities tagged with any of the supplied tags."
+      );
+    case "tag_no_associations": {
+      // Single-tag case reads cleanly without the all/any preamble.
+      const tagList =
+        d.tag_names.length === 1
+          ? `"${d.tag_names[0]}"`
+          : `${d.tag_match === "all" ? "all of" : "any of"} [${d.tag_names.join(", ")}]`;
+      return (
+        `No rooms, zones, or floors are currently tagged with ${tagList}. ` +
+        "Use butlr_list_tags { include_entities: true } to see what is tagged."
       );
     }
-  } else if (
-    tree.length === 0 &&
-    assetIds.length === 0 &&
-    taggedEntityIds &&
-    taggedEntityIds.size > 0
-  ) {
-    // Per R3 §3.1 + R4 §2/§7: tag-only path can produce an empty tree when
-    // the tag's associations point at entities that aren't present in the
-    // active topology — typically deleted rooms/zones/floors whose tag link
-    // survived. Tags only attach to rooms/zones/floors (not sensors/hives)
-    // per the GraphQL schema, so device filters aren't a source of ghosts.
-    // Without this branch the user gets `tree: []` with no diagnostic.
-    warnings.push(
-      `Tag matched ${taggedEntityIds.size} entit${taggedEntityIds.size === 1 ? "y" : "ies"} ` +
+    case "asset_scope_empty":
+      return (
+        "asset_ids matched no entities in the org — verify the IDs exist " +
+        "(use butlr_search_assets if unsure)."
+      );
+    case "asset_tag_disjoint":
+      return (
+        "No tree node satisfies both asset_ids and tag_names — the two filters scope disjoint subtrees. " +
+        "Try removing one filter or use butlr_list_tags { include_entities: true } to see where the tags live."
+      );
+    case "tag_associations_all_ghost":
+      return (
+        `Tag matched ${d.total} entit${d.total === 1 ? "y" : "ies"} ` +
         "in tag associations, but none are present in the active topology — " +
         "they may have been deleted. " +
         "Use butlr_list_tags { include_entities: true } to inspect the raw associations."
-    );
-  } else if (taggedEntityIds && ghostTagCount > 0 && ghostTagCount < taggedEntityIds.size) {
-    // Per R4 §3: softer warning for the partial-ghost case — some tag
-    // associations resolved (so the tree isn't empty) but others point at
-    // entities outside the active topology. The user gets the real subset
-    // PLUS visibility into the dangling links instead of silent loss.
-    warnings.push(
-      `${ghostTagCount} of ${taggedEntityIds.size} tag associations point at ` +
+      );
+    case "tag_associations_partial_ghost":
+      return (
+        `${d.ghost} of ${d.total} tag associations point at ` +
         "entities outside the active topology (likely deleted) and were skipped. " +
         "Use butlr_list_tags { include_entities: true } to inspect the raw associations."
-    );
+      );
+    case "asset_ids_unverified":
+      return (
+        "asset_ids were not validated (topology not yet cached) — " +
+        "re-run after correcting the tag names to confirm they exist."
+      );
   }
-  if (warnings.length > 0) {
-    response.warning = warnings.join(" ");
-  }
-  if (unknownTagNames.length > 0) {
-    response.unknown_tags = unknownTagNames;
-  }
+}
 
+/**
+ * Assemble the response, deriving the legacy `warning` string from the
+ * structured diagnostics so the two stay in lock-step. Either field on its
+ * own carries the full diagnostic surface; consumers can safely branch on
+ * `warnings[].kind` and ignore `warning`.
+ */
+function buildTopologyResponse(args: {
+  tree: ListTopologyResponse["tree"];
+  queryParams: ListTopologyResponse["query_params"];
+  diagnostics: TopologyDiagnostic[];
+  unknownTagNames: string[];
+}): ListTopologyResponse {
+  const response: ListTopologyResponse = {
+    tree: args.tree,
+    query_params: args.queryParams,
+    timestamp: new Date().toISOString(),
+  };
+  if (args.diagnostics.length > 0) {
+    response.warnings = args.diagnostics;
+    response.warning = args.diagnostics.map(renderDiagnostic).join(" ");
+  }
+  if (args.unknownTagNames.length > 0) {
+    response.unknown_tags = args.unknownTagNames;
+  }
   return response;
 }
 
