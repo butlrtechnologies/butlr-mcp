@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeListTopology } from "../../butlr-list-topology.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
-import { clearTopologyCache } from "../../../cache/topology-cache.js";
+import {
+  clearTopologyCache,
+  generateTopologyCacheKey,
+  setCachedTopology,
+} from "../../../cache/topology-cache.js";
 
 // Mock the GraphQL client
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -874,6 +878,41 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toMatch(/No matching tags/i);
       expect(result.warning).toMatch(/asset_ids also matched no entities/i);
       expect(result.warning).toMatch(/butlr_search_assets/i);
+      // Per R4 §5: prime (3 calls) + dual-typo tags fetch (1 call) = 4.
+      // Locks in the cache-hit path so a regression that loses the cache
+      // and triggers a fresh topology fetch fails this assertion loudly
+      // instead of returning an unrelated error.
+      expect(apolloClient.query).toHaveBeenCalledTimes(4);
+    });
+
+    // Per R4 §1: butlr_search_assets writes to the same cache key but does
+    // NOT merge sensors/hives. Reading device-aware closure from that
+    // cache shape would false-positive a real sensor/hive asset_id as
+    // missing. The §3.5 hint must skip when the cache lacks the merged-
+    // devices sentinel.
+    it("does NOT emit asset_ids hint when the cached topology lacks merged devices", async () => {
+      // Prime the cache as butlr_search_assets does: sites tree only,
+      // sensors/hives never merged → floor.sensors stays undefined.
+      const { sites } = buildTopologyFixture();
+      const orgId = process.env.BUTLR_ORG_ID || "default";
+      setCachedTopology(generateTopologyCacheKey(orgId, true, true, undefined), {
+        sites: sites.data,
+      });
+
+      setupTagsOnlyMock();
+
+      const result = await executeListTopology({
+        asset_ids: ["sensor_real_one"], // would be a real sensor, but cache can't tell
+        tag_names: ["does-not-exist"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.warning).toMatch(/No matching tags/i);
+      // Critically: NO false-positive asset hint, because the cached
+      // topology can't authoritatively answer device-id questions.
+      expect(result.warning).not.toMatch(/asset_ids also matched no entities/i);
     });
 
     // Per R3 §3.1: a tag with associations to entities that aren't in
@@ -904,6 +943,41 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.tree).toEqual([]);
       expect(result.warning).toMatch(/none are present in the active topology/i);
       expect(result.warning).toMatch(/butlr_list_tags/i);
+    });
+
+    // Per R4 §3: a partial-ghost tag (some real, some absent) used to
+    // silently include the real entries and hide the dangling ones. Now
+    // the response surfaces "N of M tag associations point at entities
+    // outside the active topology" when the tree is non-empty.
+    it("warns about partial-ghost tag associations (some real, some absent)", async () => {
+      const partialGhostTag = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_partial",
+            name: "partial-ghost",
+            organization_id: "org_001",
+            rooms: [
+              { __typename: "Room", id: "room_001", name: "Conf A" }, // real
+              { __typename: "Room", id: "room_does_not_exist", name: "Ghost" },
+            ],
+            zones: [],
+            floors: [],
+          },
+        ],
+      };
+      setupTagFilteredMocks(partialGhostTag);
+
+      const result = await executeListTopology({
+        tag_names: ["partial-ghost"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // Real entry renders; tree is non-empty.
+      expect(flattenIds(result.tree)).toContain("room_001");
+      // Soft warning surfaces the dangling association.
+      expect(result.warning).toMatch(/1 of 2 tag associations point at entities outside/i);
     });
 
     // Per R6: sensors reach a room transitively through a room-bound hive

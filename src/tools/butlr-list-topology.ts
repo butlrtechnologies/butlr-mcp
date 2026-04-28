@@ -305,6 +305,14 @@ export async function executeListTopology(
       // it against a warm topology cache so a dual-typo input (tag wrong AND
       // asset_ids wrong) surfaces both. Don't pay for a fresh topology fetch
       // just for this diagnostic — it would dwarf the actual short-circuit.
+      //
+      // Per R4 §1: butlr_search_assets writes to the SAME cache key but
+      // without merging sensors/hives, so a search_assets-primed cache will
+      // have sensors/hives undefined on every floor. Trusting that shape
+      // would false-positive a real sensor/hive asset_id as missing. Detect
+      // the unmerged shape via a sentinel (any defined floor.sensors array
+      // means mergeSensorsAndHivesIntoTopology ran) and skip the hint when
+      // the cache can't authoritatively answer device-id questions.
       let assetHint = "";
       if (assetIds.length > 0) {
         const cacheKey = generateTopologyCacheKey(
@@ -315,7 +323,14 @@ export async function executeListTopology(
         );
         const cached = getCachedTopology(cacheKey);
         const cachedSites = cached?.data?.sites as Site[] | undefined;
-        if (cachedSites && expandToSubtreeClosure(cachedSites, assetIds).size === 0) {
+        const hasMergedDevices = cachedSites?.some((s) =>
+          (s.buildings ?? []).some((b) => (b.floors ?? []).some((f) => Array.isArray(f.sensors)))
+        );
+        if (
+          cachedSites &&
+          hasMergedDevices &&
+          expandToSubtreeClosure(cachedSites, assetIds).size === 0
+        ) {
           assetHint =
             " asset_ids also matched no entities in the org — verify those IDs with butlr_search_assets.";
         }
@@ -523,6 +538,33 @@ export async function executeListTopology(
   if (tagWarning) {
     warnings.push(tagWarning);
   }
+
+  // Per R4 §3: compute how many tagged-entity IDs aren't present in the
+  // active topology. Used both for the full-empty diagnostic below and for
+  // a softer partial-ghost warning when the tree is non-empty (some tag
+  // links resolve to real entities, some don't). Without this, a partially
+  // dangling tag silently includes the real entries and hides the ghosts.
+  let ghostTagCount = 0;
+  if (taggedEntityIds && taggedEntityIds.size > 0) {
+    const presentIds = new Set<string>();
+    for (const site of sites) {
+      presentIds.add(site.id);
+      for (const building of site.buildings ?? []) {
+        presentIds.add(building.id);
+        for (const floor of building.floors ?? []) {
+          presentIds.add(floor.id);
+          for (const room of floor.rooms ?? []) presentIds.add(room.id);
+          for (const zone of floor.zones ?? []) presentIds.add(zone.id);
+          for (const hive of floor.hives ?? []) presentIds.add(hive.id);
+          for (const sensor of floor.sensors ?? []) presentIds.add(sensor.id);
+        }
+      }
+    }
+    for (const id of taggedEntityIds) {
+      if (!presentIds.has(id)) ghostTagCount++;
+    }
+  }
+
   // Per R3 §2: distinguish "asset_ids didn't resolve to anything in the
   // org" from "asset_ids and tag_names scope disjoint subtrees" — the
   // earlier blanket disjoint warning misdiagnosed typos in asset_ids.
@@ -544,15 +586,26 @@ export async function executeListTopology(
     taggedEntityIds &&
     taggedEntityIds.size > 0
   ) {
-    // Per R3 §3.1: tag-only path can produce an empty tree when the tag's
-    // associations point at entities that aren't present in the active
-    // topology — typically a deleted entity whose tag link survives, or a
-    // device that was filtered out (isProductionSensor / isProductionHive).
+    // Per R3 §3.1 + R4 §2/§7: tag-only path can produce an empty tree when
+    // the tag's associations point at entities that aren't present in the
+    // active topology — typically deleted rooms/zones/floors whose tag link
+    // survived. Tags only attach to rooms/zones/floors (not sensors/hives)
+    // per the GraphQL schema, so device filters aren't a source of ghosts.
     // Without this branch the user gets `tree: []` with no diagnostic.
     warnings.push(
       `Tag matched ${taggedEntityIds.size} entit${taggedEntityIds.size === 1 ? "y" : "ies"} ` +
-        "in the tag table, but none are present in the active topology — " +
-        "they may have been deleted or filtered. " +
+        "in tag associations, but none are present in the active topology — " +
+        "they may have been deleted. " +
+        "Use butlr_list_tags { include_entities: true } to inspect the raw associations."
+    );
+  } else if (taggedEntityIds && ghostTagCount > 0 && ghostTagCount < taggedEntityIds.size) {
+    // Per R4 §3: softer warning for the partial-ghost case — some tag
+    // associations resolved (so the tree isn't empty) but others point at
+    // entities outside the active topology. The user gets the real subset
+    // PLUS visibility into the dangling links instead of silent loss.
+    warnings.push(
+      `${ghostTagCount} of ${taggedEntityIds.size} tag associations point at ` +
+        "entities outside the active topology (likely deleted) and were skipped. " +
         "Use butlr_list_tags { include_entities: true } to inspect the raw associations."
     );
   }
