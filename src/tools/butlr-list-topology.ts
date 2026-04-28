@@ -38,6 +38,9 @@ const LIST_TOPOLOGY_DESCRIPTION =
   "- Pass tag_names (case-insensitive) to scope the tree to subtrees containing rooms, zones, or floors with those tags. Combines AND-style with asset_ids when both are supplied.\n" +
   "- tag_match defaults to 'any' (entity tagged with at least one of the names) — note this differs from butlr_available_rooms, which defaults to 'all' because it filters a single entity type.\n" +
   "- Use butlr_list_tags to discover what tag vocabulary exists in this org.\n\n" +
+  "Diagnostics:\n" +
+  "- The response includes a `warning` field when a filter input doesn't fully resolve — typo'd asset_ids, unknown tag_names, asset_ids and tag_names scoping disjoint subtrees, or tag associations pointing at deleted entities. Read it before retrying.\n" +
+  "- `unknown_tags` lists any tag names that didn't resolve, for the caller to surface or correct.\n\n" +
   "When NOT to Use:\n" +
   "- Searching for assets by name or keyword → use butlr_search_assets for fuzzy name-based lookups\n" +
   "- Need detailed info for a specific asset you already have an ID for → use butlr_get_asset_details instead\n" +
