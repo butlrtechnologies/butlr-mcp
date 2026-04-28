@@ -322,20 +322,26 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       // (tests bypassing Zod parsing, downstream programmatic callers)
       // get the same semantics as the schema default.
       //
-      // Per R2 §2.4: this default ("all") DIFFERS from butlr_list_topology's
+      // The default ("all") here DIFFERS from butlr_list_topology's
       // default ("any") on purpose — available-rooms filters one entity type
       // (rooms), where AND is intuitive; list-topology filters across rooms,
       // zones, and floors, where AND is rarely satisfied. Do not unify these
       // defaults via a shared helper without changing the user-facing
       // semantics described in each tool's description string.
       const tagMatch = args.tag_match ?? "all";
-      const { resolvedIds, unknownNames, unsatisfiable } = resolveTagNames({
+      const resolution = resolveTagNames({
         allTags: tagsResult.data?.tags ?? [],
         requestedNames: args.tags,
         match: tagMatch,
       });
 
-      if (resolvedIds.length === 0) {
+      if (resolution.droppedRowCount > 0) {
+        warnings.push(
+          `${resolution.droppedRowCount} tag row(s) skipped — upstream returned entries with missing or empty id/name fields.`
+        );
+      }
+
+      if (resolution.kind === "no_match") {
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
           available_rooms: [],
@@ -343,17 +349,17 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
           showing: 0,
           timestamp: new Date().toISOString(),
           filtered_by: args,
-          unknown_tags: unknownNames,
+          unknown_tags: resolution.unknownNames,
           warning:
-            `No matching tags found in this org for: ${unknownNames.join(", ")}. ` +
+            `No matching tags found in this org for: ${resolution.unknownNames.join(", ")}. ` +
             "Use butlr_list_tags to see available tag names.",
         };
       }
 
-      // Per R1 §2.6: gate on the resolver's `unsatisfiable` flag rather than
-      // re-deriving the rule inline, so the all-vs-any semantics live in one
-      // place (resolveTagNames) and can't drift between tools.
-      if (unsatisfiable) {
+      if (resolution.kind === "unsatisfiable") {
+        // Gate on the resolver's discriminant rather than re-deriving the
+        // all-vs-any rule inline, so the semantics live in one place
+        // (resolveTagNames) and can't drift between tools.
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
           available_rooms: [],
@@ -361,12 +367,15 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
           showing: 0,
           timestamp: new Date().toISOString(),
           filtered_by: args,
-          unknown_tags: unknownNames,
+          unknown_tags: resolution.unknownNames,
           warning:
-            `Cannot satisfy tag_match='all': unknown tag(s) ${unknownNames.join(", ")}. ` +
+            `Cannot satisfy tag_match='all': unknown tag(s) ${resolution.unknownNames.join(", ")}. ` +
             "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match rooms tagged with any of the supplied tags.",
         };
       }
+
+      // resolution.kind === "ok" — safe to read resolvedIds / resolvedRows.
+      const { resolvedIds, unknownNames } = resolution;
 
       if (unknownNames.length > 0) {
         unknownTagNames = unknownNames;

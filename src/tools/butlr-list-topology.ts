@@ -25,7 +25,7 @@ import {
   rethrowIfGraphQLError,
   throwIfGraphQLErrors,
 } from "../utils/graphql-helpers.js";
-import { resolveTagNames } from "../utils/tag-resolver.js";
+import { resolveTagNames, projectValidRefs } from "../utils/tag-resolver.js";
 import { debug } from "../utils/debug.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type { ListTopologyResponse, TopologyDiagnostic } from "../types/responses.js";
@@ -109,17 +109,13 @@ function collectTaggedEntityIds(
 
   const kinds = ["rooms", "zones", "floors"] as const;
   for (const kind of kinds) {
-    // Per R1 §2.2: drop refs whose `id` is null/undefined (stale tag→entity
-    // associations after a hard delete, or partial GraphQL responses) so
-    // they can't pollute the matched-id Set.
-    const sets = resolvedRows.map(
-      (row) =>
-        new Set(
-          (row[kind] ?? []).flatMap((e) =>
-            typeof e.id === "string" && e.id.length > 0 ? [e.id] : []
-          )
-        )
-    );
+    // `projectValidRefs` drops refs whose `id` is null/undefined (stale
+    // tag→entity associations after a hard delete, or partial GraphQL
+    // responses) so they can't pollute the matched-id Set. Sharing the
+    // helper with `butlr_list_tags` keeps the validity predicate in one
+    // place — counts and entity arrays produced from the same filtered
+    // list cannot disagree across tools.
+    const sets = resolvedRows.map((row) => new Set(projectValidRefs(row[kind]).map((e) => e.id)));
     let acc: Set<string>;
     if (match === "all") {
       acc = new Set(sets[0]);
@@ -274,6 +270,7 @@ export async function executeListTopology(
   let taggedEntityIds: Set<string> | undefined;
   let unknownTagNames: string[] = [];
   let tagWarning: TopologyDiagnostic | undefined;
+  let malformedTagRowCount = 0;
 
   if (tagNames.length > 0) {
     let tagsRaw: RawTagWithUsage[] = [];
@@ -289,12 +286,12 @@ export async function executeListTopology(
       throw error;
     }
 
-    const { resolvedRows, unknownNames, unsatisfiable } = resolveTagNames({
+    const resolution = resolveTagNames({
       allTags: tagsRaw,
       requestedNames: tagNames,
       match: tagMatch,
     });
-    unknownTagNames = unknownNames;
+    unknownTagNames = resolution.unknownNames;
 
     const baseQueryParams = {
       starting_depth: startingDepth,
@@ -303,9 +300,22 @@ export async function executeListTopology(
       tag_filter: { names: tagNames, match: tagMatch },
     };
 
-    if (resolvedRows.length === 0) {
+    // Surface upstream contract violations (rows missing a usable id/name)
+    // alongside whichever primary diagnostic fires. Threading it through a
+    // shared starting list ensures it cannot be silently dropped on any
+    // early-return branch.
+    const earlyDiagnostics: TopologyDiagnostic[] = [];
+    if (resolution.droppedRowCount > 0) {
+      earlyDiagnostics.push({
+        kind: "malformed_tag_rows",
+        count: resolution.droppedRowCount,
+      });
+    }
+    malformedTagRowCount = resolution.droppedRowCount;
+
+    if (resolution.kind === "no_match") {
       const diagnostics: TopologyDiagnostic[] = [
-        { kind: "tag_no_match", unknown_names: unknownNames },
+        { kind: "tag_no_match", unknown_names: resolution.unknownNames },
       ];
       // When asset_ids was also supplied, opportunistically validate it
       // against a warm topology cache so the user sees both diagnostics in
@@ -334,22 +344,29 @@ export async function executeListTopology(
           diagnostics.push({ kind: "asset_ids_unverified" });
         }
       }
+      diagnostics.push(...earlyDiagnostics);
       return buildTopologyResponse({
         tree: [],
         queryParams: baseQueryParams,
         diagnostics,
-        unknownTagNames: unknownNames,
+        unknownTagNames: resolution.unknownNames,
       });
     }
 
-    if (unsatisfiable) {
+    if (resolution.kind === "unsatisfiable") {
       return buildTopologyResponse({
         tree: [],
         queryParams: baseQueryParams,
-        diagnostics: [{ kind: "tag_match_all_unsatisfiable", unknown_names: unknownNames }],
-        unknownTagNames: unknownNames,
+        diagnostics: [
+          { kind: "tag_match_all_unsatisfiable", unknown_names: resolution.unknownNames },
+          ...earlyDiagnostics,
+        ],
+        unknownTagNames: resolution.unknownNames,
       });
     }
+
+    // resolution.kind === "ok" — safe to read resolvedRows / resolvedIds.
+    const { resolvedRows, unknownNames } = resolution;
 
     taggedEntityIds = collectTaggedEntityIds(resolvedRows, tagMatch);
 
@@ -357,7 +374,10 @@ export async function executeListTopology(
       return buildTopologyResponse({
         tree: [],
         queryParams: baseQueryParams,
-        diagnostics: [{ kind: "tag_no_associations", tag_match: tagMatch, tag_names: tagNames }],
+        diagnostics: [
+          { kind: "tag_no_associations", tag_match: tagMatch, tag_names: tagNames },
+          ...earlyDiagnostics,
+        ],
         unknownTagNames: unknownNames,
       });
     }
@@ -506,6 +526,9 @@ export async function executeListTopology(
   const diagnostics: TopologyDiagnostic[] = [];
   if (partialData) diagnostics.push({ kind: "partial_topology" });
   if (tagWarning) diagnostics.push(tagWarning);
+  if (malformedTagRowCount > 0) {
+    diagnostics.push({ kind: "malformed_tag_rows", count: malformedTagRowCount });
+  }
 
   // Compute how many tagged-entity IDs aren't present in the active
   // topology. Used both for the all-ghost diagnostic (tree empty, every
@@ -650,6 +673,11 @@ function renderDiagnostic(d: TopologyDiagnostic): string {
       return (
         "asset_ids were not validated (topology not yet cached) — " +
         "re-run after correcting the tag names to confirm they exist."
+      );
+    case "malformed_tag_rows":
+      return (
+        `${d.count} tag row(s) skipped — upstream returned entries with ` +
+        "missing or empty id/name fields. If unexpected, contact support."
       );
   }
 }

@@ -7,6 +7,7 @@ import {
   type TaggedEntityRef,
 } from "../clients/queries/tags.js";
 import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
+import { projectValidRefs } from "../utils/tag-resolver.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import { debug } from "../utils/debug.js";
 
@@ -112,21 +113,17 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
     throw error;
   }
 
-  // Per R1 §2.2: filter out refs without a usable id (dangling associations
-  // after a hard delete, or partial GraphQL responses). Counts and the
-  // optional entity array are computed off the same filtered list so they
-  // can never disagree within a single response.
-  const project = (refs: RawTagWithUsage["rooms"]): TaggedEntityRef[] =>
-    (refs ?? []).flatMap((e) =>
-      typeof e.id === "string" && e.id.length > 0
-        ? [typeof e.name === "string" ? { id: e.id, name: e.name } : { id: e.id }]
-        : []
-    );
-
+  // `projectValidRefs` filters out refs without a usable id (dangling
+  // associations after a hard delete, or partial GraphQL responses).
+  // Counts and the optional entity array are computed off the same
+  // filtered list so they cannot disagree within a single response. The
+  // helper is shared with `butlr_list_topology` so the validity predicate
+  // lives in one place — if the rule ever tightens, both tools update
+  // together.
   let tags: TagSummary[] = rawTags.map((t) => {
-    const rooms = project(t.rooms);
-    const zones = project(t.zones);
-    const floors = project(t.floors);
+    const rooms = projectValidRefs(t.rooms);
+    const zones = projectValidRefs(t.zones);
+    const floors = projectValidRefs(t.floors);
     const summary: TagSummary = {
       id: t.id,
       name: t.name,

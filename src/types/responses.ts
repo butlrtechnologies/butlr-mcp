@@ -190,7 +190,9 @@ export type TopologyDiagnostic =
   /** Some tagged-entity associations point at missing entities; others resolved. */
   | { kind: "tag_associations_partial_ghost"; ghost: number; total: number }
   /** Dual-typo path with a cold topology cache — `asset_ids` were not validated. */
-  | { kind: "asset_ids_unverified" };
+  | { kind: "asset_ids_unverified" }
+  /** Upstream tag rows had missing/empty id or name fields and were skipped. */
+  | { kind: "malformed_tag_rows"; count: number };
 
 export interface ListTopologyResponse {
   tree: TopologyNode[];
