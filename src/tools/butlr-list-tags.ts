@@ -161,10 +161,9 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
   // actually supplied. `include_entities` defaults to false at the schema
   // layer so it's always set on `args`; treat the all-defaults case as
   // "no filter applied".
-  const explicitFilters = { ...args };
-  if (explicitFilters.include_entities === false) {
-    delete (explicitFilters as Partial<typeof args>).include_entities;
-  }
+  const { include_entities, ...rest } = args;
+  const explicitFilters: Record<string, unknown> = { ...rest };
+  if (include_entities === true) explicitFilters.include_entities = true;
   if (Object.keys(explicitFilters).length > 0) {
     response.filtered_by = explicitFilters;
   }

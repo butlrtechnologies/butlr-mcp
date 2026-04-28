@@ -1,7 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { GET_FULL_TOPOLOGY, GET_ALL_SENSORS, GET_ALL_HIVES } from "../clients/queries/topology.js";
-import { GET_TAGS_WITH_USAGE, type RawTagWithUsage } from "../clients/queries/tags.js";
+import {
+  GET_TAGS_WITH_USAGE,
+  type RawTagWithUsage,
+  type TagMatch,
+} from "../clients/queries/tags.js";
 import type {
   SitesResponse,
   Site,
@@ -100,10 +104,7 @@ type ListTopologyArgs = z.output<typeof ListTopologyArgsSchema>;
  * tagged within its own type — and the resulting per-type sets are unioned
  * into a flat ID set suitable for `filterTopologyByAssets`.
  */
-function collectTaggedEntityIds(
-  resolvedRows: RawTagWithUsage[],
-  match: "all" | "any"
-): Set<string> {
+function collectTaggedEntityIds(resolvedRows: RawTagWithUsage[], match: TagMatch): Set<string> {
   const matched = new Set<string>();
   if (resolvedRows.length === 0) return matched;
 
@@ -136,21 +137,22 @@ function collectTaggedEntityIds(
  * equal to) the supplied `rootIds`. Used to compose `asset_ids` with
  * `tag_names` as a true subtree-overlap AND.
  *
- * Per R3 §1 (initial fix) and R4 (symmetric expansion): closure must be
- * applied to BOTH asset_ids AND tagged-entity IDs because a tag can sit on
- * an ancestor of an asset (e.g. tag on Floor 1, asset_ids=[room_001]) — the
- * room is then inside the tagged subtree even though their raw IDs don't
- * intersect. Closure-vs-closure intersection captures that overlap.
+ * The closure is applied to BOTH asset_ids AND tagged-entity IDs because a
+ * tag can sit on an ancestor of an asset (e.g. tag on Floor 1,
+ * `asset_ids=[room_001]`) — the room is then inside the tagged subtree even
+ * though their raw IDs don't intersect. A literal-id intersection would
+ * silently miss this overlap; closure-vs-closure intersection catches it.
  *
  * Coverage by entity type:
  *   site      → site + every building/floor/room/zone/hive/sensor under it
  *   building  → building + every floor/room/zone/hive/sensor under it
  *   floor     → floor + its rooms, zones, hives, sensors
- *   room      → room + sensors/hives whose room_id points at it (devices
- *               are attached to floors in the in-memory topology, but
- *               logically belong to their room_id room when one is set)
+ *   room      → room + room_id-bound zones, sensors, hives — and
+ *               transitively, every sensor whose `hive_serial` matches a
+ *               room-bound hive's `serialNumber` (devices live in floor
+ *               arrays but logically belong to their room when bound)
  *   zone      → zone alone
- *   hive      → hive alone
+ *   hive      → hive + sensors with matching `hive_serial`
  *   sensor    → sensor alone
  */
 function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
@@ -191,7 +193,7 @@ function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
         // the formatter renders those entities under the room. Both
         // snake_case (`room_id`) and camelCase (`roomID`) link fields are
         // checked because the upstream API and cached payloads can carry
-        // either shape (per R5 §2; mirrors src/utils/tree-formatter.ts).
+        // either shape (mirrors `formatRoom` in src/utils/tree-formatter.ts).
         for (const room of floor.rooms ?? []) {
           if (!target.has(room.id)) continue;
           closure.add(room.id);
@@ -201,14 +203,14 @@ function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
           for (const sensor of floor.sensors ?? []) {
             if ((sensor.room_id ?? sensor.roomID) === room.id) closure.add(sensor.id);
           }
-          // Per R6: sensors reach a room two ways — directly via room_id, or
+          // Sensors reach a room two ways: directly via room_id, or
           // transitively through a room-bound hive (sensor.hive_serial ===
           // hive.serialNumber). The formatter renders both shapes under the
-          // room (tree-formatter.ts:310 nests sensors under hives by
-          // hive_serial, and a hive nests under its room by room_id), so
-          // closure must follow the same chain. Otherwise a sensor with no
-          // direct room link but attached to a room-bound hive falls out
-          // of the room's tag closure entirely.
+          // room (`formatHive`'s `hiveSensors` filter nests sensors under
+          // hives by `hive_serial`, and a hive nests under its room by
+          // `room_id`), so the closure must follow the same chain.
+          // Otherwise a sensor with no direct room link but attached to a
+          // room-bound hive falls out of the room's tag closure entirely.
           for (const hive of floor.hives ?? []) {
             if ((hive.room_id ?? hive.roomID) !== room.id) continue;
             closure.add(hive.id);
@@ -224,12 +226,12 @@ function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
         for (const hive of floor.hives ?? []) {
           if (!target.has(hive.id)) continue;
           closure.add(hive.id);
-          // Per R3 §3.2: defensive symmetry with the room→hive→sensor
-          // chain above. Tags can't currently attach to sensors per the
-          // GraphQL schema, so this branch has no observable effect on
-          // current data, but it closes the symmetric-closure invariant
-          // claimed in the comment block above and matches what the
-          // formatter renders under a hive (formatHive children).
+          // Defensive symmetry with the room→hive→sensor chain above.
+          // Tags can't currently attach to sensors per the GraphQL schema,
+          // so this branch has no observable effect on current data — but
+          // it closes the symmetric-closure invariant claimed in the
+          // doc-block and matches what `formatHive` renders under a hive.
+          // Do NOT delete thinking it's vestigial.
           if (!hive.serialNumber) continue;
           for (const sensor of floor.sensors ?? []) {
             if (sensor.hive_serial === hive.serialNumber) closure.add(sensor.id);
@@ -254,10 +256,11 @@ export async function executeListTopology(
   const traversalDepth = args.traversal_depth ?? 0;
   const assetIds = args.asset_ids ?? [];
   const tagNames = args.tag_names ?? [];
-  // Per R2 §2.4: default is "any" here, in contrast to butlr_available_rooms
-  // which defaults to "all". The asymmetry is intentional — list-topology
+  // Default is "any" here, in contrast to butlr_available_rooms which
+  // defaults to "all". The asymmetry is intentional — list-topology
   // filters across rooms/zones/floors where intersection is rarely
-  // satisfied; available-rooms filters a single entity type. Don't unify.
+  // satisfied; available-rooms filters a single entity type. Do not
+  // unify these defaults via a shared helper.
   const tagMatch = args.tag_match ?? "any";
 
   debug(
@@ -481,17 +484,18 @@ export async function executeListTopology(
     }
   }
 
-  // Per R3 §1 + R4: compose asset_ids and tag_names as a true AND via
-  // subtree-overlap intersection. Both sides are expanded to their full
-  // descendant closure (including sensors/hives, plus devices bound to a
-  // targeted room via room_id). Two surviving closures are then intersected
-  // — this catches the case where a tag sits on an ancestor of an asset
-  // (e.g. tag on a floor, asset_ids=[room_001] within that floor) which a
-  // raw-ID intersection would miss.
+  // Compose asset_ids and tag_names as a true AND via subtree-overlap
+  // intersection. Both sides are expanded to their full descendant closure
+  // (including sensors/hives, plus devices bound to a targeted room via
+  // room_id). The two surviving closures are intersected — this catches
+  // the case where a tag sits on an ancestor of an asset (e.g. tag on a
+  // floor, `asset_ids=[room_001]` within that floor) which a raw-ID
+  // intersection would miss.
   //
-  // assetScopeEmpty / assetTagDisjoint are tracked separately so the
-  // empty-tree warning can distinguish "asset_ids didn't resolve in this
-  // org" from "filters scope disjoint subtrees" (R3 §2).
+  // `assetScopeEmpty` and `assetTagDisjoint` are tracked separately so
+  // the empty-tree warning can distinguish "asset_ids didn't resolve in
+  // this org" from "filters scope disjoint subtrees" — the former is a
+  // typo, the latter is a legitimate disagreement.
   let filterIds: string[] | undefined;
   let assetScopeEmpty = false;
   let assetTagDisjoint = false;

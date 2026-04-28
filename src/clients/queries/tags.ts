@@ -12,16 +12,37 @@ import { gql } from "@apollo/client";
  * Branded string types for tag identifiers.
  *
  * The Butlr API filter `roomsByTag` accepts tag *IDs*, not tag *names*.
- * These two are both `string` at runtime, which previously led to silent
- * filter failures when names were sent in the IDs slot. Branding them keeps
- * the distinction visible at the type level so the wrong one cannot be
- * passed by accident.
+ * Both are `string` at runtime, which previously led to silent filter
+ * failures when names were sent in the IDs slot. Branding them keeps the
+ * distinction visible at the type level so the wrong one cannot be passed
+ * by accident.
  */
 export type TagId = string & { readonly __brand: "TagId" };
 export type TagName = string & { readonly __brand: "TagName" };
 
-export const asTagId = (value: string): TagId => value as TagId;
-export const asTagName = (value: string): TagName => value as TagName;
+/** Multi-tag composition mode shared across every tag-aware tool surface. */
+export type TagMatch = "all" | "any";
+
+/**
+ * Brand a string as a tag id. Throws on empty/whitespace-only input — the
+ * brand exists to catch "wrong slot" mistakes at compile time, but a blank
+ * value would brand cleanly and slip through. Constructors that accept
+ * arbitrary strings need a runtime check too.
+ */
+export const asTagId = (value: string): TagId => {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Invalid TagId: expected a non-empty string, got ${JSON.stringify(value)}`);
+  }
+  return value as TagId;
+};
+
+/** Brand a string as a tag name. Same empty-input guard as `asTagId`. */
+export const asTagName = (value: string): TagName => {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Invalid TagName: expected a non-empty string, got ${JSON.stringify(value)}`);
+  }
+  return value as TagName;
+};
 
 /**
  * Shape of each tagged-entity reference returned by `GET_TAGS_WITH_USAGE`.

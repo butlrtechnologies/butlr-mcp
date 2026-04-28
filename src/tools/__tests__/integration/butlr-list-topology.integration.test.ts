@@ -1250,6 +1250,109 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toContain("does-not-exist");
     });
 
+    // L5 regression: when asset_ids targets a SITE, the closure must
+    // include every descendant (down to sensors) so a tag on a deep room
+    // intersects the asset closure correctly. Pins the site-level
+    // early-continue branch in expandToSubtreeClosure.
+    it("matches descendants when asset_ids targets a site with tag on a deep room", async () => {
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["site_001"],
+        tag_names: ["huddle"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // huddle is on room_001 (deep inside site_001). Site-level closure
+      // pulls in everything; intersection with huddle's closure yields
+      // room_001 + room-bound bindings.
+      expect(flattenIds(result.tree)).toContain("room_001");
+      expect(result.warnings).toBeUndefined();
+    });
+
+    // L5 regression: same intent, building-level. Pins the building-level
+    // early-continue branch in expandToSubtreeClosure.
+    it("matches descendants when asset_ids targets a building with tag on a deep sensor", async () => {
+      // Use a tag on the floor so its closure pulls in floor's sensors.
+      const tagsOnFloor = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_floor",
+            name: "deep-floor",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [],
+            floors: [{ __typename: "Floor", id: "space_001", name: "Floor 1" }],
+          },
+        ],
+      };
+      setupTagFilteredMocks(tagsOnFloor);
+
+      const result = await executeListTopology({
+        asset_ids: ["building_001"], // ancestor of sensor_001
+        tag_names: ["deep-floor"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // Building-level closure pulls in every descendant; floor-level tag
+      // also covers all descendants. Intersection contains the sensor.
+      expect(flattenIds(result.tree)).toContain("sensor_001");
+      expect(result.warnings).toBeUndefined();
+    });
+
+    // L5 regression: hive.roomID (camelCase) closure path — the existing
+    // tests cover sensor and zone camelCase variants, but the hive variant
+    // is the gate for the entire R6 transitive sensor chain. Without this
+    // test, a regression that only checks `hive.room_id` would silently
+    // drop room-bound hives whose link arrives as `roomID`.
+    it("matches sensors via room-bound hive when hive uses camelCase roomID (no snake_case)", async () => {
+      const sensorViaHive = {
+        sensors: {
+          data: [
+            {
+              id: "sensor_via_camel_hive",
+              mac_address: "aa:bb:cc:dd:ee:88",
+              mode: "presence",
+              floor_id: "space_001",
+              hive_serial: "HIVE001",
+              is_online: true,
+              is_entrance: false,
+            },
+          ],
+        },
+      };
+      const hiveCamelCase = {
+        hives: {
+          data: [
+            {
+              id: "hive_camel_001",
+              serialNumber: "HIVE001",
+              floor_id: "space_001",
+              roomID: "room_001", // camelCase only — no snake_case room_id
+              isOnline: true,
+              installed: true,
+            },
+          ],
+        },
+      };
+      setupTagFilteredMocks(undefined, undefined, sensorViaHive, hiveCamelCase);
+
+      const result = await executeListTopology({
+        asset_ids: ["sensor_via_camel_hive"],
+        tag_names: ["huddle"], // huddle on room_001
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      // Closure walks: huddle → room_001 → camelCase-bound hive_camel_001
+      // → its sensors via hive_serial → sensor_via_camel_hive.
+      expect(flattenIds(result.tree)).toContain("sensor_via_camel_hive");
+      expect(result.warnings).toBeUndefined();
+    });
+
     // H1 regression: butlr_search_assets and butlr_list_topology cache to
     // SEPARATE keys (devicesMerged true vs false). A search-assets-primed
     // cache must NOT cause list-topology to read a device-incomplete shape

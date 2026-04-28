@@ -2,6 +2,7 @@ import {
   asTagId,
   asTagName,
   type TagId,
+  type TagMatch,
   type TagName,
   type TaggedEntityRef,
 } from "../clients/queries/tags.js";
@@ -24,7 +25,7 @@ export interface ResolveTagNamesInput<Row extends { id: string; name: string }> 
   /** Names supplied by the caller (case-insensitive match against `allTags[].name`). */
   requestedNames: string[];
   /** Multi-tag semantics — only affects the `unsatisfiable` discriminant for unknown tags. */
-  match: "all" | "any";
+  match: TagMatch;
 }
 
 /**

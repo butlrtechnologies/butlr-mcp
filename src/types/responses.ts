@@ -6,6 +6,7 @@
  */
 
 import type { Capacity, Area } from "../clients/types.js";
+import type { TagMatch } from "../clients/queries/tags.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -180,7 +181,7 @@ export type TopologyDiagnostic =
   /** `tag_match='all'` cannot be satisfied because at least one tag is unknown. */
   | { kind: "tag_match_all_unsatisfiable"; unknown_names: string[] }
   /** Every supplied tag resolved but none have associated entities. */
-  | { kind: "tag_no_associations"; tag_match: "all" | "any"; tag_names: string[] }
+  | { kind: "tag_no_associations"; tag_match: TagMatch; tag_names: string[] }
   /** `asset_ids` did not resolve to any entity in the org. */
   | { kind: "asset_scope_empty"; asset_ids: string[] }
   /** `asset_ids` and `tag_names` both resolved but their subtrees do not overlap. */
@@ -202,7 +203,7 @@ export interface ListTopologyResponse {
     asset_filter: string[] | "all";
     tag_filter?: {
       names: string[];
-      match: "all" | "any";
+      match: TagMatch;
     };
   };
   timestamp: string;
