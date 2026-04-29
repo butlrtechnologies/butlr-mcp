@@ -1229,6 +1229,40 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).not.toMatch(/disjoint subtrees/i);
     });
 
+    // R6 §1 regression: the all-ghost diagnostic must NOT fire when the
+    // tree is empty due to depth slicing rather than missing entities.
+    // ghostKind is computed from `ghostTagCount === taggedEntityIds.size`,
+    // anchored on the merged-topology presentIds walk — independent of
+    // `tree.length` / starting_depth / traversal_depth. A future refactor
+    // that re-couples the diagnostic to the rendered tree would fire
+    // `tag_associations_all_ghost` falsely for a real-but-deviceless
+    // tagged entity queried at sensors-level depth.
+    it("does NOT emit all-ghost diagnostic when tree is empty due to depth slicing", async () => {
+      // Empty sensors + hives → after merge every floor has sensors=[] /
+      // hives=[]. starting_depth=5 (sensors level) renders nothing.
+      setupTagFilteredMocks(
+        undefined,
+        undefined,
+        { sensors: { data: [] } },
+        { hives: { data: [] } }
+      );
+
+      const result = await executeListTopology({
+        tag_names: ["huddle"], // huddle is on real room_001 in the default fixture
+        starting_depth: 5,
+        traversal_depth: 0,
+      });
+
+      expect(result.tree).toEqual([]);
+      // room_001 IS in the merged topology — empty tree is a depth artefact,
+      // not a deletion artefact. No structured ghost diagnostic, no prose.
+      expect(result.warnings ?? []).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "tag_associations_all_ghost" })])
+      );
+      expect(result.warning ?? "").not.toMatch(/none are present in the active topology/i);
+      expect(result.warning ?? "").not.toMatch(/may have been deleted/i);
+    });
+
     // M5 regression: warnings[] is a discriminated union of TopologyDiagnostic
     // — programmatic consumers branch on `kind`. The legacy `warning` string
     // is rendered from the same set so the two are always in lock-step.
