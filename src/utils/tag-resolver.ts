@@ -17,6 +17,19 @@ import {
  * Keeping this helper a pure function over an already-fetched row list lets
  * each caller fetch the minimum shape it needs without forcing the helper
  * to know about Apollo or GraphQL queries.
+ *
+ * Returns a discriminated union — callers MUST switch on `kind` before
+ * touching the resolved arms:
+ *   - `ok`             — at least one requested name resolved; `match='all'`
+ *                        on this branch implies every name resolved.
+ *   - `no_match`       — every requested name was unknown. Distinct from
+ *                        `unsatisfiable` so callers can emit "no matching
+ *                        tags found" instead of a misleading "cannot satisfy
+ *                        AND" when only one input was sent.
+ *   - `unsatisfiable`  — `match='all'` with at least one resolved AND at
+ *                        least one unknown. The resolved subset is hidden
+ *                        from the union to prevent a caller from silently
+ *                        broadening to `match='any'` semantics.
  */
 
 export interface ResolveTagNamesInput<Row extends { id: string; name: string }> {

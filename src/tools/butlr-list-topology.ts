@@ -270,6 +270,11 @@ function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
           // it closes the symmetric-closure invariant claimed in the
           // doc-block and matches what `formatHive` renders under a hive.
           // Do NOT delete thinking it's vestigial.
+          //
+          // If the GraphQL schema later supports sensor-level tags, drop
+          // the "no observable effect" phrasing — the branch becomes
+          // load-bearing and a regression here would silently miss
+          // sensor-targeted tag composition.
           if (!hive.serialNumber) continue;
           for (const sensor of floor.sensors ?? []) {
             if (sensor.hive_serial === hive.serialNumber) closure.add(sensor.id);
@@ -614,9 +619,15 @@ export async function executeListTopology(
   // was missing from this response. Surfacing tag_associations_*_ghost
   // in that state would be a false positive — the partial_topology
   // diagnostic already alerts the caller that the data is incomplete.
+  // Hoist into a single narrowed binding so neither the gate nor the
+  // emission needs `!` non-null assertions. TS narrows `taggedSize`
+  // structurally — a future refactor that drops the early return on
+  // `taggedEntityIds.size === 0` cannot accidentally re-introduce the
+  // unsound `!.size` reads.
+  const taggedSize = taggedEntityIds?.size ?? 0;
   const ghostKind: "all" | "partial" | "none" =
-    taggedEntityIds && taggedEntityIds.size > 0
-      ? ghostTagCount === taggedEntityIds.size
+    taggedSize > 0
+      ? ghostTagCount === taggedSize
         ? "all"
         : ghostTagCount > 0
           ? "partial"
@@ -626,13 +637,13 @@ export async function executeListTopology(
     if (ghostKind === "all") {
       diagnostics.push({
         kind: "tag_associations_all_ghost",
-        total: taggedEntityIds!.size,
+        total: taggedSize,
       });
     } else if (ghostKind === "partial") {
       diagnostics.push({
         kind: "tag_associations_partial_ghost",
         ghost: ghostTagCount,
-        total: taggedEntityIds!.size,
+        total: taggedSize,
       });
     }
   }
@@ -790,8 +801,18 @@ function buildTopologyResponse(args: {
 }
 
 /**
- * Merge sensors and hives into topology structure
- * Groups by floor_id and nests under appropriate floors
+ * Merge sensors and hives into topology structure.
+ * Groups by floor_id and nests under appropriate floors.
+ *
+ * IN-PLACE MUTATION: assigns `floor.sensors` and `floor.hives` directly on
+ * the input site tree (returned for chaining; no new array is allocated).
+ * The cache writer relies on this mutation completing BEFORE
+ * `setCachedTopology` runs — single-threaded execution guarantees that
+ * today, but a future Apollo cache-restore refactor (or any reader that
+ * forks the sites tree before merge) would observe the un-merged shape.
+ * If you change this to immutable assignment, also audit the cache write
+ * site (`setCachedTopology(cacheKey, { sites })`) to make sure the merged
+ * tree is the one that reaches the cache.
  */
 function mergeSensorsAndHivesIntoTopology(
   sites: Site[],

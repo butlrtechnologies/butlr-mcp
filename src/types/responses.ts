@@ -162,28 +162,39 @@ export interface TrafficFlowResponse {
 // butlr_list_topology
 // ---------------------------------------------------------------------------
 
-/** Ultra-compact tree node: [id, displayName] or [id, displayName, children] */
-export type TopologyNode = [string, string] | [string, string, TopologyNode[]];
+/**
+ * Ultra-compact tree node: [id, displayName] or [id, displayName, children].
+ *
+ * The tuple shape is intentionally `readonly`: nodes are emitted as a
+ * response surface and consumers should not mutate them.
+ */
+export type TopologyNode =
+  | readonly [string, string]
+  | readonly [string, string, ReadonlyArray<TopologyNode>];
 
 /**
  * Structured diagnostic emitted by `butlr_list_topology`. Callers should
  * branch on `kind` instead of parsing the prose `warning` string. The
  * prose `warning` remains the human-readable rendering of the same set —
  * both fields describe the same condition.
+ *
+ * Per S3: every embedded array is `readonly` because diagnostics are part
+ * of the public response surface; mutating one would alter the response
+ * after `executeListTopology` returns.
  */
 export type TopologyDiagnostic =
   /** Upstream returned errors alongside data; tree may be incomplete. */
   | { kind: "partial_topology" }
   /** Every supplied `tag_names` was unknown — no tag-side match possible. */
-  | { kind: "tag_no_match"; unknown_names: string[] }
+  | { kind: "tag_no_match"; unknown_names: ReadonlyArray<string> }
   /** One or more `tag_names` did not resolve; the resolved subset still applies. */
-  | { kind: "unknown_tags"; names: string[] }
+  | { kind: "unknown_tags"; names: ReadonlyArray<string> }
   /** `tag_match='all'` cannot be satisfied because at least one tag is unknown. */
-  | { kind: "tag_match_all_unsatisfiable"; unknown_names: string[] }
+  | { kind: "tag_match_all_unsatisfiable"; unknown_names: ReadonlyArray<string> }
   /** Every supplied tag resolved but none have associated entities. */
-  | { kind: "tag_no_associations"; tag_match: TagMatch; tag_names: string[] }
+  | { kind: "tag_no_associations"; tag_match: TagMatch; tag_names: ReadonlyArray<string> }
   /** `asset_ids` did not resolve to any entity in the org. */
-  | { kind: "asset_scope_empty"; asset_ids: string[] }
+  | { kind: "asset_scope_empty"; asset_ids: ReadonlyArray<string> }
   /** `asset_ids` and `tag_names` both resolved but their subtrees do not overlap. */
   | { kind: "asset_tag_disjoint" }
   /** Every tagged-entity association points at entities missing from the active topology. */
@@ -196,13 +207,13 @@ export type TopologyDiagnostic =
   | { kind: "malformed_tag_rows"; count: number };
 
 export interface ListTopologyResponse {
-  tree: TopologyNode[];
+  tree: ReadonlyArray<TopologyNode>;
   query_params: {
     starting_depth: number;
     traversal_depth: number;
-    asset_filter: string[] | "all";
+    asset_filter: ReadonlyArray<string> | "all";
     tag_filter?: {
-      names: string[];
+      names: ReadonlyArray<string>;
       match: TagMatch;
     };
   };
@@ -210,8 +221,8 @@ export interface ListTopologyResponse {
   /** Human-readable summary of every diagnostic emitted; back-compat with v0.1.x. */
   warning?: string;
   /** Structured diagnostics — preferred over `warning` for programmatic consumers. */
-  warnings?: TopologyDiagnostic[];
-  unknown_tags?: string[];
+  warnings?: ReadonlyArray<TopologyDiagnostic>;
+  unknown_tags?: ReadonlyArray<string>;
 }
 
 // ---------------------------------------------------------------------------
