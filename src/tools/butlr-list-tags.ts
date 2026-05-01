@@ -8,7 +8,7 @@ import {
 } from "../clients/queries/tags.js";
 import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
 import { projectValidRefs } from "../utils/tag-resolver.js";
-import { withToolErrorHandling } from "../errors/mcp-errors.js";
+import { withToolErrorHandling, throwInternalError } from "../errors/mcp-errors.js";
 import { debug } from "../utils/debug.js";
 
 const listTagsInputShape = {
@@ -112,7 +112,7 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
     // `?? []` would silently equate the two, hiding a real signal.
     const tags = result.data?.tags;
     if (tags !== null && tags !== undefined && !Array.isArray(tags)) {
-      throw new Error(
+      throwInternalError(
         "Unexpected response shape from tags query (expected array, got " +
           `${typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
       );

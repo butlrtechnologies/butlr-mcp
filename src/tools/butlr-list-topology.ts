@@ -32,7 +32,7 @@ import {
 } from "../utils/graphql-helpers.js";
 import { resolveTagNames, projectValidRefs } from "../utils/tag-resolver.js";
 import { debug } from "../utils/debug.js";
-import { withToolErrorHandling } from "../errors/mcp-errors.js";
+import { withToolErrorHandling, throwInternalError } from "../errors/mcp-errors.js";
 import type { ListTopologyResponse, TopologyDiagnostic } from "../types/responses.js";
 
 const LIST_TOPOLOGY_DESCRIPTION =
@@ -342,7 +342,7 @@ export async function executeListTopology(
       throwIfGraphQLErrors(tagsResult);
       const tags = tagsResult.data?.tags;
       if (tags !== null && tags !== undefined && !Array.isArray(tags)) {
-        throw new Error(
+        throwInternalError(
           "Unexpected response shape from tags query (expected array, got " +
             `${typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
         );
@@ -789,14 +789,26 @@ function renderDiagnostic(d: TopologyDiagnostic): string {
       );
     default: {
       // Exhaustiveness guard — adding a new TopologyDiagnostic arm without
-      // a matching case here will fail to compile because `_exhaustive`
-      // would no longer be `never`. Don't rely on `noImplicitReturns`
-      // alone; this throws loudly if a future refactor relaxes the
-      // tsconfig invariant.
-      const _exhaustive: never = d;
-      throw new Error(`Unhandled TopologyDiagnostic kind: ${JSON.stringify(_exhaustive)}`);
+      // a matching case here fails to compile because `assertNever` only
+      // accepts `never`. At runtime we degrade gracefully with a fallback
+      // string rather than throw, so version skew (e.g. an older bundle
+      // reads a diagnostic kind written by a newer one over a shared
+      // cache or transport) doesn't crash the response renderer.
+      assertNever(d);
+      const unknownKind = (d as { kind?: string }).kind ?? "unspecified";
+      return `Unknown diagnostic kind: ${unknownKind}`;
     }
   }
+}
+
+/**
+ * Compile-time exhaustiveness assertion. The argument's type must be
+ * `never`; if any caller's narrowing leaves an unhandled case, TS rejects
+ * the call. Returns nothing so the surrounding switch can still fall
+ * through to a runtime fallback (see `renderDiagnostic`).
+ */
+function assertNever(_value: never): void {
+  /* compile-time guard only */
 }
 
 /**

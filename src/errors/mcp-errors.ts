@@ -187,6 +187,22 @@ export function formatMCPError(error: MCPError): string {
 }
 
 /**
+ * Throw a properly MCP-formatted INTERNAL_ERROR. Use for upstream contract
+ * violations (unexpected response shape, missing data envelope, etc.) so
+ * the failure surfaces with a structured `[INTERNAL_ERROR]` prefix that
+ * `withToolErrorHandling` translates uniformly. Without this, every tool
+ * would have a different error-shape contract for the same class of bug.
+ */
+export function throwInternalError(message: string): never {
+  const mcpError: MCPError = {
+    code: MCPErrorCode.INTERNAL_ERROR,
+    message,
+    retryable: true,
+  };
+  throw new Error(formatMCPError(mcpError));
+}
+
+/**
  * Error subclass for MCP errors — provides stack traces and works with instanceof checks.
  */
 export class MCPValidationError extends Error {

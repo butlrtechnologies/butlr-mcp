@@ -11,21 +11,7 @@ import { GET_TAGS_MINIMAL, type TagName } from "../clients/queries/tags.js";
 import { resolveTagNames } from "../utils/tag-resolver.js";
 import type { AvailableRoom, AvailableRoomsResponse, BuildingContext } from "../types/responses.js";
 import { debug } from "../utils/debug.js";
-import {
-  withToolErrorHandling,
-  formatMCPError,
-  MCPErrorCode,
-  type MCPError,
-} from "../errors/mcp-errors.js";
-
-function throwInternalError(message: string): never {
-  const mcpError: MCPError = {
-    code: MCPErrorCode.INTERNAL_ERROR,
-    message,
-    retryable: true,
-  };
-  throw new Error(formatMCPError(mcpError));
-}
+import { withToolErrorHandling, throwInternalError } from "../errors/mcp-errors.js";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const availableRoomsInputShape = {

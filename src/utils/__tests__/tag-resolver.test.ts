@@ -272,6 +272,18 @@ describe("asTagId / asTagName", () => {
   it("throws on whitespace-only for TagName", () => {
     expect(() => asTagName("   ")).toThrow(/Invalid TagName/);
   });
+
+  // The runtime guards also reject non-string input. TS signatures make
+  // non-string callers unreachable through the type system, but a
+  // dangerous-cast (`null as unknown as string`) or a JSON-deserialized
+  // payload could land here. Symmetric-coverage with the typeof check.
+  it("throws on null for TagId", () => {
+    expect(() => asTagId(null as unknown as string)).toThrow(/Invalid TagId/);
+  });
+
+  it("throws on null for TagName", () => {
+    expect(() => asTagName(null as unknown as string)).toThrow(/Invalid TagName/);
+  });
 });
 
 describe("projectValidRefs", () => {
