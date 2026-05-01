@@ -12,7 +12,13 @@ vi.mock("../../../clients/graphql-client.js", () => ({
 
 describe("butlr_list_tags - Integration", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // mockReset (not just clearAllMocks) is required to drain leftover
+    // `mockResolvedValueOnce` entries between tests — clearAllMocks
+    // resets call history but not the once-queue. Today this file uses
+    // `mockResolvedValue` (not `Once`) so leakage is bounded, but a
+    // future test that adds a once-queued chain would otherwise leak
+    // into the next test under `clearAllMocks` alone.
+    vi.mocked(apolloClient.query).mockReset();
   });
 
   describe("Default (no args)", () => {

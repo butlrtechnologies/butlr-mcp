@@ -107,7 +107,17 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
     });
 
     throwIfGraphQLErrors(result);
-    rawTags = result.data?.tags ?? [];
+    // Distinguish "empty array" (legitimate — org has no tags) from
+    // "null" (upstream contract violation — should be `[]` if empty).
+    // `?? []` would silently equate the two, hiding a real signal.
+    const tags = result.data?.tags;
+    if (tags !== null && tags !== undefined && !Array.isArray(tags)) {
+      throw new Error(
+        "Unexpected response shape from tags query (expected array, got " +
+          `${typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
+      );
+    }
+    rawTags = tags ?? [];
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
     throw error;

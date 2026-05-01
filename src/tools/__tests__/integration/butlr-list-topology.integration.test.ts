@@ -564,11 +564,11 @@ describe("butlr_list_topology - Integration", () => {
       expect(ids).not.toContain("room_003");
     });
 
-    // Per R1 §2.3: 3-tag intersection exercises the fold loop in
-    // collectTaggedEntityIds at i >= 2 — a 2-tag test only exercises i=1.
-    // Designed so the third tag is load-bearing: focus ∩ broad already
-    // contains room_003, and only the third tag (executive) prunes it.
-    // A fence-post that skips i=2 leaves room_003 in and pulls Floor 2 in.
+    // 3-tag intersection exercises the fold loop in collectMatchAwareClosure
+    // at i >= 2 — a 2-tag test only exercises i=1. Designed so the third tag
+    // is load-bearing: focus ∩ broad already contains room_003, and only the
+    // third tag (executive) prunes it. A fence-post that skips i=2 leaves
+    // room_003 in and pulls Floor 2 in.
     it("tag_match='all' folds intersection across 3+ tags", async () => {
       setupTagFilteredMocks();
 
@@ -685,6 +685,17 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.tree).toEqual([]);
       expect(result.warning).toMatch(/No rooms, zones, or floors are currently tagged/i);
       expect(apolloClient.query).toHaveBeenCalledTimes(1);
+      // Lock the structured discriminant alongside the prose — programmatic
+      // consumers branch on warnings[].kind, not regex on warning.
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "tag_no_associations",
+            tag_match: "any",
+            tag_names: ["unused"],
+          }),
+        ])
+      );
     });
 
     // Per R4: when a tag sits on an ANCESTOR of an asset_ids entry, the
@@ -1707,6 +1718,81 @@ describe("butlr_list_topology - Integration", () => {
       // NOT surface as tag_associations_all_ghost.
       expect(kinds).not.toContain("tag_associations_all_ghost");
       expect(kinds).not.toContain("tag_associations_partial_ghost");
+    });
+
+    // Symmetric to the ghost suppression: under partialData, the
+    // disjointness was computed against a truncated topology and is a
+    // false signal. The actionable diagnostic is partial_topology, not
+    // "remove a filter."
+    it("does NOT emit asset_tag_disjoint when partial_topology fired", async () => {
+      // Same setup as the ghost-suppression test: huddle tag → room_001,
+      // partial topology missing room_001, plus an asset_ids filter that
+      // would intersect-empty with the truncated tag closure.
+      const partialTopo = {
+        sites: {
+          data: [
+            {
+              id: "site_001",
+              name: "HQ",
+              timezone: "America/New_York",
+              org_id: "org_001",
+              buildings: [
+                {
+                  id: "building_001",
+                  name: "Main",
+                  site_id: "site_001",
+                  floors: [
+                    {
+                      id: "space_001",
+                      name: "Floor 1",
+                      building_id: "building_001",
+                      rooms: [{ id: "room_002", name: "Conf B", floorID: "space_001" }],
+                      zones: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      };
+
+      vi.mocked(apolloClient.query)
+        .mockResolvedValueOnce({
+          data: buildTagsFixture(),
+          loading: false,
+          networkStatus: 7,
+        } as any)
+        .mockResolvedValueOnce({
+          data: partialTopo,
+          error: new Error("Partial: floors truncated"),
+          loading: false,
+          networkStatus: 7,
+        } as any)
+        .mockResolvedValueOnce({
+          data: { sensors: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        } as any)
+        .mockResolvedValueOnce({
+          data: { hives: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        } as any);
+
+      const result = await executeListTopology({
+        asset_ids: ["room_002"], // real room in the partial fetch
+        tag_names: ["huddle"], // huddle → room_001, missing from partial fetch
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const kinds = (result.warnings ?? []).map((w) => w.kind);
+      expect(kinds).toContain("partial_topology");
+      // Disjoint computation here is a false signal — the tag closure
+      // was empty only because the relevant entity was outside the
+      // partial fetch. partial_topology is the actionable diagnostic.
+      expect(kinds).not.toContain("asset_tag_disjoint");
     });
   });
 });

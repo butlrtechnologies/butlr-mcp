@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { projectValidRefs, resolveTagNames } from "../tag-resolver.js";
+import { asTagId, asTagName } from "../../clients/queries/tags.js";
 
 interface TagRow {
   id: string;
@@ -208,6 +209,68 @@ describe("resolveTagNames", () => {
     // First-write-wins: tag_a resolved, tag_b dropped.
     expect(result.resolvedRows.map((r) => r.id)).toEqual(["tag_a"]);
     expect(result.droppedRowCount).toBe(1);
+  });
+
+  // Single-tag match='all' is the trivial degenerate case but resolveTagNames
+  // produces a different code path than multi-tag (no fold needed). A
+  // regression that early-returns `unsatisfiable` whenever match='all' with
+  // requestedNames.length === 1 would silently break this case.
+  it("returns ok for single-tag match='all' (degenerate case)", () => {
+    const result = resolveTagNames({
+      allTags,
+      requestedNames: ["huddle"],
+      match: "all",
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.resolvedIds).toEqual(["tag_a"]);
+    expect(result.unknownNames).toEqual([]);
+  });
+
+  // Empty requestedNames under match='all' must fall through to ok with
+  // empty arrays — documented in the function header. A future refactor
+  // that orders an "empty requestedNames" guard before the match='all'
+  // branch could push this case into unsatisfiable.
+  it("returns ok with empty arrays for empty requestedNames under match='all'", () => {
+    const result = resolveTagNames({
+      allTags,
+      requestedNames: [],
+      match: "all",
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.resolvedIds).toEqual([]);
+    expect(result.unknownNames).toEqual([]);
+  });
+});
+
+describe("asTagId / asTagName", () => {
+  it("brands a non-empty string as TagId", () => {
+    const id = asTagId("tag_real_001");
+    expect(id).toBe("tag_real_001");
+  });
+
+  it("brands a non-empty string as TagName", () => {
+    const name = asTagName("huddle");
+    expect(name).toBe("huddle");
+  });
+
+  it("throws on empty string for TagId", () => {
+    expect(() => asTagId("")).toThrow(/Invalid TagId/);
+  });
+
+  it("throws on whitespace-only for TagId", () => {
+    expect(() => asTagId("   ")).toThrow(/Invalid TagId/);
+  });
+
+  it("throws on empty string for TagName", () => {
+    expect(() => asTagName("")).toThrow(/Invalid TagName/);
+  });
+
+  it("throws on whitespace-only for TagName", () => {
+    expect(() => asTagName("   ")).toThrow(/Invalid TagName/);
   });
 });
 

@@ -267,7 +267,9 @@ const GET_ALL_ROOMS = gql`
 /**
  * Execute available rooms tool
  */
-export async function executeAvailableRooms(args: AvailableRoomsArgs) {
+export async function executeAvailableRooms(
+  args: AvailableRoomsArgs
+): Promise<AvailableRoomsResponse> {
   debug("available-rooms", "Finding available rooms with filters:", JSON.stringify(args, null, 2));
 
   // Query rooms based on scope
@@ -318,6 +320,16 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       });
       throwIfGraphQLErrors(tagsResult);
 
+      // Distinguish "empty array" (legitimate — org has no tags) from
+      // "null" (upstream contract violation — should be `[]` if empty).
+      const allTags = tagsResult.data?.tags;
+      if (allTags !== null && allTags !== undefined && !Array.isArray(allTags)) {
+        throwInternalError(
+          "Unexpected response shape from tags query (expected array, got " +
+            `${typeof allTags}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
+      }
+
       // Apply tag_match default at the call site so direct invocations
       // (tests bypassing Zod parsing, downstream programmatic callers)
       // get the same semantics as the schema default.
@@ -330,7 +342,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       // semantics described in each tool's description string.
       const tagMatch = args.tag_match ?? "all";
       const resolution = resolveTagNames({
-        allTags: tagsResult.data?.tags ?? [],
+        allTags: allTags ?? [],
         requestedNames: args.tags,
         match: tagMatch,
       });

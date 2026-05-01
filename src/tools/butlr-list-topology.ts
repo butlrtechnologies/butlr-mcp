@@ -5,6 +5,7 @@ import {
   GET_TAGS_WITH_USAGE,
   type RawTagWithUsage,
   type TagMatch,
+  type TagName,
 } from "../clients/queries/tags.js";
 import type {
   SitesResponse,
@@ -322,7 +323,12 @@ export async function executeListTopology(
   // Defaults to [] for the no-tag-filter path; only the live tag-resolution
   // branch reads from `resolution.unknownNames` (passed directly into
   // buildTopologyResponse on early-return) so we don't keep an alias here.
-  let unknownTagNames: string[] = [];
+  // Typed as `TagName[]` to preserve the brand from the resolver through
+  // to the response surface. `ListTopologyResponse.unknown_tags` declares
+  // ReadonlyArray<string> so the brand erodes at the boundary today (a
+  // separate type-design item), but at least the in-flight binding doesn't
+  // launder it any earlier than necessary.
+  let unknownTagNames: TagName[] = [];
   let tagWarning: TopologyDiagnostic | undefined;
   let malformedTagRowCount = 0;
 
@@ -334,7 +340,14 @@ export async function executeListTopology(
         fetchPolicy: "network-only",
       });
       throwIfGraphQLErrors(tagsResult);
-      tagsRaw = tagsResult.data?.tags ?? [];
+      const tags = tagsResult.data?.tags;
+      if (tags !== null && tags !== undefined && !Array.isArray(tags)) {
+        throw new Error(
+          "Unexpected response shape from tags query (expected array, got " +
+            `${typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
+      }
+      tagsRaw = tags ?? [];
     } catch (error: unknown) {
       rethrowIfGraphQLError(error);
       throw error;
@@ -659,14 +672,18 @@ export async function executeListTopology(
   // the disjointness only exists because the tag's closure has nothing
   // to intersect with. Suppress it under all-ghost so the user gets the
   // actionable root cause ("your tag is dangling"), not the symptom.
-  // Suppress disjoint only when the all-ghost diagnostic is actually
-  // EMITTED — under partialData we skip the ghost emission and the
-  // disjointness becomes the most actionable signal we still have.
+  //
+  // Suppress disjoint also under `partialData`: the disjointness was
+  // computed against a truncated topology, so it's a false signal — the
+  // tag's subtree might exist outside this partial fetch. The
+  // `partial_topology` diagnostic already alerts the caller that the
+  // data is incomplete; routing them to "remove a filter" would be
+  // misdirection.
   const allGhostEmitted = !partialData && ghostKind === "all";
   if (tree.length === 0 && assetIds.length > 0) {
     if (assetScopeEmpty) {
       diagnostics.push({ kind: "asset_scope_empty", asset_ids: assetIds });
-    } else if (assetTagDisjoint && !allGhostEmitted) {
+    } else if (assetTagDisjoint && !allGhostEmitted && !partialData) {
       diagnostics.push({ kind: "asset_tag_disjoint" });
     }
   }
@@ -770,6 +787,15 @@ function renderDiagnostic(d: TopologyDiagnostic): string {
         `${d.count} tag row(s) skipped — upstream returned entries with ` +
         "missing or empty id/name fields. If unexpected, contact support."
       );
+    default: {
+      // Exhaustiveness guard — adding a new TopologyDiagnostic arm without
+      // a matching case here will fail to compile because `_exhaustive`
+      // would no longer be `never`. Don't rely on `noImplicitReturns`
+      // alone; this throws loudly if a future refactor relaxes the
+      // tsconfig invariant.
+      const _exhaustive: never = d;
+      throw new Error(`Unhandled TopologyDiagnostic kind: ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }
 
@@ -783,7 +809,7 @@ function buildTopologyResponse(args: {
   tree: ListTopologyResponse["tree"];
   queryParams: ListTopologyResponse["query_params"];
   diagnostics: TopologyDiagnostic[];
-  unknownTagNames: string[];
+  unknownTagNames: ReadonlyArray<TagName>;
 }): ListTopologyResponse {
   const response: ListTopologyResponse = {
     tree: args.tree,

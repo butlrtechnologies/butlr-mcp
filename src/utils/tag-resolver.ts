@@ -172,7 +172,7 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
  * Filter a tagged-entity ref list to only entries with a usable `id`, and
  * drop the optional `name` when upstream omits it. Used by both
  * `butlr_list_tags` (`applied_to_entities` projection) and
- * `butlr_list_topology` (`collectTaggedEntityIds` per-type filter) so the
+ * `butlr_list_topology` (`collectDirectTaggedIds` + `collectMatchAwareClosure`) so the
  * "what counts as a non-dangling ref" predicate lives in one place — they
  * cannot drift apart, and the count + entity arrays produced from the same
  * filtered list are guaranteed to agree.
