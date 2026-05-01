@@ -187,6 +187,28 @@ describe("resolveTagNames", () => {
     if (result.kind !== "no_match") return;
     expect(result.droppedRowCount).toBe(1);
   });
+
+  // C3 regression: case-insensitively duplicate canonical names previously
+  // last-write-wins'd silently. Resolution depended on upstream order — a
+  // user-facing nondeterminism — and the conflict didn't surface in
+  // droppedRowCount. Fix: first-write-wins + count the dup so it bubbles
+  // up as malformed_tag_rows alongside null/empty rows.
+  it("treats duplicate case-insensitive names as malformed (deterministic + surfaced)", () => {
+    const result = resolveTagNames({
+      allTags: [
+        { id: "tag_a", name: "Huddle" },
+        { id: "tag_b", name: "huddle" }, // canonical-equal to tag_a
+      ],
+      requestedNames: ["huddle"],
+      match: "any",
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    // First-write-wins: tag_a resolved, tag_b dropped.
+    expect(result.resolvedRows.map((r) => r.id)).toEqual(["tag_a"]);
+    expect(result.droppedRowCount).toBe(1);
+  });
 });
 
 describe("projectValidRefs", () => {

@@ -271,6 +271,9 @@ export async function executeListTopology(
   // Resolve tag filter (if any) up-front so we can short-circuit on
   // unsatisfiable / no-match cases without paying for the topology fetch.
   let taggedEntityIds: Set<string> | undefined;
+  // Defaults to [] for the no-tag-filter path; only the live tag-resolution
+  // branch reads from `resolution.unknownNames` (passed directly into
+  // buildTopologyResponse on early-return) so we don't keep an alias here.
   let unknownTagNames: string[] = [];
   let tagWarning: TopologyDiagnostic | undefined;
   let malformedTagRowCount = 0;
@@ -294,7 +297,6 @@ export async function executeListTopology(
       requestedNames: tagNames,
       match: tagMatch,
     });
-    unknownTagNames = resolution.unknownNames;
 
     const baseQueryParams = {
       starting_depth: startingDepth,
@@ -370,6 +372,7 @@ export async function executeListTopology(
 
     // resolution.kind === "ok" — safe to read resolvedRows / resolvedIds.
     const { resolvedRows, unknownNames } = resolution;
+    unknownTagNames = unknownNames;
 
     taggedEntityIds = collectTaggedEntityIds(resolvedRows, tagMatch);
 
@@ -500,6 +503,11 @@ export async function executeListTopology(
   let assetScopeEmpty = false;
   let assetTagDisjoint = false;
 
+  // Both single-filter paths use the closure too — `pruneFloorToMatches`
+  // strict-prunes by raw IDs, so passing only `room_001` would return the
+  // room with empty zones/hives/sensors. Closure-expand to include the
+  // descendants the formatter would render (zones bound to the room,
+  // sensors via room_id, sensors via the hive_serial chain, etc.).
   if (assetIds.length > 0) {
     const assetClosure = expandToSubtreeClosure(sites, assetIds);
     assetScopeEmpty = assetClosure.size === 0;
@@ -513,10 +521,10 @@ export async function executeListTopology(
       }
       filterIds = intersection;
     } else {
-      filterIds = assetIds;
+      filterIds = [...assetClosure];
     }
   } else if (taggedEntityIds && taggedEntityIds.size > 0) {
-    filterIds = [...taggedEntityIds];
+    filterIds = [...expandToSubtreeClosure(sites, [...taggedEntityIds])];
   }
 
   let filteredSites = sites;
@@ -551,6 +559,13 @@ export async function executeListTopology(
   // branch so a dual-cause empty tree (bad asset_ids AND ghost tag) doesn't
   // mask the underlying ghost-association problem behind a misleading
   // "disjoint subtrees" warning.
+  //
+  // Gate emission on `!partialData`: when the topology fetch returned
+  // partial results, `presentIds` is built off a truncated tree, so an
+  // entity could appear "ghost" purely because its enclosing site/floor
+  // was missing from this response. Surfacing tag_associations_*_ghost
+  // in that state would be a false positive — the partial_topology
+  // diagnostic already alerts the caller that the data is incomplete.
   const ghostKind: "all" | "partial" | "none" =
     taggedEntityIds && taggedEntityIds.size > 0
       ? ghostTagCount === taggedEntityIds.size
@@ -559,27 +574,40 @@ export async function executeListTopology(
           ? "partial"
           : "none"
       : "none";
-  if (ghostKind === "all") {
-    diagnostics.push({
-      kind: "tag_associations_all_ghost",
-      total: taggedEntityIds!.size,
-    });
-  } else if (ghostKind === "partial") {
-    diagnostics.push({
-      kind: "tag_associations_partial_ghost",
-      ghost: ghostTagCount,
-      total: taggedEntityIds!.size,
-    });
+  if (!partialData) {
+    if (ghostKind === "all") {
+      diagnostics.push({
+        kind: "tag_associations_all_ghost",
+        total: taggedEntityIds!.size,
+      });
+    } else if (ghostKind === "partial") {
+      diagnostics.push({
+        kind: "tag_associations_partial_ghost",
+        ghost: ghostTagCount,
+        total: taggedEntityIds!.size,
+      });
+    }
   }
 
-  // Asset-side diagnostic — mutually exclusive within `assetIds.length>0`.
-  // Skip when the empty tree is already explained by an all-ghost tag
-  // (root-cause attribution): "your tag is dangling" is more actionable
-  // than "your filters disagree" when the latter is a downstream symptom.
-  if (tree.length === 0 && assetIds.length > 0 && ghostKind !== "all") {
+  // Asset-side diagnostics — `asset_scope_empty` and `asset_tag_disjoint`
+  // are mutually exclusive within `assetIds.length>0`.
+  //
+  // `asset_scope_empty` is an INDEPENDENT root cause: a typo'd asset_id
+  // is still wrong even if the tag is also dangling. Surface both so the
+  // user can fix them in one round-trip.
+  //
+  // `asset_tag_disjoint` IS a downstream symptom of an all-ghost tag —
+  // the disjointness only exists because the tag's closure has nothing
+  // to intersect with. Suppress it under all-ghost so the user gets the
+  // actionable root cause ("your tag is dangling"), not the symptom.
+  // Suppress disjoint only when the all-ghost diagnostic is actually
+  // EMITTED — under partialData we skip the ghost emission and the
+  // disjointness becomes the most actionable signal we still have.
+  const allGhostEmitted = !partialData && ghostKind === "all";
+  if (tree.length === 0 && assetIds.length > 0) {
     if (assetScopeEmpty) {
       diagnostics.push({ kind: "asset_scope_empty", asset_ids: assetIds });
-    } else if (assetTagDisjoint) {
+    } else if (assetTagDisjoint && !allGhostEmitted) {
       diagnostics.push({ kind: "asset_tag_disjoint" });
     }
   }

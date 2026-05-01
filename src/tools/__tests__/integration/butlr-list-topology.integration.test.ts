@@ -449,6 +449,25 @@ describe("butlr_list_topology - Integration", () => {
       // from a genuinely empty subtree.
       expect(result.warning).toMatch(/asset_ids matched no entities/i);
     });
+
+    // C1 regression: single-filter asset_ids must closure-expand so descendants
+    // (room-bound sensors, zones, hives, sensors-via-hive) survive
+    // pruneFloorToMatches's strict-by-id filter. Pre-fix, asset_ids=["room_001"]
+    // returned the room with empty zones/hives/sensors.
+    it("asset_ids=[room] returns the room AND its room-bound descendants (closure expansion)", async () => {
+      setupFullTopologyMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["room_001"], // sensor_001 has room_id=room_001 in the default fixture
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      // sensor_001.room_id === room_001 — must survive single-filter pruning.
+      expect(ids).toContain("sensor_001");
+    });
   });
 
   describe("Test device filtering", () => {
@@ -1419,6 +1438,133 @@ describe("butlr_list_topology - Integration", () => {
       // Three calls: topology + sensors + hives. Search-assets-shape cache
       // was correctly ignored.
       expect(apolloClient.query).toHaveBeenCalledTimes(3);
+    });
+
+    // C1 regression: tag_names alone must closure-expand. Tag on a room →
+    // tagClosure includes the room's room-bound descendants. Pre-fix, the
+    // raw tagged-id set was passed to pruneFloorToMatches and the room was
+    // returned with empty children.
+    it("tag_names=[room-tag] returns the tagged room AND its room-bound descendants", async () => {
+      setupTagFilteredMocks(); // huddle is on room_001
+
+      const result = await executeListTopology({
+        tag_names: ["huddle"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("room_001");
+      // sensor_001.room_id === room_001 — must be in tagClosure of room_001.
+      expect(ids).toContain("sensor_001");
+    });
+
+    // C2 regression: when asset_ids is invalid AND every tag association is
+    // dangling, the response must surface BOTH diagnostics. Pre-fix, the
+    // ghostKind !== "all" gate suppressed the entire asset-side branch
+    // including asset_scope_empty (an independent root cause), forcing the
+    // user into two debug round-trips.
+    it("emits both asset_scope_empty AND tag_associations_all_ghost when both inputs fail", async () => {
+      const ghostTag = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_ghost_only",
+            name: "ghost-only-tag",
+            organization_id: "org_001",
+            rooms: [{ __typename: "Room", id: "room_does_not_exist", name: "Ghost" }],
+            zones: [],
+            floors: [],
+          },
+        ],
+      };
+      setupTagFilteredMocks(ghostTag);
+
+      const result = await executeListTopology({
+        asset_ids: ["asset_does_not_exist"],
+        tag_names: ["ghost-only-tag"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const kinds = (result.warnings ?? []).map((w) => w.kind);
+      expect(kinds).toContain("tag_associations_all_ghost");
+      expect(kinds).toContain("asset_scope_empty");
+    });
+
+    // I2 regression: partial_topology must suppress ghost diagnostics — the
+    // presentIds walk runs against truncated topology and would otherwise
+    // false-positive a tag whose entity is merely missing from THIS partial
+    // fetch. partial_topology already alerts the caller.
+    it("does NOT emit tag_associations_*_ghost when partial_topology fired", async () => {
+      // Topology with the tagged entity (room_001) MISSING from the
+      // partial response. The full topology contains it, but this fetch
+      // returns Floor 1 with only room_002.
+      const partialTopo = {
+        sites: {
+          data: [
+            {
+              id: "site_001",
+              name: "HQ",
+              timezone: "America/New_York",
+              org_id: "org_001",
+              buildings: [
+                {
+                  id: "building_001",
+                  name: "Main",
+                  site_id: "site_001",
+                  floors: [
+                    {
+                      id: "space_001",
+                      name: "Floor 1",
+                      building_id: "building_001",
+                      rooms: [{ id: "room_002", name: "Conf B", floorID: "space_001" }],
+                      zones: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      };
+
+      // Apollo-style { data, error } → partialData=true.
+      vi.mocked(apolloClient.query)
+        .mockResolvedValueOnce({
+          data: buildTagsFixture(),
+          loading: false,
+          networkStatus: 7,
+        } as any)
+        .mockResolvedValueOnce({
+          data: partialTopo,
+          error: new Error("Partial: floors truncated"),
+          loading: false,
+          networkStatus: 7,
+        } as any)
+        .mockResolvedValueOnce({
+          data: { sensors: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        } as any)
+        .mockResolvedValueOnce({
+          data: { hives: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        } as any);
+
+      const result = await executeListTopology({
+        tag_names: ["huddle"], // huddle → room_001, which is missing from this partial fetch
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const kinds = (result.warnings ?? []).map((w) => w.kind);
+      expect(kinds).toContain("partial_topology");
+      // room_001 is "missing" only because the fetch was partial — must
+      // NOT surface as tag_associations_all_ghost.
+      expect(kinds).not.toContain("tag_associations_all_ghost");
+      expect(kinds).not.toContain("tag_associations_partial_ghost");
     });
   });
 });

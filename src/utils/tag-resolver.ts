@@ -106,7 +106,19 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
       droppedRowCount++;
       continue;
     }
-    lookup.set(t.name.toLowerCase(), t);
+    const key = t.name.toLowerCase();
+    // First-write-wins on duplicate canonical names. If upstream returns
+    // two rows with case-insensitively equal names (e.g. "Huddle" and
+    // "huddle"), last-write would non-deterministically depend on
+    // upstream order and silently mask the upstream-contract violation.
+    // Treating the dup as a malformed row keeps resolution deterministic
+    // and surfaces the issue via the same droppedRowCount → malformed_tag_rows
+    // diagnostic that catches null/empty rows.
+    if (lookup.has(key)) {
+      droppedRowCount++;
+      continue;
+    }
+    lookup.set(key, t);
   }
 
   const resolvedRows: Row[] = [];
