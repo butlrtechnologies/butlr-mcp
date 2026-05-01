@@ -1492,6 +1492,148 @@ describe("butlr_list_topology - Integration", () => {
       expect(kinds).toContain("asset_scope_empty");
     });
 
+    // I1 regression (Track C): tag_match='all' across hierarchical levels
+    // must intersect per-tag SUBTREE closures, not raw per-type ID
+    // intersections. Pre-fix, a tag on Floor 1 AND a tag on a room inside
+    // Floor 1 yielded {} (per-type intersection: rooms ∩ floors = ∅) even
+    // though the user clearly meant "the room is in both tags' subtrees."
+    it("tag_match='all' across hierarchy levels intersects subtree closures, not raw IDs", async () => {
+      const hierarchicalTags = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_floor",
+            name: "floor-tag",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [],
+            // Tag the whole floor.
+            floors: [{ __typename: "Floor", id: "space_001", name: "Floor 1" }],
+          },
+          {
+            __typename: "Tag",
+            id: "tag_room",
+            name: "room-tag",
+            organization_id: "org_001",
+            // Tag a room INSIDE the tagged floor.
+            rooms: [{ __typename: "Room", id: "room_001", name: "Conf A" }],
+            zones: [],
+            floors: [],
+          },
+        ],
+      };
+      setupTagFilteredMocks(hierarchicalTags);
+
+      const result = await executeListTopology({
+        tag_names: ["floor-tag", "room-tag"],
+        tag_match: "all",
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      // room_001 is in BOTH subtrees: trivially in tag_room (direct) and
+      // in tag_floor (descendant of space_001). Closure-vs-closure
+      // intersection includes it; literal per-type intersection misses it.
+      expect(ids).toContain("room_001");
+      // No spurious diagnostics — this is a real, satisfiable filter.
+      expect(result.warnings ?? []).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "tag_no_associations" })])
+      );
+    });
+
+    // I3 regression: malformed_tag_rows must surface end-to-end. The tag
+    // resolver counts upstream-contract violations (null/empty id+name,
+    // case-insensitive duplicates) into droppedRowCount, and the topology
+    // tool plumbs that into the diagnostics array. A wiring regression
+    // (tool no longer reads droppedRowCount) would silently swallow the
+    // upstream signal.
+    it("surfaces malformed_tag_rows when the tags response contains malformed rows", async () => {
+      const tagsWithMalformed = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_real",
+            name: "real-tag",
+            organization_id: "org_001",
+            rooms: [{ __typename: "Room", id: "room_001", name: "Conf A" }],
+            zones: [],
+            floors: [],
+          },
+          // Two malformed rows: missing name and null id.
+          {
+            __typename: "Tag",
+            id: "tag_no_name",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [],
+            floors: [],
+          } as any,
+          {
+            __typename: "Tag",
+            id: null,
+            name: "ghost-id",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [],
+            floors: [],
+          } as any,
+        ],
+      };
+      setupTagFilteredMocks(tagsWithMalformed);
+
+      const result = await executeListTopology({
+        tag_names: ["real-tag"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const malformed = (result.warnings ?? []).find((w) => w.kind === "malformed_tag_rows");
+      expect(malformed).toEqual(expect.objectContaining({ kind: "malformed_tag_rows", count: 2 }));
+    });
+
+    // I4 regression: structured asset_ids_unverified discriminant must
+    // surface — not just the prose. PR contract is warnings[] for
+    // programmatic consumers; a prose reword would silently break clients
+    // if we only tested result.warning text.
+    it("emits structured asset_ids_unverified when topology cache is cold and tag is unknown", async () => {
+      // No prior call → cache cold. Dual-typo input.
+      setupTagsOnlyMock();
+
+      const result = await executeListTopology({
+        asset_ids: ["asset_does_not_exist"],
+        tag_names: ["does-not-exist"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const kinds = (result.warnings ?? []).map((w) => w.kind);
+      expect(kinds).toContain("tag_no_match");
+      expect(kinds).toContain("asset_ids_unverified");
+    });
+
+    // I5 regression: zone-as-target asset_ids must compose. The closure
+    // doc-block lists `zone → zone alone` as a closure rule; a regression
+    // that drops the leaf-zone branch in expandToSubtreeClosure would let
+    // zone-targeted asset_ids silently miss when composed with tag_names.
+    it("asset_ids=[zone] composes with a tag matching that zone", async () => {
+      // video tag → zone_001 in the default fixture; asset_ids=[zone_001].
+      setupTagFilteredMocks();
+
+      const result = await executeListTopology({
+        asset_ids: ["zone_001"],
+        tag_names: ["video"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      const ids = flattenIds(result.tree);
+      expect(ids).toContain("zone_001");
+      expect(result.warnings ?? []).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "asset_tag_disjoint" })])
+      );
+    });
+
     // I2 regression: partial_topology must suppress ghost diagnostics — the
     // presentIds walk runs against truncated topology and would otherwise
     // false-positive a tag whose entity is merely missing from THIS partial

@@ -40,7 +40,7 @@ const LIST_TOPOLOGY_DESCRIPTION =
   "Use starting_depth to choose which level to show, and traversal_depth to control how many levels below to include.\n\n" +
   "Tag filter:\n" +
   "- Pass tag_names (case-insensitive) to scope the tree to subtrees containing rooms, zones, or floors with those tags. Combines AND-style with asset_ids when both are supplied.\n" +
-  "- tag_match defaults to 'any' (entity tagged with at least one of the names) — note this differs from butlr_available_rooms, which defaults to 'all' because it filters a single entity type.\n" +
+  "- tag_match defaults to 'any' (entity is in any tagged subtree). 'all' intersects per-tag SUBTREES — e.g. a tag on Floor 1 AND a tag on a room inside Floor 1 yields the room (it's in both subtrees), not the empty set. Note this 'any' default differs from butlr_available_rooms, which defaults to 'all' because it filters a single entity type.\n" +
   "- Use butlr_list_tags to discover what tag vocabulary exists in this org.\n\n" +
   "Diagnostics:\n" +
   "- The response includes a `warning` field when a filter input doesn't fully resolve — typo'd asset_ids, unknown tag_names, asset_ids and tag_names scoping disjoint subtrees, or tag associations pointing at deleted entities. Read it before retrying.\n" +
@@ -99,37 +99,75 @@ export const ListTopologyArgsSchema = z.object(listTopologyInputShape).strict();
 type ListTopologyArgs = z.output<typeof ListTopologyArgsSchema>;
 
 /**
- * Build the union/intersection of tagged-entity IDs across resolved tag rows.
- * Intersection (`all`) is taken per entity type — a single entity can only be
- * tagged within its own type — and the resulting per-type sets are unioned
- * into a flat ID set suitable for `filterTopologyByAssets`.
+ * Union of every directly-tagged entity ID across the resolved tag rows,
+ * regardless of `match`. Used for:
+ *   1. Early "tag_no_associations" empty check (before topology fetch)
+ *   2. Ghost-association detection (count of direct IDs absent from topology)
+ *
+ * `match`-aware filtering — including the closure-of-each-tag intersection
+ * needed for `match='all'` across hierarchically-related tags (e.g. a tag
+ * on a floor and a tag on a room inside that floor) — happens later in
+ * `collectMatchAwareClosure`, which requires the topology to already be
+ * fetched.
  */
-function collectTaggedEntityIds(resolvedRows: RawTagWithUsage[], match: TagMatch): Set<string> {
+function collectDirectTaggedIds(resolvedRows: RawTagWithUsage[]): Set<string> {
   const matched = new Set<string>();
-  if (resolvedRows.length === 0) return matched;
-
-  const kinds = ["rooms", "zones", "floors"] as const;
-  for (const kind of kinds) {
-    // `projectValidRefs` drops refs whose `id` is null/undefined (stale
-    // tag→entity associations after a hard delete, or partial GraphQL
-    // responses) so they can't pollute the matched-id Set. Sharing the
-    // helper with `butlr_list_tags` keeps the validity predicate in one
-    // place — counts and entity arrays produced from the same filtered
-    // list cannot disagree across tools.
-    const sets = resolvedRows.map((row) => new Set(projectValidRefs(row[kind]).map((e) => e.id)));
-    let acc: Set<string>;
-    if (match === "all") {
-      acc = new Set(sets[0]);
-      for (let i = 1; i < sets.length; i++) {
-        for (const id of acc) if (!sets[i].has(id)) acc.delete(id);
-      }
-    } else {
-      acc = new Set();
-      for (const s of sets) for (const id of s) acc.add(id);
-    }
-    for (const id of acc) matched.add(id);
+  // `projectValidRefs` drops refs whose `id` is null/undefined (stale
+  // tag→entity associations after a hard delete, or partial GraphQL
+  // responses) so they can't pollute the matched-id Set. Sharing the
+  // helper with `butlr_list_tags` keeps the validity predicate in one
+  // place — counts and entity arrays produced from the same filtered
+  // list cannot disagree across tools.
+  for (const row of resolvedRows) {
+    for (const r of projectValidRefs(row.rooms)) matched.add(r.id);
+    for (const z of projectValidRefs(row.zones)) matched.add(z.id);
+    for (const f of projectValidRefs(row.floors)) matched.add(f.id);
   }
   return matched;
+}
+
+/**
+ * Per R7 §I1: compute the match-aware closure of the resolved tag rows
+ * against the active topology. Each tag's directly-tagged entity IDs are
+ * expanded to their full subtree closure (rooms→sensors-via-room_id,
+ * floors→all descendants, etc.) BEFORE applying the match operator. This
+ * makes `tag_match='all'` work across hierarchical levels — a tag on
+ * Floor 1 and a tag on Room A inside Floor 1 now intersect to
+ * {Room A + its descendants}, not the empty set the per-type literal
+ * intersection used to produce.
+ *
+ * Why split from `collectDirectTaggedIds`: the direct IDs are needed
+ * before the topology is fetched (to short-circuit on no-associations
+ * and to drive ghost detection); the closure-aware set requires sites.
+ * Splitting also keeps the ghost-count stable — closure entities are
+ * by construction in the topology walk, so basing ghosts on closure
+ * would always report zero.
+ */
+function collectMatchAwareClosure(
+  sites: Site[],
+  resolvedRows: RawTagWithUsage[],
+  match: TagMatch
+): Set<string> {
+  if (resolvedRows.length === 0) return new Set();
+
+  const perTagClosures = resolvedRows.map((row) => {
+    const rootIds: string[] = [];
+    for (const r of projectValidRefs(row.rooms)) rootIds.push(r.id);
+    for (const z of projectValidRefs(row.zones)) rootIds.push(z.id);
+    for (const f of projectValidRefs(row.floors)) rootIds.push(f.id);
+    return expandToSubtreeClosure(sites, rootIds);
+  });
+
+  if (match === "all") {
+    const acc = new Set(perTagClosures[0]);
+    for (let i = 1; i < perTagClosures.length; i++) {
+      for (const id of acc) if (!perTagClosures[i].has(id)) acc.delete(id);
+    }
+    return acc;
+  }
+  const acc = new Set<string>();
+  for (const c of perTagClosures) for (const id of c) acc.add(id);
+  return acc;
 }
 
 /**
@@ -271,6 +309,11 @@ export async function executeListTopology(
   // Resolve tag filter (if any) up-front so we can short-circuit on
   // unsatisfiable / no-match cases without paying for the topology fetch.
   let taggedEntityIds: Set<string> | undefined;
+  // Carry resolvedRows through to the composition phase so collectMatchAwareClosure
+  // can expand each tag's subtree before applying the match operator (per R7 §I1).
+  // The previous flow computed a literal per-type intersection up-front, which
+  // missed hierarchically-related tag pairs.
+  let resolvedTagRows: RawTagWithUsage[] | undefined;
   // Defaults to [] for the no-tag-filter path; only the live tag-resolution
   // branch reads from `resolution.unknownNames` (passed directly into
   // buildTopologyResponse on early-return) so we don't keep an alias here.
@@ -373,8 +416,9 @@ export async function executeListTopology(
     // resolution.kind === "ok" — safe to read resolvedRows / resolvedIds.
     const { resolvedRows, unknownNames } = resolution;
     unknownTagNames = unknownNames;
+    resolvedTagRows = resolvedRows;
 
-    taggedEntityIds = collectTaggedEntityIds(resolvedRows, tagMatch);
+    taggedEntityIds = collectDirectTaggedIds(resolvedRows);
 
     if (taggedEntityIds.size === 0) {
       return buildTopologyResponse({
@@ -508,12 +552,16 @@ export async function executeListTopology(
   // room with empty zones/hives/sensors. Closure-expand to include the
   // descendants the formatter would render (zones bound to the room,
   // sensors via room_id, sensors via the hive_serial chain, etc.).
+  //
+  // Tag-side closure uses `collectMatchAwareClosure` — for tag_match='all'
+  // it intersects per-tag subtree closures (R7 §I1), which makes
+  // hierarchical AND work correctly. For 'any' it unions them.
   if (assetIds.length > 0) {
     const assetClosure = expandToSubtreeClosure(sites, assetIds);
     assetScopeEmpty = assetClosure.size === 0;
 
-    if (taggedEntityIds && taggedEntityIds.size > 0) {
-      const tagClosure = expandToSubtreeClosure(sites, [...taggedEntityIds]);
+    if (resolvedTagRows && resolvedTagRows.length > 0) {
+      const tagClosure = collectMatchAwareClosure(sites, resolvedTagRows, tagMatch);
       const intersection: string[] = [];
       for (const id of assetClosure) if (tagClosure.has(id)) intersection.push(id);
       if (!assetScopeEmpty && intersection.length === 0) {
@@ -523,8 +571,8 @@ export async function executeListTopology(
     } else {
       filterIds = [...assetClosure];
     }
-  } else if (taggedEntityIds && taggedEntityIds.size > 0) {
-    filterIds = [...expandToSubtreeClosure(sites, [...taggedEntityIds])];
+  } else if (resolvedTagRows && resolvedTagRows.length > 0) {
+    filterIds = [...collectMatchAwareClosure(sites, resolvedTagRows, tagMatch)];
   }
 
   let filteredSites = sites;
