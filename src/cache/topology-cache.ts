@@ -24,12 +24,20 @@ export const topologyCache = new LRUCache<string, CacheEntry>({
 });
 
 /**
- * Generate cache key for topology queries
+ * Generate cache key for topology queries.
+ *
+ * `devicesMerged` is part of the key because two consumers prime this cache
+ * with different shapes: `butlr_list_topology` runs sensors/hives through
+ * `mergeSensorsAndHivesIntoTopology` (so every floor carries `sensors` and
+ * `hives` arrays); `butlr_search_assets` writes the raw `sites` tree
+ * unmodified. A device-aware reader cannot trust an unmerged entry, so the
+ * two shapes must live under separate keys.
  */
 export function generateTopologyCacheKey(
   orgId: string,
   includeDevices: boolean,
   includeZones: boolean,
+  devicesMerged: boolean,
   siteIds?: string[]
 ): string {
   const parts = ["topo", orgId];
@@ -40,6 +48,7 @@ export function generateTopologyCacheKey(
 
   parts.push(`devices:${includeDevices}`);
   parts.push(`zones:${includeZones}`);
+  parts.push(`merged:${devicesMerged}`);
 
   return parts.join(":");
 }
@@ -60,7 +69,15 @@ export function getCachedTopology(key: string): CacheEntry | undefined {
 }
 
 /**
- * Store topology data in cache
+ * Store topology data in cache.
+ *
+ * INVARIANT: callers MUST only cache COMPLETE topology. A partial fetch
+ * (Apollo `result.error` set, GraphQL returned errors alongside data) will
+ * silently launder its partiality through the cache otherwise — every
+ * subsequent cache-hit reader would treat the truncated tree as
+ * authoritative without seeing `partial_topology`. `butlr-list-topology`
+ * gates its `setCachedTopology` call on `!partialData`; any new caller
+ * must do the same.
  */
 export function setCachedTopology(key: string, data: Record<string, unknown>): void {
   const entry: CacheEntry = {

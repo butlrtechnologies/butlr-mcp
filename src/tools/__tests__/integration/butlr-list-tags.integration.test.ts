@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { CombinedGraphQLErrors } from "@apollo/client/errors";
 import { executeListTags } from "../../butlr-list-tags.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
+import { clearTopologyCache } from "../../../cache/topology-cache.js";
 import { loadGraphQLFixture } from "../../../__mocks__/apollo-client.js";
 
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -12,7 +13,18 @@ vi.mock("../../../clients/graphql-client.js", () => ({
 
 describe("butlr_list_tags - Integration", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // mockReset (not just clearAllMocks) is required to drain leftover
+    // `mockResolvedValueOnce` entries between tests — clearAllMocks
+    // resets call history but not the once-queue. Today this file uses
+    // `mockResolvedValue` (not `Once`) so leakage is bounded, but a
+    // future test that adds a once-queued chain would otherwise leak
+    // into the next test under `clearAllMocks` alone.
+    vi.mocked(apolloClient.query).mockReset();
+    // Defensive symmetry with the topology-test setup. `executeListTags`
+    // doesn't read the topology cache today, but if it ever did (e.g. a
+    // future include_topology_context flag), a stale cache from another
+    // worker's prior run would silently contaminate this suite.
+    clearTopologyCache();
   });
 
   describe("Default (no args)", () => {
@@ -133,6 +145,114 @@ describe("butlr_list_tags - Integration", () => {
 
       expect(result.tags.find((t) => t.name === "unused-tag")).toBeUndefined();
       expect(result.total).toBe(4);
+    });
+  });
+
+  describe("include_entities flag", () => {
+    it("omits applied_to_entities by default", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({});
+
+      for (const tag of result.tags) {
+        expect(tag.applied_to_entities).toBeUndefined();
+      }
+    });
+
+    it("returns id and name for every tagged room, zone, and floor when true", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ include_entities: true });
+
+      const huddle = result.tags.find((t) => t.name === "huddle");
+      expect(huddle?.applied_to_entities).toEqual({
+        rooms: [
+          { id: "room_000001", name: "Huddle Room A" },
+          { id: "room_000002", name: "Huddle Room B" },
+        ],
+        zones: [{ id: "zone_000005", name: "Huddle Zone" }],
+        floors: [{ id: "space_000001", name: "Huddle Floor" }],
+      });
+      // counts and entities stay consistent
+      expect(huddle?.applied_to.rooms).toBe(huddle?.applied_to_entities?.rooms.length);
+      expect(huddle?.applied_to.zones).toBe(huddle?.applied_to_entities?.zones.length);
+      expect(huddle?.applied_to.floors).toBe(huddle?.applied_to_entities?.floors.length);
+    });
+
+    it("returns empty arrays for tags with no associations", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ include_entities: true });
+
+      const unused = result.tags.find((t) => t.name === "unused-tag");
+      expect(unused?.applied_to_entities).toEqual({ rooms: [], zones: [], floors: [] });
+    });
+
+    // a dangling tag→entity association (deleted entity, partial
+    // GraphQL response) should be elided from both `applied_to_entities` and
+    // the `applied_to` count, not surfaced as { id: null } / inflated counts.
+    it("drops dangling tagged-entity refs (null id) from entities and counts", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: {
+          tags: [
+            {
+              __typename: "Tag",
+              id: "tag_dirty",
+              name: "dirty",
+              organization_id: "org_dirty",
+              rooms: [
+                { __typename: "Room", id: "room_real", name: "Real Room" },
+                { __typename: "Room", id: null, name: null },
+                { __typename: "Room", id: "" },
+              ],
+              zones: [{ __typename: "Zone", id: "zone_real" }],
+              floors: [],
+            },
+          ],
+        },
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ include_entities: true });
+
+      const dirty = result.tags.find((t) => t.name === "dirty");
+      expect(dirty?.applied_to_entities?.rooms).toEqual([{ id: "room_real", name: "Real Room" }]);
+      expect(dirty?.applied_to_entities?.zones).toEqual([{ id: "zone_real" }]);
+      // Counts must agree with the filtered entity arrays
+      expect(dirty?.applied_to).toEqual({ rooms: 1, zones: 1, floors: 0 });
+    });
+
+    it("composes with name_contains filter", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({
+        include_entities: true,
+        name_contains: "huddle",
+      });
+
+      expect(result.tags).toHaveLength(1);
+      expect(result.tags[0].applied_to_entities?.rooms).toHaveLength(2);
     });
   });
 

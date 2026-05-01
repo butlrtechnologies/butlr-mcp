@@ -7,30 +7,11 @@ import { getCurrentOccupancy } from "../clients/reporting-client.js";
 import { buildAvailableRoomsSummary } from "../utils/natural-language.js";
 import { getCachedOccupancy, setBulkCachedOccupancy } from "../cache/occupancy-cache.js";
 import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
-import {
-  GET_TAGS_MINIMAL,
-  asTagId,
-  asTagName,
-  type TagId,
-  type TagName,
-} from "../clients/queries/tags.js";
+import { GET_TAGS_MINIMAL, type TagName } from "../clients/queries/tags.js";
+import { resolveTagNames } from "../utils/tag-resolver.js";
 import type { AvailableRoom, AvailableRoomsResponse, BuildingContext } from "../types/responses.js";
 import { debug } from "../utils/debug.js";
-import {
-  withToolErrorHandling,
-  formatMCPError,
-  MCPErrorCode,
-  type MCPError,
-} from "../errors/mcp-errors.js";
-
-function throwInternalError(message: string): never {
-  const mcpError: MCPError = {
-    code: MCPErrorCode.INTERNAL_ERROR,
-    message,
-    retryable: true,
-  };
-  throw new Error(formatMCPError(mcpError));
-}
+import { withToolErrorHandling, throwInternalError } from "../errors/mcp-errors.js";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const availableRoomsInputShape = {
@@ -272,7 +253,9 @@ const GET_ALL_ROOMS = gql`
 /**
  * Execute available rooms tool
  */
-export async function executeAvailableRooms(args: AvailableRoomsArgs) {
+export async function executeAvailableRooms(
+  args: AvailableRoomsArgs
+): Promise<AvailableRoomsResponse> {
   debug("available-rooms", "Finding available rooms with filters:", JSON.stringify(args, null, 2));
 
   // Query rooms based on scope
@@ -323,26 +306,40 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       });
       throwIfGraphQLErrors(tagsResult);
 
-      const allTags = tagsResult.data?.tags ?? [];
-      // Lookup is keyed by lowercased name; values are typed TagIds so the
-      // resolver boundary cannot accidentally surface raw names downstream.
-      const lookup = new Map<string, TagId>(
-        allTags.map((t) => [t.name.toLowerCase(), asTagId(t.id)])
-      );
-
-      const resolvedIDs: TagId[] = [];
-      const unknownNames: TagName[] = [];
-      for (const rawName of args.tags) {
-        const name = asTagName(rawName);
-        const id = lookup.get(name.toLowerCase());
-        if (id) {
-          resolvedIDs.push(id);
-        } else {
-          unknownNames.push(name);
-        }
+      // Distinguish "empty array" (legitimate — org has no tags) from
+      // "null" (upstream contract violation — should be `[]` if empty).
+      const allTags = tagsResult.data?.tags;
+      if (allTags !== null && allTags !== undefined && !Array.isArray(allTags)) {
+        throwInternalError(
+          "Unexpected response shape from tags query (expected array, got " +
+            `${typeof allTags}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
       }
 
-      if (resolvedIDs.length === 0) {
+      // Apply tag_match default at the call site so direct invocations
+      // (tests bypassing Zod parsing, downstream programmatic callers)
+      // get the same semantics as the schema default.
+      //
+      // The default ("all") here DIFFERS from butlr_list_topology's
+      // default ("any") on purpose — available-rooms filters one entity type
+      // (rooms), where AND is intuitive; list-topology filters across rooms,
+      // zones, and floors, where AND is rarely satisfied. Do not unify these
+      // defaults via a shared helper without changing the user-facing
+      // semantics described in each tool's description string.
+      const tagMatch = args.tag_match ?? "all";
+      const resolution = resolveTagNames({
+        allTags: allTags ?? [],
+        requestedNames: args.tags,
+        match: tagMatch,
+      });
+
+      if (resolution.droppedRowCount > 0) {
+        warnings.push(
+          `${resolution.droppedRowCount} tag row(s) skipped — upstream returned entries with missing or empty id/name fields.`
+        );
+      }
+
+      if (resolution.kind === "no_match") {
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
           available_rooms: [],
@@ -350,18 +347,17 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
           showing: 0,
           timestamp: new Date().toISOString(),
           filtered_by: args,
-          unknown_tags: unknownNames,
+          unknown_tags: resolution.unknownNames,
           warning:
-            `No matching tags found in this org for: ${unknownNames.join(", ")}. ` +
+            `No matching tags found in this org for: ${resolution.unknownNames.join(", ")}. ` +
             "Use butlr_list_tags to see available tag names.",
         };
       }
 
-      // Under tag_match='all' (the default), an unresolved tag means the AND
-      // constraint is unsatisfiable — querying with the resolved subset would
-      // return a strictly broader result that silently answers a different
-      // question. Only continue-with-warning is safe under tag_match='any'.
-      if (unknownNames.length > 0 && args.tag_match !== "any") {
+      if (resolution.kind === "unsatisfiable") {
+        // Gate on the resolver's discriminant rather than re-deriving the
+        // all-vs-any rule inline, so the semantics live in one place
+        // (resolveTagNames) and can't drift between tools.
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
           available_rooms: [],
@@ -369,12 +365,15 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
           showing: 0,
           timestamp: new Date().toISOString(),
           filtered_by: args,
-          unknown_tags: unknownNames,
+          unknown_tags: resolution.unknownNames,
           warning:
-            `Cannot satisfy tag_match='all': unknown tag(s) ${unknownNames.join(", ")}. ` +
+            `Cannot satisfy tag_match='all': unknown tag(s) ${resolution.unknownNames.join(", ")}. ` +
             "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match rooms tagged with any of the supplied tags.",
         };
       }
+
+      // resolution.kind === "ok" — safe to read resolvedIds / resolvedRows.
+      const { resolvedIds, unknownNames } = resolution;
 
       if (unknownNames.length > 0) {
         unknownTagNames = unknownNames;
@@ -383,11 +382,11 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
         );
       }
 
-      const useOR = args.tag_match === "any";
+      const useOR = tagMatch === "any";
 
       const result = await apolloClient.query<{ roomsByTag: { data: Room[] } | null }>({
         query: GET_ROOMS_BY_TAG,
-        variables: { tagIDs: resolvedIDs, useOR },
+        variables: { tagIDs: resolvedIds, useOR },
         fetchPolicy: "network-only",
       });
       throwIfGraphQLErrors(result);
