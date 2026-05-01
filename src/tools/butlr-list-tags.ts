@@ -33,7 +33,7 @@ const listTagsInputShape = {
     .boolean()
     .default(false)
     .describe(
-      "When true, each tag's response includes `applied_to_entities` with the id and name of every tagged room, zone, and floor (not just counts). Default false to keep the default response token-light; set true when you need to know exactly which entities are tagged without follow-up calls."
+      "When true, each tag's response includes `applied_to_entities` with the id and name of every valid tagged room, zone, and floor (not just counts). Refs without a usable id (deleted entities whose tag link survived; partial GraphQL responses) are dropped silently — `applied_to.{rooms,zones,floors}` counts are derived from the SAME filtered list so they cannot disagree. Default false to keep the response token-light; set true when you need to know exactly which entities are tagged without follow-up calls."
     ),
 };
 
@@ -66,29 +66,29 @@ const LIST_TAGS_DESCRIPTION =
   "See Also: butlr_list_topology (tag_names filter for tagged subtrees), butlr_available_rooms (uses tag names from this tool), butlr_search_assets";
 
 export interface TagFootprint {
-  rooms: number;
-  zones: number;
-  floors: number;
+  readonly rooms: number;
+  readonly zones: number;
+  readonly floors: number;
 }
 
 export interface TaggedEntities {
-  rooms: TaggedEntityRef[];
-  zones: TaggedEntityRef[];
-  floors: TaggedEntityRef[];
+  readonly rooms: ReadonlyArray<TaggedEntityRef>;
+  readonly zones: ReadonlyArray<TaggedEntityRef>;
+  readonly floors: ReadonlyArray<TaggedEntityRef>;
 }
 
 export interface TagSummary {
-  id: string;
-  name: string;
-  applied_to: TagFootprint;
-  applied_to_entities?: TaggedEntities;
+  readonly id: string;
+  readonly name: string;
+  readonly applied_to: TagFootprint;
+  readonly applied_to_entities?: TaggedEntities;
 }
 
 export interface ListTagsResponse {
-  tags: TagSummary[];
-  total: number;
-  timestamp: string;
-  filtered_by?: Record<string, unknown>;
+  readonly tags: ReadonlyArray<TagSummary>;
+  readonly total: number;
+  readonly timestamp: string;
+  readonly filtered_by?: Record<string, unknown>;
 }
 
 function totalUsage(t: TagSummary): number {
@@ -134,19 +134,19 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
     const rooms = projectValidRefs(t.rooms);
     const zones = projectValidRefs(t.zones);
     const floors = projectValidRefs(t.floors);
-    const summary: TagSummary = {
-      id: t.id,
-      name: t.name,
-      applied_to: {
-        rooms: rooms.length,
-        zones: zones.length,
-        floors: floors.length,
-      },
+    const applied_to: TagFootprint = {
+      rooms: rooms.length,
+      zones: zones.length,
+      floors: floors.length,
     };
-    if (args.include_entities) {
-      summary.applied_to_entities = { rooms, zones, floors };
-    }
-    return summary;
+    return args.include_entities
+      ? {
+          id: t.id,
+          name: t.name,
+          applied_to,
+          applied_to_entities: { rooms, zones, floors },
+        }
+      : { id: t.id, name: t.name, applied_to };
   });
 
   if (args.name_contains) {
@@ -161,12 +161,6 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
 
   tags.sort((a, b) => totalUsage(b) - totalUsage(a));
 
-  const response: ListTagsResponse = {
-    tags,
-    total: tags.length,
-    timestamp: new Date().toISOString(),
-  };
-
   // Surface the args used to filter, but only when at least one filter was
   // actually supplied. `include_entities` defaults to false at the schema
   // layer so it's always set on `args`; treat the all-defaults case as
@@ -174,11 +168,14 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
   const { include_entities, ...rest } = args;
   const explicitFilters: Record<string, unknown> = { ...rest };
   if (include_entities === true) explicitFilters.include_entities = true;
-  if (Object.keys(explicitFilters).length > 0) {
-    response.filtered_by = explicitFilters;
-  }
+  const hasFilters = Object.keys(explicitFilters).length > 0;
 
-  return response;
+  return {
+    tags,
+    total: tags.length,
+    timestamp: new Date().toISOString(),
+    ...(hasFilters ? { filtered_by: explicitFilters } : {}),
+  };
 }
 
 export function registerListTags(server: McpServer): void {

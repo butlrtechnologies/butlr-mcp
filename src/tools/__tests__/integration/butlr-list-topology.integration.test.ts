@@ -445,7 +445,7 @@ describe("butlr_list_topology - Integration", () => {
       });
 
       expect(result.tree).toHaveLength(0);
-      // Per R3 §2: the warning helps the LLM distinguish typo'd asset_ids
+      // the warning helps the LLM distinguish typo'd asset_ids
       // from a genuinely empty subtree.
       expect(result.warning).toMatch(/asset_ids matched no entities/i);
     });
@@ -635,7 +635,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(flattenIds(result.tree)).toContain("room_001");
     });
 
-    // Per R1 §2.2: an upstream that returns a dangling { id: null } in a
+    // an upstream that returns a dangling { id: null } in a
     // tag→entity association must not crash or pull spurious entries into
     // the matched-id set. Real refs alongside the bad ones still resolve.
     it("ignores tagged-entity refs with null id when filtering the topology", async () => {
@@ -671,7 +671,7 @@ describe("butlr_list_topology - Integration", () => {
     });
 
     it("returns empty with warning when resolved tags have no associations", async () => {
-      // Per R3 §3.3: short-circuits on taggedEntityIds.size === 0 before the
+      // short-circuits on taggedEntityIds.size === 0 before the
       // topology fetch — queue only the tags mock and assert the call count
       // so a future regression that drops the short-circuit is caught here.
       setupTagsOnlyMock();
@@ -698,7 +698,7 @@ describe("butlr_list_topology - Integration", () => {
       );
     });
 
-    // Per R4: when a tag sits on an ANCESTOR of an asset_ids entry, the
+    // when a tag sits on an ANCESTOR of an asset_ids entry, the
     // asset is inside the tagged subtree and must qualify. A raw-ID
     // intersection (R3 v1) missed this because asset_ids and tagged_ids
     // didn't share a literal id. Symmetric closure expansion fixes it.
@@ -730,7 +730,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toBeUndefined();
     });
 
-    // Per R4: sensor/hive asset_ids must compose against floor-level tags.
+    // sensor/hive asset_ids must compose against floor-level tags.
     // The original closure did not include sensors/hives at all and would
     // misreport assetScopeEmpty even though the device exists.
     it("matches sensor/hive asset_ids when the tag is on the floor they live on", async () => {
@@ -761,7 +761,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toBeUndefined();
     });
 
-    // Per R4: a tag on a room implicitly covers devices bound to that
+    // a tag on a room implicitly covers devices bound to that
     // room via room_id, even though the topology attaches them at floor
     // level. asset_ids=[sensor_001] (room_id=room_001) + tag on room_001
     // should match.
@@ -781,7 +781,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toBeUndefined();
     });
 
-    // Per R5 §1: a zone with room_id pointing at a targeted room must be
+    // a zone with room_id pointing at a targeted room must be
     // pulled into the room's closure, mirroring the formatter's behaviour
     // (zones with roomID/room_id render as room children).
     it("matches asset_ids when the tag is on a room-bound zone (zone.room_id → room)", async () => {
@@ -851,7 +851,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toBeUndefined();
     });
 
-    // Per R5 §2: device room links may arrive as camelCase `roomID` instead
+    // device room links may arrive as camelCase `roomID` instead
     // of snake_case `room_id` (cached payloads, alternate API shape). The
     // closure must match the formatter and accept either.
     it("matches sensor asset_ids using camelCase roomID when the tag is on its room", async () => {
@@ -885,7 +885,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toBeUndefined();
     });
 
-    // Per R3 §3.5: when both inputs are typos, surface the asset_ids note
+    // when both inputs are typos, surface the asset_ids note
     // alongside the tag-typo warning — but only if we can verify cheaply
     // (warm topology cache). Without the cache we don't pay for a fetch
     // just for the diagnostic.
@@ -964,7 +964,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toMatch(/asset_ids were not validated/i);
     });
 
-    // Per R3 §3.1: a tag with associations to entities that aren't in
+    // a tag with associations to entities that aren't in
     // the active topology (deleted entity, test device filtered, etc.)
     // must produce an explanatory warning rather than a silent empty tree.
     it("warns when tag associations point at entities missing from the active topology", async () => {
@@ -994,7 +994,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toMatch(/butlr_list_tags/i);
     });
 
-    // Per R4 §3: a partial-ghost tag (some real, some absent) used to
+    // a partial-ghost tag (some real, some absent) used to
     // silently include the real entries and hide the dangling ones. Now
     // the response surfaces "N of M tag associations point at entities
     // outside the active topology" when the tree is non-empty.
@@ -1029,7 +1029,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toMatch(/1 of 2 tag associations point at entities outside/i);
     });
 
-    // Per R6: sensors reach a room transitively through a room-bound hive
+    // sensors reach a room transitively through a room-bound hive
     // (sensor.hive_serial → hive.serialNumber, hive.room_id → room). The
     // formatter renders such sensors under their hive under the room, so
     // they must be in the room's tag closure even without a direct
@@ -1079,7 +1079,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).toBeUndefined();
     });
 
-    // Per R3 §1: leaf-level asset_ids must AND with tag_names strictly.
+    // leaf-level asset_ids must AND with tag_names strictly.
     // filterTopologyByAssets's contextual expansion would otherwise leak
     // siblings of the asset_ids leaf — e.g. asset_ids=[room_002] expands
     // to Floor 1 with all rooms (incl. room_001), and a naive second-pass
@@ -1101,7 +1101,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).not.toMatch(/matched no entities/i);
     });
 
-    // Per R3 §2: invalid asset_ids must surface a clearer warning, not the
+    // invalid asset_ids must surface a clearer warning, not the
     // misleading "disjoint subtrees" — the asset_ids didn't resolve at all,
     // so there's no scope to be disjoint from.
     it("emits 'asset_ids matched no entities' (not 'disjoint') for invalid asset_ids alongside tag_names", async () => {
@@ -1119,7 +1119,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.warning).not.toMatch(/disjoint subtrees/i);
     });
 
-    // Per R1 §2.4: tag matches a room outside the asset_ids scope, no overlap.
+    // tag matches a room outside the asset_ids scope, no overlap.
     // Pins down the intersection semantics so a future refactor that turns
     // composition into a union would be caught (current test would still pass
     // because the in-scope tag also matches).
@@ -1136,7 +1136,7 @@ describe("butlr_list_topology - Integration", () => {
       expect(result.tree).toEqual([]);
       expect(result.query_params.asset_filter).toEqual(["space_002"]);
       expect(result.query_params.tag_filter).toEqual({ names: ["huddle"], match: "any" });
-      // Per R1 §2.7.2: disjoint scopes yield an explanatory warning so the
+      // Disjoint scopes yield an explanatory warning so the
       // caller can distinguish "filters disagree" from a generic empty-tree.
       expect(result.warning).toMatch(/disjoint subtrees/i);
     });
@@ -1793,6 +1793,156 @@ describe("butlr_list_topology - Integration", () => {
       // was empty only because the relevant entity was outside the
       // partial fetch. partial_topology is the actionable diagnostic.
       expect(kinds).not.toContain("asset_tag_disjoint");
+    });
+
+    // Depth-slicing diagnostic: filter resolved real entities, but the
+    // formatter window excluded all of them. Pre-fix, the user got
+    // tree:[] with no warning. Now there's a structured diagnostic that
+    // tells them to widen the depth window.
+    it("emits depth_excludes_matches when filter resolves but starting_depth slices everything out", async () => {
+      // huddle → room_001 (rooms live at depth 3). starting_depth=5
+      // (sensors) with traversal_depth=0 renders only sensors — and
+      // we pass an empty-sensors fixture so the floor has nothing at
+      // depth 5. Filter resolved (real room_001 in the closure), but
+      // tree comes back empty due to depth slicing.
+      setupTagFilteredMocks(
+        undefined,
+        undefined,
+        { sensors: { data: [] } },
+        { hives: { data: [] } }
+      );
+
+      const result = await executeListTopology({
+        tag_names: ["huddle"],
+        starting_depth: 5,
+        traversal_depth: 0,
+      });
+
+      expect(result.tree).toEqual([]);
+      const kinds = (result.warnings ?? []).map((w) => w.kind);
+      expect(kinds).toContain("depth_excludes_matches");
+      expect(result.warning ?? "").toMatch(/widen|lower starting_depth|raise traversal_depth/i);
+    });
+
+    // tag_match='all' with associations spanning all three entity types.
+    // Pre-fix per-type literal intersection couldn't hit this case
+    // correctly; verify the closure-aware implementation handles
+    // multi-type subtree composition.
+    it("tag_match='all' across rooms+zones+floors all resolves correctly", async () => {
+      const multiTypeTags = {
+        tags: [
+          {
+            __typename: "Tag",
+            id: "tag_floor_x",
+            name: "floor-x",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [],
+            floors: [{ __typename: "Floor", id: "space_001", name: "Floor 1" }],
+          },
+          {
+            __typename: "Tag",
+            id: "tag_room_x",
+            name: "room-x",
+            organization_id: "org_001",
+            rooms: [{ __typename: "Room", id: "room_001", name: "Conf A" }],
+            zones: [],
+            floors: [],
+          },
+          {
+            __typename: "Tag",
+            id: "tag_zone_x",
+            name: "zone-x",
+            organization_id: "org_001",
+            rooms: [],
+            zones: [{ __typename: "Zone", id: "zone_001", name: "Reception" }],
+            floors: [],
+          },
+        ],
+      };
+      setupTagFilteredMocks(multiTypeTags);
+
+      // floor-x ∩ room-x = {room_001 + descendants} (room_001 in floor closure)
+      // ∩ zone-x = ?  zone-x's closure is {zone_001}; room_001's subtree
+      // doesn't include zone_001 (different room). The 3-way intersection
+      // is empty. This locks the per-tag-closure intersection semantics.
+      const result = await executeListTopology({
+        tag_names: ["floor-x", "room-x", "zone-x"],
+        tag_match: "all",
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      // No tag_associations_*_ghost — every tag resolves to real entities.
+      const kinds = (result.warnings ?? []).map((w) => w.kind);
+      expect(kinds).not.toContain("tag_associations_all_ghost");
+    });
+
+    // tag_no_match standalone discriminant — locks the kind so a future
+    // refactor that merges tag_no_match and tag_no_associations into one
+    // diagnostic would fail.
+    it("emits structured tag_no_match when every tag is unknown", async () => {
+      setupTagsOnlyMock();
+
+      const result = await executeListTopology({
+        tag_names: ["does-not-exist", "also-not"],
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.tree).toEqual([]);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "tag_no_match",
+            unknown_names: ["does-not-exist", "also-not"],
+          }),
+        ])
+      );
+    });
+
+    // Empty asset_ids array vs. omitted — should be behaviorally identical
+    // (both fall through to "no asset filter"). A future refactor that
+    // changes the gate from `assetIds.length > 0` to `assetIds !== undefined`
+    // would break this, surfacing a misleading asset_scope_empty.
+    it("treats asset_ids: [] the same as omitting asset_ids", async () => {
+      setupFullTopologyMocks();
+
+      const result = await executeListTopology({
+        asset_ids: [],
+        starting_depth: 0,
+        traversal_depth: 0,
+      });
+
+      expect(result.tree).toHaveLength(1);
+      expect(result.warnings ?? []).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "asset_scope_empty" })])
+      );
+    });
+
+    // partialResolvedCount must surface on tag_match_all_unsatisfiable so
+    // the user can tell "1 of 2 unknown" from "0 of 2 unknown" (the
+    // latter is tag_no_match anyway, but the count is useful diagnostic).
+    it("emits partial_resolved_count on tag_match_all_unsatisfiable", async () => {
+      setupTagsOnlyMock();
+
+      const result = await executeListTopology({
+        tag_names: ["huddle", "does-not-exist"],
+        tag_match: "all",
+        starting_depth: 0,
+        traversal_depth: 10,
+      });
+
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "tag_match_all_unsatisfiable",
+            unknown_names: ["does-not-exist"],
+            partial_resolved_count: 1,
+          }),
+        ])
+      );
     });
   });
 });

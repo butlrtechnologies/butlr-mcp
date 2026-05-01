@@ -305,6 +305,19 @@ describe("projectValidRefs", () => {
     expect(projectValidRefs(undefined)).toEqual([]);
   });
 
+  it("returns empty array when every ref is invalid (all dropped)", () => {
+    const refs = [
+      { id: null as unknown as string },
+      { id: "" },
+      { id: undefined as unknown as string },
+    ];
+
+    const result = projectValidRefs(refs);
+    // Locks the all-dropped path — a regression that returns [null] or
+    // shrinks-but-keeps-some would show up here.
+    expect(result).toEqual([]);
+  });
+
   it("drops the optional name field when upstream returns a non-string", () => {
     const refs = [{ id: "room_001", name: 42 as unknown as string }];
 

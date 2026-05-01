@@ -48,6 +48,13 @@ export const asTagName = (value: string): TagName => {
  * Shape of each tagged-entity reference returned by `GET_TAGS_WITH_USAGE`.
  * `name` is best-effort: older API responses or partial entity records may
  * omit it, so consumers must treat it as optional.
+ *
+ * Both `id` and `name` are runtime-guarded against partial GraphQL
+ * responses by `projectValidRefs` (src/utils/tag-resolver.ts) — refs with
+ * a missing/null/empty `id` are dropped, and a missing `name` is elided
+ * from the projection. Consumers should route through `projectValidRefs`
+ * rather than reading the fields directly, even though the type declares
+ * `id` as required.
  */
 export interface TaggedEntityRef {
   id: string;

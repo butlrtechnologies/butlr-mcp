@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { CombinedGraphQLErrors } from "@apollo/client/errors";
 import { executeListTags } from "../../butlr-list-tags.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
+import { clearTopologyCache } from "../../../cache/topology-cache.js";
 import { loadGraphQLFixture } from "../../../__mocks__/apollo-client.js";
 
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -19,6 +20,11 @@ describe("butlr_list_tags - Integration", () => {
     // future test that adds a once-queued chain would otherwise leak
     // into the next test under `clearAllMocks` alone.
     vi.mocked(apolloClient.query).mockReset();
+    // Defensive symmetry with the topology-test setup. `executeListTags`
+    // doesn't read the topology cache today, but if it ever did (e.g. a
+    // future include_topology_context flag), a stale cache from another
+    // worker's prior run would silently contaminate this suite.
+    clearTopologyCache();
   });
 
   describe("Default (no args)", () => {
@@ -197,7 +203,7 @@ describe("butlr_list_tags - Integration", () => {
       expect(unused?.applied_to_entities).toEqual({ rooms: [], zones: [], floors: [] });
     });
 
-    // Per R1 §2.2: a dangling tag→entity association (deleted entity, partial
+    // a dangling tag→entity association (deleted entity, partial
     // GraphQL response) should be elided from both `applied_to_entities` and
     // the `applied_to` count, not surfaced as { id: null } / inflated counts.
     it("drops dangling tagged-entity refs (null id) from entities and counts", async () => {

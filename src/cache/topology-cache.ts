@@ -69,7 +69,15 @@ export function getCachedTopology(key: string): CacheEntry | undefined {
 }
 
 /**
- * Store topology data in cache
+ * Store topology data in cache.
+ *
+ * INVARIANT: callers MUST only cache COMPLETE topology. A partial fetch
+ * (Apollo `result.error` set, GraphQL returned errors alongside data) will
+ * silently launder its partiality through the cache otherwise — every
+ * subsequent cache-hit reader would treat the truncated tree as
+ * authoritative without seeing `partial_topology`. `butlr-list-topology`
+ * gates its `setCachedTopology` call on `!partialData`; any new caller
+ * must do the same.
  */
 export function setCachedTopology(key: string, data: Record<string, unknown>): void {
   const entry: CacheEntry = {

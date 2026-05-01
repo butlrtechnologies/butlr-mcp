@@ -128,7 +128,7 @@ function collectDirectTaggedIds(resolvedRows: RawTagWithUsage[]): Set<string> {
 }
 
 /**
- * Per R7 §I1: compute the match-aware closure of the resolved tag rows
+ * Compute the match-aware closure of the resolved tag rows
  * against the active topology. Each tag's directly-tagged entity IDs are
  * expanded to their full subtree closure (rooms→sensors-via-room_id,
  * floors→all descendants, etc.) BEFORE applying the match operator. This
@@ -160,9 +160,16 @@ function collectMatchAwareClosure(
   });
 
   if (match === "all") {
-    const acc = new Set(perTagClosures[0]);
+    // Build a fresh Set per fold step rather than mutating `acc` mid-
+    // iteration. JS allows Set.delete during iteration and the previous
+    // implementation was correct, but the immutable form is more obvious
+    // to a future reader and removes a fragile language-spec dependency.
+    let acc = new Set(perTagClosures[0]);
     for (let i = 1; i < perTagClosures.length; i++) {
-      for (const id of acc) if (!perTagClosures[i].has(id)) acc.delete(id);
+      const next = perTagClosures[i];
+      const intersected = new Set<string>();
+      for (const id of acc) if (next.has(id)) intersected.add(id);
+      acc = intersected;
     }
     return acc;
   }
@@ -190,7 +197,8 @@ function collectMatchAwareClosure(
  *               transitively, every sensor whose `hive_serial` matches a
  *               room-bound hive's `serialNumber` (devices live in floor
  *               arrays but logically belong to their room when bound)
- *   zone      → zone alone
+ *   zone      → zone alone (zones are leaves under rooms in the
+ *                topology and don't own descendants in our schema)
  *   hive      → hive + sensors with matching `hive_serial`
  *   sensor    → sensor alone
  */
@@ -424,7 +432,11 @@ export async function executeListTopology(
         tree: [],
         queryParams: baseQueryParams,
         diagnostics: [
-          { kind: "tag_match_all_unsatisfiable", unknown_names: resolution.unknownNames },
+          {
+            kind: "tag_match_all_unsatisfiable",
+            unknown_names: resolution.unknownNames,
+            partial_resolved_count: resolution.partialResolvedCount,
+          },
           ...earlyDiagnostics,
         ],
         unknownTagNames: resolution.unknownNames,
@@ -610,7 +622,7 @@ export async function executeListTopology(
 
   // Compute how many tagged-entity IDs aren't present in the active
   // topology. Used both for the all-ghost diagnostic (tree empty, every
-  // association dangling) and for the partial-ghost soft warning (tree
+  // association dangling) and for the partial-ghost diagnostic (tree
   // non-empty, some associations dangling). Without this a partially
   // dangling tag silently includes the real entries and hides the ghosts.
   let ghostTagCount = 0;
@@ -688,6 +700,36 @@ export async function executeListTopology(
     }
   }
 
+  // Depth-slicing diagnostic: filter resolved to entities (filterIds and
+  // filteredSites both non-empty) but the formatter's depth window
+  // sliced them out. Without this branch the user gets `tree: []` and no
+  // signal — a real correctness gap pointed out by the silent-failure
+  // review. Gate on the absence of the higher-priority diagnostics so
+  // we don't double-report.
+  const haveOtherEmptyTreeDiagnostic = diagnostics.some(
+    (d) =>
+      d.kind === "asset_scope_empty" ||
+      d.kind === "asset_tag_disjoint" ||
+      d.kind === "tag_associations_all_ghost" ||
+      d.kind === "tag_no_associations" ||
+      d.kind === "tag_no_match" ||
+      d.kind === "tag_match_all_unsatisfiable"
+  );
+  if (
+    tree.length === 0 &&
+    !haveOtherEmptyTreeDiagnostic &&
+    !partialData &&
+    filterIds !== undefined &&
+    filterIds.length > 0 &&
+    filteredSites.length > 0
+  ) {
+    diagnostics.push({
+      kind: "depth_excludes_matches",
+      starting_depth: startingDepth,
+      traversal_depth: traversalDepth,
+    });
+  }
+
   return buildTopologyResponse({
     tree,
     queryParams: {
@@ -740,7 +782,8 @@ function renderDiagnostic(d: TopologyDiagnostic): string {
       );
     case "tag_match_all_unsatisfiable":
       return (
-        `Cannot satisfy tag_match='all': unknown tag(s) ${d.unknown_names.join(", ")}. ` +
+        `Cannot satisfy tag_match='all': ${d.partial_resolved_count} tag(s) ` +
+        `resolved but unknown tag(s) ${d.unknown_names.join(", ")} prevent the AND. ` +
         "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match entities tagged with any of the supplied tags."
       );
     case "tag_no_associations": {
@@ -786,6 +829,13 @@ function renderDiagnostic(d: TopologyDiagnostic): string {
       return (
         `${d.count} tag row(s) skipped — upstream returned entries with ` +
         "missing or empty id/name fields. If unexpected, contact support."
+      );
+    case "depth_excludes_matches":
+      return (
+        "Filter matched entities, but every match sits outside the " +
+        `current depth window (starting_depth=${d.starting_depth}, ` +
+        `traversal_depth=${d.traversal_depth}). Lower starting_depth or ` +
+        "raise traversal_depth to surface the matches."
       );
     default: {
       // Exhaustiveness guard — adding a new TopologyDiagnostic arm without
@@ -844,13 +894,12 @@ function buildTopologyResponse(args: {
  *
  * IN-PLACE MUTATION: assigns `floor.sensors` and `floor.hives` directly on
  * the input site tree (returned for chaining; no new array is allocated).
- * The cache writer relies on this mutation completing BEFORE
- * `setCachedTopology` runs — single-threaded execution guarantees that
- * today, but a future Apollo cache-restore refactor (or any reader that
- * forks the sites tree before merge) would observe the un-merged shape.
- * If you change this to immutable assignment, also audit the cache write
- * site (`setCachedTopology(cacheKey, { sites })`) to make sure the merged
- * tree is the one that reaches the cache.
+ * `setCachedTopology` reads from the same `sites` reference that this
+ * function mutates — any caller that captures the pre-merge `sites` (via
+ * Apollo cache-restore, structural clone, or fork-then-await) would
+ * observe the un-merged shape and could write a device-incomplete tree
+ * to the cache. If you change this to immutable assignment, audit the
+ * cache write site to confirm it sees the merged result.
  */
 function mergeSensorsAndHivesIntoTopology(
   sites: Site[],

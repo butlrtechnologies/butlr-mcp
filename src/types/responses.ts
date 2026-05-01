@@ -178,7 +178,7 @@ export type TopologyNode =
  * prose `warning` remains the human-readable rendering of the same set —
  * both fields describe the same condition.
  *
- * Per S3: every embedded array is `readonly` because diagnostics are part
+ * Every embedded array is `readonly` because diagnostics are part
  * of the public response surface; mutating one would alter the response
  * after `executeListTopology` returns.
  */
@@ -189,8 +189,17 @@ export type TopologyDiagnostic =
   | { kind: "tag_no_match"; unknown_names: ReadonlyArray<string> }
   /** One or more `tag_names` did not resolve; the resolved subset still applies. */
   | { kind: "unknown_tags"; names: ReadonlyArray<string> }
-  /** `tag_match='all'` cannot be satisfied because at least one tag is unknown. */
-  | { kind: "tag_match_all_unsatisfiable"; unknown_names: ReadonlyArray<string> }
+  /**
+   * `tag_match='all'` cannot be satisfied because at least one requested
+   * tag is unknown. `partial_resolved_count` reports how many of the
+   * requested names DID resolve (always >= 1 by construction —
+   * all-unknown takes the `tag_no_match` branch instead).
+   */
+  | {
+      kind: "tag_match_all_unsatisfiable";
+      unknown_names: ReadonlyArray<string>;
+      partial_resolved_count: number;
+    }
   /** Every supplied tag resolved but none have associated entities. */
   | { kind: "tag_no_associations"; tag_match: TagMatch; tag_names: ReadonlyArray<string> }
   /** `asset_ids` did not resolve to any entity in the org. */
@@ -204,7 +213,14 @@ export type TopologyDiagnostic =
   /** Dual-typo path with a cold topology cache — `asset_ids` were not validated. */
   | { kind: "asset_ids_unverified" }
   /** Upstream tag rows had missing/empty id or name fields and were skipped. */
-  | { kind: "malformed_tag_rows"; count: number };
+  | { kind: "malformed_tag_rows"; count: number }
+  /**
+   * The composed filter resolved to a non-empty entity set, but every
+   * matched entity sits outside the rendered tree window — i.e. the
+   * `starting_depth` / `traversal_depth` slice excludes them. The user
+   * should widen the depth window to see the matches.
+   */
+  | { kind: "depth_excludes_matches"; starting_depth: number; traversal_depth: number };
 
 export interface ListTopologyResponse {
   tree: ReadonlyArray<TopologyNode>;
