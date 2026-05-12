@@ -82,6 +82,12 @@ const SPACE_BUSYNESS_DESCRIPTION =
 
 export type SpaceBusynessArgs = z.output<typeof SpaceBusynessArgsSchema>;
 
+// `site { id ... }` is load-bearing: graphql-client.ts declares
+// `Site: { keyFields: ['id'] }` on the Apollo InMemoryCache, so a Site
+// object without its `id` cannot be normalized. Under errorPolicy='all'
+// Apollo silently returns `result.data = undefined` in that case, which
+// this tool used to mis-translate as "Room/Zone not found". Same rule
+// applies to Building and Floor, but those already select id here.
 const GET_ROOM = gql`
   query GetRoom($roomId: ID!) {
     room(id: $roomId) {
@@ -102,6 +108,7 @@ const GET_ROOM = gql`
           name
           site_id
           site {
+            id
             timezone
           }
         }
@@ -129,6 +136,7 @@ const GET_ZONE = gql`
           name
           site_id
           site {
+            id
             timezone
           }
         }

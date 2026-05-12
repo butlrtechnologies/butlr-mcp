@@ -201,8 +201,13 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     // Analyze traffic sensors for this room
     const allSensors = sensorsResult.data?.sensors?.data || [];
     const roomSensors = allSensors.filter((s) => (s.room_id || s.roomID) === spaceId);
-    // Non-entrance traffic sensors (room-level traffic counting)
-    trafficSensors = roomSensors.filter((s) => s.mode === "traffic" && s.is_entrance === false);
+    // Every traffic sensor bound to the room contributes to room-level traffic
+    // counts. `is_entrance` is a semantic flag (does this sensor sit at a
+    // building/floor entrance), not a routing flag — the Reporting API
+    // aggregates by `room_id` regardless. Excluding `is_entrance=true` here
+    // used to drop legitimate room traffic for rooms whose sensors all happen
+    // to be entrances (e.g. cafés that occupy an entire floor's entry area).
+    trafficSensors = roomSensors.filter((s) => s.mode === "traffic");
 
     if (trafficSensors.length === 0) {
       throw new Error(

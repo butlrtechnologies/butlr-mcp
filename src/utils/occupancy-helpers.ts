@@ -102,7 +102,11 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
   // Resolve asset name
   const assetName = findAssetName(assetId, typedAssetType, ctx.floors);
 
-  // Filter sensors for this asset
+  // Filter sensors for this asset. Zones have no direct sensor attribution —
+  // zone_occupancy is computed server-side and is not a roll-up of any
+  // single sensor we can identify client-side. The callers (current /
+  // timeseries occupancy tools) detect zones by asset_type and query
+  // anyway; the sensor count is correctly reported as 0 for zones.
   const assetSensors = ctx.productionSensors.filter((s) => {
     const sensorFloorId = s.floor_id || s.floorID;
     const sensorRoomId = s.room_id || s.roomID;
@@ -113,7 +117,7 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
       case "room":
         return sensorRoomId === assetId;
       case "zone":
-        return false; // Zones don't have direct sensor assignments
+        return false; // Zones do not inherit room sensors — see comment above.
     }
   });
 
@@ -123,10 +127,15 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
   let trafficSensors: Sensor[];
   switch (typedAssetType) {
     case "floor":
+      // Floor-level traffic comes from the building/floor entrances.
       trafficSensors = assetSensors.filter((s) => s.mode === "traffic" && s.is_entrance === true);
       break;
     case "room":
-      trafficSensors = assetSensors.filter((s) => s.mode === "traffic" && s.is_entrance === false);
+      // Every traffic-mode sensor bound to the room contributes — `is_entrance`
+      // is a semantic flag, not a routing one. Filtering on it dropped real
+      // traffic counts for rooms whose sensors are all entrances (e.g. cafés
+      // covering the floor's entry area).
+      trafficSensors = assetSensors.filter((s) => s.mode === "traffic");
       break;
     default:
       trafficSensors = [];

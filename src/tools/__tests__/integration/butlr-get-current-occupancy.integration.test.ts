@@ -447,6 +447,162 @@ describe("butlr_get_current_occupancy - Integration", () => {
     });
   });
 
+  // Regression test for B3: zones have separate sensor attribution from rooms —
+  // `zone_occupancy` is computed server-side and there's no client-visible sensor
+  // count. Pre-fix, the tool gated the presence query on `presenceSensors.length > 0`
+  // (which is always 0 for zones because zones don't have direct sensor assignments),
+  // so the query never fired and zones reported `available: false` even when the
+  // Reporting API had data for them.
+  describe("Regression: B3 — always query zone_occupancy regardless of sensor count", () => {
+    it("queries zone_occupancy for a zone with no client-visible sensors", async () => {
+      const floorId = "space_zone_test";
+      const zoneTopo = {
+        topology: {
+          data: {
+            sites: {
+              data: [
+                {
+                  id: "site_001",
+                  name: "Test Site",
+                  timezone: "America/New_York",
+                  org_id: "org_001",
+                  buildings: [
+                    {
+                      id: "building_001",
+                      name: "Building",
+                      site_id: "site_001",
+                      floors: [
+                        {
+                          id: floorId,
+                          name: "Floor 1",
+                          building_id: "building_001",
+                          rooms: [
+                            {
+                              id: "room_parent",
+                              name: "Parent Room",
+                              floorID: floorId,
+                              capacity: {},
+                            },
+                          ],
+                          zones: [
+                            {
+                              id: "zone_target",
+                              name: "Peloton 1",
+                              floorID: floorId,
+                              room_id: "room_parent",
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          loading: false,
+          networkStatus: 7,
+        },
+        sensors: {
+          // No sensors at all — zones still have no client-visible attribution
+          data: { sensors: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        },
+      };
+      setupTopologyMocks(zoneTopo);
+
+      // The Reporting API has zone_occupancy data for this zone (server-derived).
+      const presenceBuilder = mockReportingBuilder({
+        data: [{ time: "2025-10-14T15:04:00Z", value: 2 }],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["zone_target"] });
+
+      const asset = result.assets[0];
+      expect(asset.asset_id).toBe("zone_target");
+      expect(asset.asset_type).toBe("zone");
+      expect(asset.asset_name).toBe("Peloton 1");
+      // Pre-fix: available was false (sensor_count === 0). Post-fix: zones are
+      // always available — actual data presence is reflected in current_occupancy.
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.current_occupancy).toBe(2);
+      expect(asset.presence.sensor_count).toBe(0); // zones genuinely have no client-side sensors
+      expect(asset.recommended_measurement).toBe("presence");
+      // The presence query MUST have been issued for the zone — pre-fix this builder
+      // would never have been touched.
+      expect(presenceBuilder.execute).toHaveBeenCalledTimes(1);
+      // zone_occupancy is the correct measurement name (not room_occupancy).
+      expect(presenceBuilder.measurements).toHaveBeenCalledWith(["zone_occupancy"]);
+    });
+
+    it("zone with no Reporting data still reports available=true (we can ask) but recommended=none", async () => {
+      const floorId = "space_zone_test";
+      const zoneTopo = {
+        topology: {
+          data: {
+            sites: {
+              data: [
+                {
+                  id: "site_001",
+                  name: "Test Site",
+                  timezone: "America/New_York",
+                  org_id: "org_001",
+                  buildings: [
+                    {
+                      id: "building_001",
+                      name: "Building",
+                      site_id: "site_001",
+                      floors: [
+                        {
+                          id: floorId,
+                          name: "Floor 1",
+                          building_id: "building_001",
+                          rooms: [],
+                          zones: [
+                            {
+                              id: "zone_dark",
+                              name: "Dark Zone",
+                              floorID: floorId,
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          loading: false,
+          networkStatus: 7,
+        },
+        sensors: {
+          data: { sensors: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        },
+      };
+      setupTopologyMocks(zoneTopo);
+
+      // The Reporting API returns no data for this zone.
+      const emptyBuilder = mockReportingBuilder({ data: [] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => emptyBuilder as any
+      );
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["zone_dark"] });
+
+      const asset = result.assets[0];
+      expect(asset.presence.available).toBe(true); // we can ask
+      expect(asset.presence.current_occupancy).toBeUndefined(); // but no data
+      expect(asset.recommended_measurement).toBe("none");
+    });
+  });
+
   describe("Null site timezone fallback", () => {
     it("falls back to UTC and includes warnings when site timezone is null", async () => {
       const topo = buildTopologyResponse({ presenceSensors: 1, siteTimezone: null });
