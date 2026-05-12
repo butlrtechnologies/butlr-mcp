@@ -213,6 +213,31 @@ export function formatMCPError(error: MCPError): string {
 }
 
 /**
+ * Validate that an upstream-supplied value is array-shaped, returning the
+ * array (treating `null`/`undefined` as a legitimately-empty signal) or
+ * throwing INTERNAL_ERROR for any other shape. Centralizes the pattern
+ * that callers like `butlr_list_topology` / `butlr_list_tags` /
+ * `butlr_available_rooms` use on nested response fields where a
+ * `value || []` would otherwise launder a contract regression into
+ * silently-empty results.
+ *
+ * Pass `fieldName` for a useful error message; the lenient null/undefined
+ * branch reflects that legitimately-empty lists arrive as
+ * `[]`/`null`/missing depending on upstream resolver.
+ */
+export function ensureArrayOrEmpty<T>(
+  value: ReadonlyArray<T> | null | undefined | unknown,
+  fieldName: string
+): ReadonlyArray<T> {
+  if (value === null || value === undefined) return [];
+  if (Array.isArray(value)) return value as ReadonlyArray<T>;
+  throwInternalError(
+    `Unexpected response shape from ${fieldName} (expected array, got ${typeof value}). ` +
+      "Please retry; if persistent, the upstream API contract may have changed."
+  );
+}
+
+/**
  * Throw a properly MCP-formatted INTERNAL_ERROR. Use for upstream contract
  * violations (unexpected response shape, missing data envelope, etc.) so
  * the failure surfaces with a structured `[INTERNAL_ERROR]` prefix that

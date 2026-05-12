@@ -9,27 +9,13 @@ import {
 
 /**
  * Pure tag-name → tag-row resolution shared by `butlr_available_rooms` and
- * `butlr_list_topology`.
+ * `butlr_list_topology`. Pure-function over an already-fetched row list so
+ * each caller can fetch the minimum tag shape it needs without the helper
+ * having to know about Apollo or GraphQL queries.
  *
- * The two callers fetch different tag shapes — the available-rooms path only
- * needs `{id, name}` to drive a server-side `roomsByTag` filter, while the
- * topology path needs the full usage rows to drive a client-side tree filter.
- * Keeping this helper a pure function over an already-fetched row list lets
- * each caller fetch the minimum shape it needs without forcing the helper
- * to know about Apollo or GraphQL queries.
- *
- * Returns a discriminated union — callers MUST switch on `kind` before
- * touching the resolved arms:
- *   - `ok`             — at least one requested name resolved; `match='all'`
- *                        on this branch implies every name resolved.
- *   - `no_match`       — every requested name was unknown. Distinct from
- *                        `unsatisfiable` so callers can emit "no matching
- *                        tags found" instead of a misleading "cannot satisfy
- *                        AND" when only one input was sent.
- *   - `unsatisfiable`  — `match='all'` with at least one resolved AND at
- *                        least one unknown. The resolved subset is hidden
- *                        from the union to prevent a caller from silently
- *                        broadening to `match='any'` semantics.
+ * The three-arm return contract (`ok` / `no_match` / `unsatisfiable`) is
+ * documented on `ResolveTagNamesResult` below — callers MUST switch on
+ * `kind` before touching the resolved arms.
  */
 
 export interface ResolveTagNamesInput<Row extends { id: string; name: string }> {
@@ -72,11 +58,18 @@ export type ResolveTagNamesResult<Row extends { id: string; name: string }> =
       unknownNames: TagName[];
       /**
        * Number of malformed rows skipped by the defensive guard (missing or
-       * empty `id` / `name`). Non-zero values indicate an upstream contract
-       * violation that callers should surface as a `malformed_tag_rows`
-       * diagnostic — silent filtering would otherwise hide the breakage.
+       * empty `id` / `name`, or canonical-name duplicates). Non-zero values
+       * indicate an upstream contract violation that callers should surface
+       * as a `malformed_tag_rows` diagnostic — silent filtering would
+       * otherwise hide the breakage.
        */
       droppedRowCount: number;
+      /**
+       * Up to ~5 representative names from the dropped rows (where the
+       * name was usable). Primarily useful for the duplicate-canonical
+       * case so operators can see which names collided.
+       */
+      droppedSampleNames: string[];
     }
   | {
       kind: "no_match";
@@ -84,6 +77,7 @@ export type ResolveTagNamesResult<Row extends { id: string; name: string }> =
       unknownNames: TagName[];
       /** Same semantics as the `ok` variant — surface as a diagnostic if non-zero. */
       droppedRowCount: number;
+      droppedSampleNames: string[];
     }
   | {
       kind: "unsatisfiable";
@@ -93,6 +87,7 @@ export type ResolveTagNamesResult<Row extends { id: string; name: string }> =
       partialResolvedCount: number;
       /** Same semantics as the `ok` variant — surface as a diagnostic if non-zero. */
       droppedRowCount: number;
+      droppedSampleNames: string[];
     };
 
 export function resolveTagNames<Row extends { id: string; name: string }>(
@@ -110,16 +105,29 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
   // violation is visible (rather than silently masking it as "unknown tag").
   const lookup = new Map<string, Row>();
   let droppedRowCount = 0;
+  const droppedSampleNames: string[] = [];
+  const SAMPLE_LIMIT = 5;
+  const noteDroppedName = (name: unknown): void => {
+    if (
+      typeof name === "string" &&
+      name.trim().length > 0 &&
+      droppedSampleNames.length < SAMPLE_LIMIT
+    ) {
+      droppedSampleNames.push(name);
+    }
+  };
   for (const t of allTags) {
     // Whitespace-only counts as "missing" — asTagId / asTagName would
     // reject it later, but the boundary check is the right place for
     // the user-facing diagnostic to fire from.
     if (typeof t.name !== "string" || t.name.trim().length === 0) {
       droppedRowCount++;
+      // No usable name to sample — diagnostic carries count only.
       continue;
     }
     if (typeof t.id !== "string" || t.id.trim().length === 0) {
       droppedRowCount++;
+      noteDroppedName(t.name);
       continue;
     }
     const key = t.name.toLowerCase();
@@ -132,6 +140,7 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
     // diagnostic that catches null/empty rows.
     if (lookup.has(key)) {
       droppedRowCount++;
+      noteDroppedName(t.name);
       continue;
     }
     lookup.set(key, t);
@@ -158,7 +167,7 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
     // than the misleading "cannot satisfy AND" (when only one input was
     // sent there's no AND to fail). Empty `requestedNames` falls through
     // to the `ok` branch as a trivially-empty resolution.
-    return { kind: "no_match", unknownNames, droppedRowCount };
+    return { kind: "no_match", unknownNames, droppedRowCount, droppedSampleNames };
   }
   if (match === "all" && unknownNames.length > 0) {
     return {
@@ -166,9 +175,17 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
       unknownNames,
       partialResolvedCount: resolvedRows.length,
       droppedRowCount,
+      droppedSampleNames,
     };
   }
-  return { kind: "ok", resolvedRows, resolvedIds, unknownNames, droppedRowCount };
+  return {
+    kind: "ok",
+    resolvedRows,
+    resolvedIds,
+    unknownNames,
+    droppedRowCount,
+    droppedSampleNames,
+  };
 }
 
 /**

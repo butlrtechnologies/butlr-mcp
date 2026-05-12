@@ -212,8 +212,21 @@ export type TopologyDiagnostic =
   | { kind: "tag_associations_partial_ghost"; ghost: number; total: number }
   /** Dual-typo path with a cold topology cache — `asset_ids` were not validated. */
   | { kind: "asset_ids_unverified" }
-  /** Upstream tag rows had missing/empty id or name fields and were skipped. */
-  | { kind: "malformed_tag_rows"; count: number }
+  /**
+   * Upstream tag rows had missing/empty id or name fields, or two rows
+   * collided on the same canonical (case-folded) name. Such rows are
+   * skipped (first-write-wins for canonical duplicates) and counted
+   * here. `sample_names` carries up to ~5 representative names of
+   * affected rows where the name was available — primarily useful for
+   * the duplicate-canonical case so operators can see WHICH names
+   * collided. Rows with no usable name contribute to `count` but not
+   * to `sample_names`.
+   */
+  | {
+      kind: "malformed_tag_rows";
+      count: number;
+      sample_names?: ReadonlyArray<string>;
+    }
   /**
    * `tag_match='all'` — every requested tag resolved AND each carries at
    * least one association, but the per-tag SUBTREE intersection is empty

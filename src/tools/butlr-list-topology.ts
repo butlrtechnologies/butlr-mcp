@@ -348,6 +348,7 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
   let unknownTagNames: TagName[] = [];
   let tagWarning: TopologyDiagnostic | undefined;
   let malformedTagRowCount = 0;
+  let malformedTagSampleNames: ReadonlyArray<string> = [];
 
   if (tagNames.length > 0) {
     let tagsRaw: RawTagWithUsage[] = [];
@@ -393,9 +394,13 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
       earlyDiagnostics.push({
         kind: "malformed_tag_rows",
         count: resolution.droppedRowCount,
+        ...(resolution.droppedSampleNames.length > 0
+          ? { sample_names: resolution.droppedSampleNames }
+          : {}),
       });
     }
     malformedTagRowCount = resolution.droppedRowCount;
+    malformedTagSampleNames = resolution.droppedSampleNames;
 
     if (resolution.kind === "no_match") {
       const diagnostics: TopologyDiagnostic[] = [
@@ -655,7 +660,11 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
   if (partialData) diagnostics.push({ kind: "partial_topology" });
   if (tagWarning) diagnostics.push(tagWarning);
   if (malformedTagRowCount > 0) {
-    diagnostics.push({ kind: "malformed_tag_rows", count: malformedTagRowCount });
+    diagnostics.push({
+      kind: "malformed_tag_rows",
+      count: malformedTagRowCount,
+      ...(malformedTagSampleNames.length > 0 ? { sample_names: malformedTagSampleNames } : {}),
+    });
   }
 
   // Compute how many tagged-entity IDs aren't present in the active
@@ -886,11 +895,17 @@ function renderDiagnostic(d: TopologyDiagnostic): string {
         "asset_ids were not validated (topology not yet cached) — " +
         "re-run after correcting the tag names to confirm they exist."
       );
-    case "malformed_tag_rows":
+    case "malformed_tag_rows": {
+      const sample =
+        d.sample_names && d.sample_names.length > 0
+          ? ` (sample: ${d.sample_names.join(", ")})`
+          : "";
       return (
         `${d.count} tag row(s) skipped — upstream returned entries with ` +
-        "missing or empty id/name fields. If unexpected, contact support."
+        `missing or empty id/name fields, or duplicate canonical names${sample}. ` +
+        "If unexpected, contact support."
       );
+    }
     case "depth_excludes_matches":
       return (
         "Filter matched entities, but every match sits outside the " +

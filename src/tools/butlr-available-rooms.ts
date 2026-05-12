@@ -11,7 +11,11 @@ import { GET_TAGS_MINIMAL, type TagName } from "../clients/queries/tags.js";
 import { resolveTagNames } from "../utils/tag-resolver.js";
 import type { AvailableRoom, AvailableRoomsResponse, BuildingContext } from "../types/responses.js";
 import { debug } from "../utils/debug.js";
-import { withToolErrorHandling, throwInternalError } from "../errors/mcp-errors.js";
+import {
+  ensureArrayOrEmpty,
+  throwInternalError,
+  withToolErrorHandling,
+} from "../errors/mcp-errors.js";
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const availableRoomsInputShape = {
@@ -304,7 +308,7 @@ export async function executeAvailableRooms(
         throw new Error(`Floor ${args.floor_id} not found`);
       }
 
-      rooms = result.data.floor.rooms || [];
+      rooms = [...ensureArrayOrEmpty<Room>(result.data.floor.rooms, "floor.rooms")];
       floors = [result.data.floor];
       buildings = result.data.floor.building ? [result.data.floor.building] : [];
     } else if (args.building_id) {
@@ -320,8 +324,8 @@ export async function executeAvailableRooms(
       }
 
       buildings = [result.data.building];
-      floors = result.data.building.floors || [];
-      rooms = floors.flatMap((f) => f.rooms || []);
+      floors = [...ensureArrayOrEmpty<Floor>(result.data.building.floors, "building.floors")];
+      rooms = floors.flatMap((f) => [...ensureArrayOrEmpty<Room>(f.rooms, "floor.rooms")]);
     } else if (args.tags && args.tags.length > 0) {
       // Resolve tag names → tag IDs (the API requires IDs, not names)
       const tagsResult = await apolloClient.query<{
@@ -455,9 +459,13 @@ export async function executeAvailableRooms(
         );
       }
 
-      buildings = result.data.sites.data.flatMap((s) => s.buildings || []);
-      floors = buildings.flatMap((b) => b.floors || []);
-      rooms = floors.flatMap((f) => f.rooms || []);
+      buildings = result.data.sites.data.flatMap((s) => [
+        ...ensureArrayOrEmpty<Building>(s.buildings, "site.buildings"),
+      ]);
+      floors = buildings.flatMap((b) => [
+        ...ensureArrayOrEmpty<Floor>(b.floors, "building.floors"),
+      ]);
+      rooms = floors.flatMap((f) => [...ensureArrayOrEmpty<Room>(f.rooms, "floor.rooms")]);
     }
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);

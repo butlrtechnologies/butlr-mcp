@@ -193,7 +193,9 @@ describe("resolveTagNames", () => {
   // last-write-wins'd silently. Resolution depended on upstream order — a
   // user-facing nondeterminism — and the conflict didn't surface in
   // droppedRowCount. Fix: first-write-wins + count the dup so it bubbles
-  // up as malformed_tag_rows alongside null/empty rows.
+  // up as malformed_tag_rows alongside null/empty rows. The colliding
+  // name is also recorded in `droppedSampleNames` so the diagnostic can
+  // tell the operator WHICH names collided.
   it("treats duplicate case-insensitive names as malformed (deterministic + surfaced)", () => {
     const result = resolveTagNames({
       allTags: [
@@ -209,6 +211,9 @@ describe("resolveTagNames", () => {
     // First-write-wins: tag_a resolved, tag_b dropped.
     expect(result.resolvedRows.map((r) => r.id)).toEqual(["tag_a"]);
     expect(result.droppedRowCount).toBe(1);
+    // L1: sample carries the colliding name so the operator can see
+    // which name had a duplicate.
+    expect(result.droppedSampleNames).toContain("huddle");
   });
 
   // Single-tag match='all' is the trivial degenerate case but resolveTagNames
