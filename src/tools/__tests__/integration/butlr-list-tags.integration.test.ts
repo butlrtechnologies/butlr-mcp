@@ -270,17 +270,17 @@ describe("butlr_list_tags - Integration", () => {
       expect(result.total).toBe(0);
     });
 
-    it("handles a null tags response from the API", async () => {
+    // Contract: `null` is NOT a legitimate empty signal. The schema must
+    // send `[]` when no tags exist. Treating `null` as empty would
+    // silently launder a serialisation regression.
+    it("throws INTERNAL_ERROR on a null tags response from the API", async () => {
       vi.mocked(apolloClient.query).mockResolvedValue({
         data: { tags: null },
         loading: false,
         networkStatus: 7,
       } as never);
 
-      const result = await executeListTags({});
-
-      expect(result.tags).toEqual([]);
-      expect(result.total).toBe(0);
+      await expect(executeListTags({})).rejects.toThrow(/\[INTERNAL_ERROR\].*expected array.*null/);
     });
   });
 
@@ -310,6 +310,123 @@ describe("butlr_list_tags - Integration", () => {
       } as never);
 
       await expect(executeListTags({})).rejects.toThrow(/\[AUTH_EXPIRED\]/);
+    });
+  });
+
+  // T2 — filtered_by surface
+  describe("filtered_by surface", () => {
+    it("omits filtered_by entirely when no filters were supplied", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({});
+
+      expect(result.filtered_by).toBeUndefined();
+    });
+
+    it("omits filtered_by when only include_entities:false (the schema default) was supplied", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ include_entities: false });
+
+      expect(result.filtered_by).toBeUndefined();
+    });
+
+    it("emits filtered_by when include_entities:true is the only explicit filter", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ include_entities: true });
+
+      expect(result.filtered_by).toEqual({ include_entities: true });
+    });
+  });
+
+  // T4 — min_usage:0 boundary. A regression switching `>=` to `>` would
+  // silently drop zero-usage tags.
+  describe("min_usage:0 boundary", () => {
+    it("includes zero-usage tags when min_usage is 0", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ min_usage: 0 });
+
+      // unused-tag has total usage 0; must NOT be filtered out.
+      expect(result.tags.find((t) => t.name === "unused-tag")).toBeDefined();
+    });
+  });
+
+  // T5 — filter composition. Sequential filter application can be
+  // order-sensitive; existing tests cover pairs only.
+  describe("Filter composition", () => {
+    it("applies min_usage AND name_contains AND include_entities together", async () => {
+      const fixture = loadGraphQLFixture("tags-list");
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: fixture,
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      // huddle has usage 4 (2 rooms + 1 zone + 1 floor); only it survives
+      // name_contains:"huddle" AND min_usage:3.
+      const result = await executeListTags({
+        name_contains: "huddle",
+        min_usage: 3,
+        include_entities: true,
+      });
+
+      expect(result.tags).toHaveLength(1);
+      expect(result.tags[0].name).toBe("huddle");
+      expect(result.tags[0].applied_to_entities).toBeDefined();
+    });
+  });
+
+  // T3 — non-array tags payload throws INTERNAL_ERROR (boundary contract).
+  describe("Non-array tags shape rejection", () => {
+    it("throws INTERNAL_ERROR when data.tags is an object", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: { tags: {} },
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      await expect(executeListTags({})).rejects.toThrow(/\[INTERNAL_ERROR\].*expected array/);
+    });
+
+    it("surfaces a malformed_tag_rows warning when upstream returns rows with non-string name", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({
+        data: {
+          tags: [
+            { id: "tag_a", name: "huddle", rooms: [], zones: [], floors: [] },
+            { id: "tag_b", name: null, rooms: [], zones: [], floors: [] },
+          ],
+        },
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      const result = await executeListTags({ name_contains: "huddle" });
+
+      // Doesn't crash on null.name; resolves with the valid row and a warning.
+      expect(result.tags).toHaveLength(1);
+      expect(result.warning).toMatch(/1 tag row\(s\) skipped/);
     });
   });
 });

@@ -32,7 +32,7 @@ const availableRoomsInputShape = {
     .describe("Maximum room capacity"),
 
   tags: z
-    .array(z.string().min(1, "Tag cannot be empty").trim())
+    .array(z.string().trim().min(1, "Tag cannot be empty"))
     .min(1, "tags array cannot be empty")
     .optional()
     .describe(
@@ -258,6 +258,32 @@ export async function executeAvailableRooms(
 ): Promise<AvailableRoomsResponse> {
   debug("available-rooms", "Finding available rooms with filters:", JSON.stringify(args, null, 2));
 
+  // Strip Zod defaults before exposing args as `filtered_by`. Mirrors
+  // butlr_list_tags's behaviour — without this, every response carries
+  // `tag_match: "all"` and `max_results: 50` even when the caller never
+  // supplied a tag or a result cap, and "no filter applied" is
+  // indistinguishable from "default filter applied". The two tools'
+  // `filtered_by` shapes drift if this is not consistent.
+  const explicitFilters = (() => {
+    const out: Record<string, unknown> = {};
+    if (args.min_capacity !== undefined) out.min_capacity = args.min_capacity;
+    if (args.max_capacity !== undefined) out.max_capacity = args.max_capacity;
+    if (args.building_id !== undefined) out.building_id = args.building_id;
+    if (args.floor_id !== undefined) out.floor_id = args.floor_id;
+    if (args.tags !== undefined) {
+      out.tags = args.tags;
+      // tag_match is only meaningful with a non-empty tags filter.
+      if (args.tag_match !== undefined && args.tag_match !== "all") {
+        out.tag_match = args.tag_match;
+      }
+    }
+    if (args.max_results !== undefined && args.max_results !== 50) {
+      out.max_results = args.max_results;
+    }
+    return out;
+  })();
+  const hasExplicitFilters = Object.keys(explicitFilters).length > 0;
+
   // Query rooms based on scope
   let rooms: Room[] = [];
   let buildings: Building[] = [];
@@ -306,13 +332,12 @@ export async function executeAvailableRooms(
       });
       throwIfGraphQLErrors(tagsResult);
 
-      // Distinguish "empty array" (legitimate — org has no tags) from
-      // "null" (upstream contract violation — should be `[]` if empty).
+      // Same null-is-violation rule as butlr-list-tags — see comment there.
       const allTags = tagsResult.data?.tags;
-      if (allTags !== null && allTags !== undefined && !Array.isArray(allTags)) {
+      if (!Array.isArray(allTags)) {
         throwInternalError(
           "Unexpected response shape from tags query (expected array, got " +
-            `${typeof allTags}). Please retry; if persistent, the upstream API contract may have changed.`
+            `${allTags === null ? "null" : typeof allTags}). Please retry; if persistent, the upstream API contract may have changed.`
         );
       }
 
@@ -328,7 +353,7 @@ export async function executeAvailableRooms(
       // semantics described in each tool's description string.
       const tagMatch = args.tag_match ?? "all";
       const resolution = resolveTagNames({
-        allTags: allTags ?? [],
+        allTags,
         requestedNames: args.tags,
         match: tagMatch,
       });
@@ -339,6 +364,11 @@ export async function executeAvailableRooms(
         );
       }
 
+      // Compose the early-return warning from the resolver-prepended
+      // warnings array AND the primary diagnostic, so signals like
+      // droppedRowCount aren't lost on the no_match / unsatisfiable arms.
+      const composeWarning = (primary: string): string => [...warnings, primary].join(" ");
+
       if (resolution.kind === "no_match") {
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
@@ -346,11 +376,12 @@ export async function executeAvailableRooms(
           total_available: 0,
           showing: 0,
           timestamp: new Date().toISOString(),
-          filtered_by: args,
+          filtered_by: explicitFilters,
           unknown_tags: resolution.unknownNames,
-          warning:
+          warning: composeWarning(
             `No matching tags found in this org for: ${resolution.unknownNames.join(", ")}. ` +
-            "Use butlr_list_tags to see available tag names.",
+              "Use butlr_list_tags to see available tag names."
+          ),
         };
       }
 
@@ -364,11 +395,12 @@ export async function executeAvailableRooms(
           total_available: 0,
           showing: 0,
           timestamp: new Date().toISOString(),
-          filtered_by: args,
+          filtered_by: explicitFilters,
           unknown_tags: resolution.unknownNames,
-          warning:
+          warning: composeWarning(
             `Cannot satisfy tag_match='all': unknown tag(s) ${resolution.unknownNames.join(", ")}. ` +
-            "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match rooms tagged with any of the supplied tags.",
+              "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match rooms tagged with any of the supplied tags."
+          ),
         };
       }
 
@@ -469,7 +501,7 @@ export async function executeAvailableRooms(
     };
 
     if (Object.keys(args).length > 0) {
-      response.filtered_by = args;
+      if (hasExplicitFilters) response.filtered_by = explicitFilters;
     }
 
     if (warnings.length > 0) {
@@ -525,7 +557,20 @@ export async function executeAvailableRooms(
 
       setBulkCachedOccupancy(cacheEntries);
     } catch (error: unknown) {
-      debug("available-rooms", "Failed to get occupancy data:", error);
+      // Translate auth / rate-limit / validation errors via the MCP error
+      // pipeline so the user gets actionable AUTH_EXPIRED / RATE_LIMITED
+      // signals instead of a generic "occupancy unavailable" warning.
+      // Only unknown / non-translatable errors fall through to the
+      // cache-only degraded path below.
+      rethrowIfGraphQLError(error);
+      const msg = error instanceof Error ? error.message : String(error);
+      debug("available-rooms", "Failed to get occupancy data:", msg);
+      // Include the upstream message in the user-visible warning so an
+      // operator inspecting a degraded response can correlate without
+      // needing DEBUG=butlr-mcp turned on.
+      warnings.push(
+        `real-time occupancy unavailable (${msg}); availability inferred from cached topology where possible`
+      );
       occupancyFetchFailed = true;
     }
   }
@@ -631,7 +676,7 @@ export async function executeAvailableRooms(
   };
 
   if (Object.keys(args).length > 0) {
-    response.filtered_by = args;
+    if (hasExplicitFilters) response.filtered_by = explicitFilters;
   }
 
   if (buildingContext) {

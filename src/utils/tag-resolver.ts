@@ -111,11 +111,14 @@ export function resolveTagNames<Row extends { id: string; name: string }>(
   const lookup = new Map<string, Row>();
   let droppedRowCount = 0;
   for (const t of allTags) {
-    if (typeof t.name !== "string" || t.name.length === 0) {
+    // Whitespace-only counts as "missing" — asTagId / asTagName would
+    // reject it later, but the boundary check is the right place for
+    // the user-facing diagnostic to fire from.
+    if (typeof t.name !== "string" || t.name.trim().length === 0) {
       droppedRowCount++;
       continue;
     }
-    if (typeof t.id !== "string" || t.id.length === 0) {
+    if (typeof t.id !== "string" || t.id.trim().length === 0) {
       droppedRowCount++;
       continue;
     }
@@ -182,7 +185,7 @@ export function projectValidRefs(
 ): TaggedEntityRef[] {
   if (!refs) return [];
   return refs.flatMap((ref) =>
-    typeof ref.id === "string" && ref.id.length > 0
+    typeof ref.id === "string" && ref.id.trim().length > 0
       ? [typeof ref.name === "string" ? { id: ref.id, name: ref.name } : { id: ref.id }]
       : []
   );

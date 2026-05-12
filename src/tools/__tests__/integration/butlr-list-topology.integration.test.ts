@@ -1945,4 +1945,43 @@ describe("butlr_list_topology - Integration", () => {
       );
     });
   });
+
+  // T1 — error translation on the tags-prefetch path (butlr-list-topology
+  // runs the same GET_TAGS_WITH_USAGE query as butlr-list-tags but had no
+  // analogous error-translation test). Locks the rethrowIfGraphQLError
+  // routing so a regression that drops the try/catch around tagsResult
+  // fails here, not in production.
+  describe("Tags-prefetch error translation", () => {
+    it("translates an UNAUTHENTICATED GraphQL error on the tags fetch into AUTH_EXPIRED", async () => {
+      vi.mocked(apolloClient.query).mockRejectedValueOnce({
+        graphQLErrors: [{ message: "Unauthenticated", extensions: { code: "UNAUTHENTICATED" } }],
+      });
+
+      await expect(
+        executeListTopology({ tag_names: ["huddle"], starting_depth: 0, traversal_depth: 0 })
+      ).rejects.toThrow(/\[AUTH_EXPIRED\]/);
+    });
+
+    it("translates a 401 on the tags fetch into AUTH_EXPIRED", async () => {
+      vi.mocked(apolloClient.query).mockRejectedValueOnce({
+        networkError: { statusCode: 401, message: "Unauthorized" },
+      });
+
+      await expect(
+        executeListTopology({ tag_names: ["huddle"], starting_depth: 0, traversal_depth: 0 })
+      ).rejects.toThrow(/\[AUTH_EXPIRED\]/);
+    });
+
+    it("throws INTERNAL_ERROR on a null tags response from the API", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValueOnce({
+        data: { tags: null },
+        loading: false,
+        networkStatus: 7,
+      } as never);
+
+      await expect(
+        executeListTopology({ tag_names: ["huddle"], starting_depth: 0, traversal_depth: 0 })
+      ).rejects.toThrow(/\[INTERNAL_ERROR\].*expected array.*null/);
+    });
+  });
 });

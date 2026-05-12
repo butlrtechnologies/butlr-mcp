@@ -3,6 +3,7 @@ import { apolloClient } from "../clients/graphql-client.js";
 import { GET_FULL_TOPOLOGY, GET_ALL_SENSORS, GET_ALL_HIVES } from "../clients/queries/topology.js";
 import {
   GET_TAGS_WITH_USAGE,
+  asTagName,
   type RawTagWithUsage,
   type TagMatch,
   type TagName,
@@ -55,7 +56,7 @@ const LIST_TOPOLOGY_DESCRIPTION =
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const listTopologyInputShape = {
   asset_ids: z
-    .array(z.string())
+    .array(z.string().trim().min(1, "asset_ids entries cannot be empty"))
     .optional()
     .describe(
       "Optional: Parent asset IDs to show tree for. If empty, shows all sites. " +
@@ -64,6 +65,9 @@ const listTopologyInputShape = {
 
   starting_depth: z
     .number()
+    .int("starting_depth must be an integer")
+    .min(0, "starting_depth must be >= 0 (0=sites)")
+    .max(5, "starting_depth must be <= 5 (5=sensors)")
     .default(0)
     .describe(
       "Depth level to start showing assets. 0=sites, 1=buildings, 2=floors, 3=rooms/zones, 4=hives, 5=sensors. " +
@@ -72,6 +76,9 @@ const listTopologyInputShape = {
 
   traversal_depth: z
     .number()
+    .int("traversal_depth must be an integer")
+    .min(0, "traversal_depth must be >= 0")
+    .max(10, "traversal_depth must be <= 10")
     .default(0)
     .describe(
       "How many levels below starting_depth to traverse. 0=starting level only, 1=one level below, etc. " +
@@ -79,7 +86,7 @@ const listTopologyInputShape = {
     ),
 
   tag_names: z
-    .array(z.string().min(1, "Tag cannot be empty").trim())
+    .array(z.string().trim().min(1, "Tag cannot be empty"))
     .min(1, "tag_names array cannot be empty")
     .optional()
     .describe(
@@ -91,7 +98,7 @@ const listTopologyInputShape = {
     .enum(["all", "any"])
     .default("any")
     .describe(
-      "Multi-tag semantics when tag_names has more than one entry: 'any' (default) keeps entities tagged with at least one of the names, 'all' keeps only entities tagged with every name (within the same entity type). Defaults to 'any' here, unlike butlr_available_rooms which defaults to 'all'."
+      "Multi-tag semantics when tag_names has more than one entry: 'any' (default) keeps entities whose subtree is covered by at least one of the named tags. 'all' keeps entities whose subtree is covered by EVERY named tag — e.g. a floor-tag combined with a room-tag on a room inside that floor yields the room (it's in both subtrees), not the empty intersection. Defaults to 'any' here, unlike butlr_available_rooms which defaults to 'all' because it filters a single entity type."
     ),
 };
 
@@ -301,13 +308,15 @@ function expandToSubtreeClosure(sites: Site[], rootIds: string[]): Set<string> {
 /**
  * Execute butlr_list_topology tool
  */
-export async function executeListTopology(
-  args: ListTopologyArgs = {} as ListTopologyArgs
-): Promise<ListTopologyResponse> {
+export async function executeListTopology(args: ListTopologyArgs): Promise<ListTopologyResponse> {
   const startingDepth = args.starting_depth ?? 0;
   const traversalDepth = args.traversal_depth ?? 0;
   const assetIds = args.asset_ids ?? [];
-  const tagNames = args.tag_names ?? [];
+  // Brand the input tag names at the boundary so the response surface
+  // keeps the `TagName` brand. Zod gives us plain strings; downstream
+  // consumers benefit from the brand surviving onto `tag_filter.names`,
+  // `unknown_tags`, and the diagnostic union.
+  const tagNames: TagName[] = (args.tag_names ?? []).map((n) => asTagName(n));
   // Default is "any" here, in contrast to butlr_available_rooms which
   // defaults to "all". The asymmetry is intentional — list-topology
   // filters across rooms/zones/floors where intersection is rarely
@@ -348,14 +357,15 @@ export async function executeListTopology(
         fetchPolicy: "network-only",
       });
       throwIfGraphQLErrors(tagsResult);
+      // Same null-is-violation rule as butlr-list-tags — see comment there.
       const tags = tagsResult.data?.tags;
-      if (tags !== null && tags !== undefined && !Array.isArray(tags)) {
+      if (!Array.isArray(tags)) {
         throwInternalError(
           "Unexpected response shape from tags query (expected array, got " +
-            `${typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
+            `${tags === null ? "null" : typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
         );
       }
-      tagsRaw = tags ?? [];
+      tagsRaw = tags;
     } catch (error: unknown) {
       rethrowIfGraphQLError(error);
       throw error;
@@ -399,23 +409,28 @@ export async function executeListTopology(
       // shape under a different key. Cache miss → emit `asset_ids_unverified`
       // so the caller knows the asset typo (if any) wasn't checked. Paying
       // for a full topology fetch here would dwarf the actual short-circuit.
+      //
+      // Skip the probe entirely when BUTLR_ORG_ID is unset: the cache key
+      // would fall back to "default", which is shared across every org a
+      // multi-tenant process talks to. Reading authoritative asset-scope
+      // diagnostics against a tree from a different org would emit
+      // `asset_scope_empty` for IDs that exist in the caller's actual org.
       if (assetIds.length > 0) {
-        const cached = getCachedTopology(
-          generateTopologyCacheKey(
-            process.env.BUTLR_ORG_ID || "default",
-            true,
-            true,
-            true,
-            undefined
-          )
-        );
-        const cachedSites = cached?.data?.sites as Site[] | undefined;
-        if (cachedSites) {
-          if (expandToSubtreeClosure(cachedSites, assetIds).size === 0) {
-            diagnostics.push({ kind: "asset_scope_empty", asset_ids: assetIds });
-          }
-        } else {
+        const orgId = process.env.BUTLR_ORG_ID;
+        if (!orgId) {
           diagnostics.push({ kind: "asset_ids_unverified" });
+        } else {
+          const cached = getCachedTopology(
+            generateTopologyCacheKey(orgId, true, true, true, undefined)
+          );
+          const cachedSites = cached?.data?.sites as Site[] | undefined;
+          if (cachedSites) {
+            if (expandToSubtreeClosure(cachedSites, assetIds).size === 0) {
+              diagnostics.push({ kind: "asset_scope_empty", asset_ids: assetIds });
+            }
+          } else {
+            diagnostics.push({ kind: "asset_ids_unverified" });
+          }
         }
       }
       diagnostics.push(...earlyDiagnostics);
@@ -504,13 +519,14 @@ export async function executeListTopology(
         fetchPolicy: "network-only",
       });
 
-      // Apollo can return both data and errors - only fail if we have no data
+      // Apollo can return both data and errors - only fail if we have no
+      // data. Route the error through `throwIfGraphQLErrors` so it lands
+      // as a translated MCP error (AUTH_EXPIRED, RATE_LIMITED, etc.)
+      // rather than as a raw `result.error` shape that downstream
+      // duck-typing might or might not recognise.
       if (!result.data || !result.data.sites || !result.data.sites.data) {
-        // If we have error but no data, throw
-        if (result.error) {
-          throw result.error;
-        }
-        throw new Error("Invalid response structure from API");
+        throwIfGraphQLErrors(result);
+        throwInternalError("Invalid response structure from API (missing data.sites.data)");
       }
 
       // Track whether the topology data is partial (errors alongside data)
@@ -535,10 +551,32 @@ export async function executeListTopology(
         }),
       ]);
 
+      throwIfGraphQLErrors(sensorsResult);
+      throwIfGraphQLErrors(hivesResult);
+
+      // Mirror the tags-fetch shape contract: only an explicit array survives;
+      // `null` / `undefined` / non-array shapes throw as upstream contract
+      // violations. `|| []` here would silently launder a serialisation
+      // regression into an empty-devices topology.
+      const rawSensors = sensorsResult.data?.sensors?.data;
+      if (!Array.isArray(rawSensors)) {
+        throwInternalError(
+          "Unexpected response shape from sensors query (expected array, got " +
+            `${rawSensors === null ? "null" : typeof rawSensors}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
+      }
+      const rawHives = hivesResult.data?.hives?.data;
+      if (!Array.isArray(rawHives)) {
+        throwInternalError(
+          "Unexpected response shape from hives query (expected array, got " +
+            `${rawHives === null ? "null" : typeof rawHives}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
+      }
+
       // Filter out test/placeholder devices from topology listing
       // (Note: These filters are ONLY for topology display, not occupancy queries)
-      const allSensors = (sensorsResult.data?.sensors?.data || []).filter(isProductionSensor);
-      const allHives = (hivesResult.data?.hives?.data || []).filter(isProductionHive);
+      const allSensors = rawSensors.filter(isProductionSensor);
+      const allHives = rawHives.filter(isProductionHive);
 
       debug(
         "butlr-list-topology",
@@ -700,6 +738,28 @@ export async function executeListTopology(
     }
   }
 
+  // Tag-match='all' no-overlap diagnostic: every requested tag resolved
+  // and each has associations, but the per-tag SUBTREE intersection is
+  // empty (e.g. tag A on Room X, tag B on Room Y in different floors).
+  // Without this branch the user gets `tree: []` and no diagnostic when
+  // no asset_ids filter is in play. Gate on the absence of higher-
+  // priority diagnostics so we don't double-report.
+  if (
+    tagMatch === "all" &&
+    resolvedTagRows &&
+    resolvedTagRows.length > 1 &&
+    filterIds !== undefined &&
+    filterIds.length === 0 &&
+    !partialData &&
+    !allGhostEmitted &&
+    diagnostics.length === 0
+  ) {
+    diagnostics.push({
+      kind: "tag_match_all_no_overlap",
+      resolved_names: resolvedTagRows.map((r) => asTagName(r.name)),
+    });
+  }
+
   // Depth-slicing diagnostic: filter resolved to entities (filterIds and
   // filteredSites both non-empty) but the formatter's depth window
   // sliced them out. Without this branch the user gets `tree: []` and no
@@ -713,7 +773,8 @@ export async function executeListTopology(
       d.kind === "tag_associations_all_ghost" ||
       d.kind === "tag_no_associations" ||
       d.kind === "tag_no_match" ||
-      d.kind === "tag_match_all_unsatisfiable"
+      d.kind === "tag_match_all_unsatisfiable" ||
+      d.kind === "tag_match_all_no_overlap"
   );
   if (
     tree.length === 0 &&
@@ -837,6 +898,14 @@ function renderDiagnostic(d: TopologyDiagnostic): string {
         `traversal_depth=${d.traversal_depth}). Lower starting_depth or ` +
         "raise traversal_depth to surface the matches."
       );
+    case "tag_match_all_no_overlap":
+      return (
+        `tag_match='all' but the subtree intersection of ` +
+        `[${d.resolved_names.join(", ")}] is empty — the tags apply to ` +
+        "entities under different parents. Try tag_match='any', drop a " +
+        "tag, or use butlr_list_tags { include_entities: true } to inspect " +
+        "where each tag lives."
+      );
     default: {
       // Exhaustiveness guard — adding a new TopologyDiagnostic arm without
       // a matching case here fails to compile because `assertNever` only
@@ -846,6 +915,9 @@ function renderDiagnostic(d: TopologyDiagnostic): string {
       // cache or transport) doesn't crash the response renderer.
       assertNever(d);
       const unknownKind = (d as { kind?: string }).kind ?? "unspecified";
+      // Surface version-skew explicitly in logs so an operator notices
+      // the drift without needing to spelunk the response shape.
+      debug("topology-diagnostic-unknown-kind", unknownKind);
       return `Unknown diagnostic kind: ${unknownKind}`;
     }
   }

@@ -89,6 +89,14 @@ export interface ListTagsResponse {
   readonly total: number;
   readonly timestamp: string;
   readonly filtered_by?: Record<string, unknown>;
+  /**
+   * Set when upstream returned tag rows missing a usable id/name
+   * (`malformed_tag_rows` analogue). Counts and entities reflect the
+   * surviving valid rows; this field tells the caller how many were
+   * dropped so they can surface or escalate the upstream contract
+   * violation rather than misread it as "tag deleted".
+   */
+  readonly warning?: string;
 }
 
 function totalUsage(t: TagSummary): number {
@@ -108,20 +116,37 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
 
     throwIfGraphQLErrors(result);
     // Distinguish "empty array" (legitimate — org has no tags) from
-    // "null" (upstream contract violation — should be `[]` if empty).
-    // `?? []` would silently equate the two, hiding a real signal.
+    // "null" (upstream contract violation — the schema should send `[]`
+    // when empty, never `null`). Treating `null` as legitimate-empty
+    // would silently launder a serialisation regression. `undefined`
+    // (field omitted entirely) is similarly treated as a contract
+    // violation; only an explicit array survives.
     const tags = result.data?.tags;
-    if (tags !== null && tags !== undefined && !Array.isArray(tags)) {
+    if (!Array.isArray(tags)) {
       throwInternalError(
         "Unexpected response shape from tags query (expected array, got " +
-          `${typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
+          `${tags === null ? "null" : typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
       );
     }
-    rawTags = tags ?? [];
+    rawTags = tags;
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
     throw error;
   }
+
+  // Validate each row at the boundary. Mirrors the contract that
+  // `resolveTagNames` enforces on the topology path: any row missing a
+  // usable id/name is dropped, and the dropped count is surfaced as a
+  // `malformed_tag_rows` diagnostic. Without this, the name_contains
+  // filter below would call `.toLowerCase()` on a non-string and crash
+  // with a raw TypeError outside the MCP error translator.
+  const isValidRow = (t: RawTagWithUsage): boolean =>
+    typeof t?.id === "string" &&
+    t.id.trim().length > 0 &&
+    typeof t?.name === "string" &&
+    t.name.trim().length > 0;
+  const validTagRows = rawTags.filter(isValidRow);
+  const malformedTagRowCount = rawTags.length - validTagRows.length;
 
   // `projectValidRefs` filters out refs without a usable id (dangling
   // associations after a hard delete, or partial GraphQL responses).
@@ -130,7 +155,7 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
   // helper is shared with `butlr_list_topology` so the validity predicate
   // lives in one place — if the rule ever tightens, both tools update
   // together.
-  let tags: TagSummary[] = rawTags.map((t) => {
+  let tags: TagSummary[] = validTagRows.map((t) => {
     const rooms = projectValidRefs(t.rooms);
     const zones = projectValidRefs(t.zones);
     const floors = projectValidRefs(t.floors);
@@ -170,11 +195,18 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
   if (include_entities === true) explicitFilters.include_entities = true;
   const hasFilters = Object.keys(explicitFilters).length > 0;
 
+  const warning =
+    malformedTagRowCount > 0
+      ? `${malformedTagRowCount} tag row(s) skipped — upstream returned entries ` +
+        "with missing or empty id/name fields. If unexpected, contact support."
+      : undefined;
+
   return {
     tags,
     total: tags.length,
     timestamp: new Date().toISOString(),
     ...(hasFilters ? { filtered_by: explicitFilters } : {}),
+    ...(warning !== undefined ? { warning } : {}),
   };
 }
 

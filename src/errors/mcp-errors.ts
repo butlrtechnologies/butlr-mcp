@@ -4,6 +4,13 @@ import { debug } from "../utils/debug.js";
 /**
  * Wraps a tool handler to catch errors and return them as MCP tool errors
  * with isError: true, so the LLM can see and handle the error.
+ *
+ * If the underlying error message already carries a `[CODE]` prefix
+ * (added by `formatMCPError` upstream), the message passes through. If
+ * it doesn't — non-Apollo Error classes, unrelated `throw new Error(...)`
+ * sites, ServerParseError, etc. — we wrap with an INTERNAL_ERROR prefix
+ * so consumers branching on `[XXX]` still see a structured code. Stack
+ * traces survive in the `debug` log but never reach the response body.
  */
 export function withToolErrorHandling(
   handler: (args: Record<string, unknown>) => Promise<CallToolResult>
@@ -12,10 +19,19 @@ export function withToolErrorHandling(
     try {
       return await handler(args);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      debug("tool-error", message, error);
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      debug("tool-error", rawMessage, stack ?? error);
+      // Already-translated errors carry the `[CODE]` prefix; preserve them.
+      const text = /^\[[A-Z_]+\]/.test(rawMessage)
+        ? rawMessage
+        : formatMCPError({
+            code: MCPErrorCode.INTERNAL_ERROR,
+            message: rawMessage || "Unknown internal error",
+            retryable: false,
+          });
       return {
-        content: [{ type: "text" as const, text: message }],
+        content: [{ type: "text" as const, text }],
         isError: true,
       };
     }
@@ -92,11 +108,21 @@ export function translateGraphQLError(error: GraphQLClientError): MCPError {
       };
     }
 
-    // Bad request / validation
+    // Bad request / validation. Surface the upstream message in the
+    // user-visible string so an LLM caller debugging a 400 doesn't have
+    // to wait for DEBUG=butlr-mcp to see "Unknown tag id: foo_bar". Fall
+    // back to the generic phrasing only when no message can be extracted.
     if (networkError.statusCode === 400) {
+      const body = networkError.result as { errors?: Array<{ message?: unknown }> } | undefined;
+      const upstreamMessage =
+        body?.errors?.find((e) => typeof e?.message === "string")?.message ??
+        (typeof networkError.message === "string" ? networkError.message : undefined);
+      const truncate = (s: string): string => (s.length > 240 ? `${s.slice(0, 240)}…` : s);
       return {
         code: MCPErrorCode.VALIDATION_FAILED,
-        message: "Invalid request parameters.",
+        message: upstreamMessage
+          ? `Invalid request: ${truncate(String(upstreamMessage))}`
+          : "Invalid request parameters.",
         details: {
           statusCode: 400,
           body: networkError.result,
@@ -192,12 +218,17 @@ export function formatMCPError(error: MCPError): string {
  * the failure surfaces with a structured `[INTERNAL_ERROR]` prefix that
  * `withToolErrorHandling` translates uniformly. Without this, every tool
  * would have a different error-shape contract for the same class of bug.
+ *
+ * `retryable: false` — contract violations are not transient. If the
+ * upstream returned a non-array where an array was contracted, retrying
+ * will yield the same broken response. MCP clients that auto-retry
+ * `retryable: true` errors would spin against this signal otherwise.
  */
 export function throwInternalError(message: string): never {
   const mcpError: MCPError = {
     code: MCPErrorCode.INTERNAL_ERROR,
     message,
-    retryable: true,
+    retryable: false,
   };
   throw new Error(formatMCPError(mcpError));
 }

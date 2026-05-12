@@ -6,7 +6,7 @@
  */
 
 import type { Capacity, Area } from "../clients/types.js";
-import type { TagMatch } from "../clients/queries/tags.js";
+import type { TagMatch, TagName } from "../clients/queries/tags.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ export interface AvailableRoomsResponse {
   building_context?: BuildingContext;
   warning?: string;
   /** Tag names from the request that did not resolve to any tag in this org. */
-  unknown_tags?: string[];
+  unknown_tags?: ReadonlyArray<TagName>;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,9 +186,9 @@ export type TopologyDiagnostic =
   /** Upstream returned errors alongside data; tree may be incomplete. */
   | { kind: "partial_topology" }
   /** Every supplied `tag_names` was unknown — no tag-side match possible. */
-  | { kind: "tag_no_match"; unknown_names: ReadonlyArray<string> }
+  | { kind: "tag_no_match"; unknown_names: ReadonlyArray<TagName> }
   /** One or more `tag_names` did not resolve; the resolved subset still applies. */
-  | { kind: "unknown_tags"; names: ReadonlyArray<string> }
+  | { kind: "unknown_tags"; names: ReadonlyArray<TagName> }
   /**
    * `tag_match='all'` cannot be satisfied because at least one requested
    * tag is unknown. `partial_resolved_count` reports how many of the
@@ -197,11 +197,11 @@ export type TopologyDiagnostic =
    */
   | {
       kind: "tag_match_all_unsatisfiable";
-      unknown_names: ReadonlyArray<string>;
+      unknown_names: ReadonlyArray<TagName>;
       partial_resolved_count: number;
     }
   /** Every supplied tag resolved but none have associated entities. */
-  | { kind: "tag_no_associations"; tag_match: TagMatch; tag_names: ReadonlyArray<string> }
+  | { kind: "tag_no_associations"; tag_match: TagMatch; tag_names: ReadonlyArray<TagName> }
   /** `asset_ids` did not resolve to any entity in the org. */
   | { kind: "asset_scope_empty"; asset_ids: ReadonlyArray<string> }
   /** `asset_ids` and `tag_names` both resolved but their subtrees do not overlap. */
@@ -214,6 +214,15 @@ export type TopologyDiagnostic =
   | { kind: "asset_ids_unverified" }
   /** Upstream tag rows had missing/empty id or name fields and were skipped. */
   | { kind: "malformed_tag_rows"; count: number }
+  /**
+   * `tag_match='all'` — every requested tag resolved AND each carries at
+   * least one association, but the per-tag SUBTREE intersection is empty
+   * (e.g. tag A on Room X, tag B on Room Y in a different floor, with no
+   * common ancestor). Distinct from `tag_no_associations` (no tag has any
+   * associations) and `asset_tag_disjoint` (intersection narrowed by a
+   * separate `asset_ids` filter).
+   */
+  | { kind: "tag_match_all_no_overlap"; resolved_names: ReadonlyArray<TagName> }
   /**
    * The composed filter resolved to a non-empty entity set, but every
    * matched entity sits outside the rendered tree window — i.e. the
@@ -229,7 +238,7 @@ export interface ListTopologyResponse {
     traversal_depth: number;
     asset_filter: ReadonlyArray<string> | "all";
     tag_filter?: {
-      names: ReadonlyArray<string>;
+      names: ReadonlyArray<TagName>;
       match: TagMatch;
     };
   };
@@ -238,7 +247,7 @@ export interface ListTopologyResponse {
   warning?: string;
   /** Structured diagnostics — preferred over `warning` for programmatic consumers. */
   warnings?: ReadonlyArray<TopologyDiagnostic>;
-  unknown_tags?: ReadonlyArray<string>;
+  unknown_tags?: ReadonlyArray<TagName>;
 }
 
 // ---------------------------------------------------------------------------
