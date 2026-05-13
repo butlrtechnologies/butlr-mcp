@@ -74,6 +74,13 @@ type FetchEntityDetailsArgs = z.output<typeof FetchEntityDetailsArgsSchema>;
 /**
  * Build GraphQL query dynamically based on requested fields
  */
+// GraphQL object-typed fields require an explicit subselection. The
+// allowlist guard only checks for safe identifiers; the emitted query
+// substitutes the canonical subselection for any field listed here.
+const FIELD_SELECTIONS: Record<string, string> = {
+  tags: "tags { id name }",
+};
+
 function buildQueryForFields(type: string, fields: string[]): ReturnType<typeof gql> {
   // Defense-in-depth: reject any field name that isn't a simple identifier
   for (const field of fields) {
@@ -81,7 +88,7 @@ function buildQueryForFields(type: string, fields: string[]): ReturnType<typeof 
       throw new Error(`Invalid field name: ${field}`);
     }
   }
-  const fieldList = fields.join("\n      ");
+  const fieldList = fields.map((f) => FIELD_SELECTIONS[f] ?? f).join("\n      ");
 
   switch (type) {
     case "site":

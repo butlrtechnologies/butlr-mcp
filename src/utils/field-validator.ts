@@ -68,6 +68,7 @@ const VALID_FIELDS: Record<EntityType, readonly string[]> = {
     "sensors",
     "hives",
     "building",
+    "tags",
   ],
   room: [
     "id",
@@ -82,6 +83,7 @@ const VALID_FIELDS: Record<EntityType, readonly string[]> = {
     "note",
     "sensors",
     "floor",
+    "tags",
   ],
   zone: [
     "id",
@@ -95,6 +97,7 @@ const VALID_FIELDS: Record<EntityType, readonly string[]> = {
     "rotation",
     "note",
     "sensors",
+    "tags",
   ],
   sensor: [
     "id",

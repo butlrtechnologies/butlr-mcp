@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-12
+
+### Added
+- `butlr_get_asset_details` now returns `tags: [{ id, name }]` on every room, zone, and floor response — closing the asymmetry where callers could find rooms *by* tag (via `butlr_list_tags { include_entities: true }` or `butlr_list_topology { tag_names: [...] }`) but couldn't see *which* tags a known asset carries. Buildings and sites do not have tags in the data model, so their responses are unchanged. The field is always present (`[]` when the asset has no tags) so consumers can rely on a stable response shape. The shape `{id, name}` mirrors the `TaggedEntityRef` projection used elsewhere for consistency. Adds an integration-test suite for `butlr_get_asset_details` (previously uncovered).
+
 ## [0.3.0] - 2026-05-12
 
 ### Added

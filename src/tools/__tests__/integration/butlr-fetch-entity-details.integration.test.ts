@@ -1,6 +1,24 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { parse, type FieldNode, type OperationDefinitionNode } from "graphql";
 import { executeFetchEntityDetails } from "../../butlr-fetch-entity-details.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
+
+function directSelectionsOf(querySource: string, rootField: string): string[] | null {
+  const ast = parse(querySource);
+  for (const def of ast.definitions) {
+    if (def.kind !== "OperationDefinition") continue;
+    const op = def as OperationDefinitionNode;
+    const root = op.selectionSet.selections.find(
+      (s): s is FieldNode => s.kind === "Field" && s.name.value === rootField
+    );
+    if (!root) return null;
+    if (!root.selectionSet) return [];
+    return root.selectionSet.selections
+      .filter((s): s is FieldNode => s.kind === "Field")
+      .map((s) => s.name.value);
+  }
+  return null;
+}
 
 // Mock the GraphQL client
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -280,6 +298,84 @@ describe("butlr_fetch_entity_details - Integration", () => {
       const missing = result.entities.find((e) => e.id === "sensor_002");
       expect(missing?.error).toBe("Asset not found");
       expect(result.warning).toContain("1 of 2 entities failed");
+    });
+  });
+
+  // Sibling-tool symmetry: butlr_get_asset_details already surfaces tags on
+  // room/zone/floor responses. butlr_fetch_entity_details (this tool) must
+  // accept `tags` in its per-type allowlist and emit the correct
+  // subselection (`tags { id name }`) — naked `tags` would be invalid
+  // GraphQL because the field is an object type.
+  describe("Tags field on room/zone/floor", () => {
+    function captureQueryFor(rootField: "room" | "zone" | "floor", responseData: unknown) {
+      let captured = "";
+      vi.mocked(apolloClient.query).mockImplementation((options: never) => {
+        captured =
+          (options as { query?: { loc?: { source?: { body?: string } } } })?.query?.loc?.source
+            ?.body ?? "";
+        return Promise.resolve({
+          data: { [rootField]: responseData },
+          loading: false,
+          networkStatus: 7,
+        } as never);
+      });
+      return () => captured;
+    }
+
+    it("emits `tags { id name }` subselection on room queries", async () => {
+      const getCaptured = captureQueryFor("room", {
+        id: "room_100",
+        tags: [{ id: "t1", name: "lab" }],
+      });
+
+      const result = await executeFetchEntityDetails({
+        ids: ["room_100"],
+        room_fields: ["tags"],
+      });
+
+      const roomSelections = directSelectionsOf(getCaptured(), "room");
+      expect(roomSelections).toContain("tags");
+      expect(roomSelections).toContain("id"); // id is always injected
+      expect(result.entities[0].tags).toEqual([{ id: "t1", name: "lab" }]);
+    });
+
+    it("emits `tags { id name }` subselection on zone queries", async () => {
+      const getCaptured = captureQueryFor("zone", {
+        id: "zone_1",
+        tags: [{ id: "t1", name: "quiet" }],
+      });
+
+      const result = await executeFetchEntityDetails({
+        ids: ["zone_1"],
+        zone_fields: ["tags"],
+      });
+
+      expect(directSelectionsOf(getCaptured(), "zone")).toContain("tags");
+      expect(result.entities[0].tags).toEqual([{ id: "t1", name: "quiet" }]);
+    });
+
+    it("emits `tags { id name }` subselection on floor queries", async () => {
+      const getCaptured = captureQueryFor("floor", {
+        id: "space_1",
+        tags: [],
+      });
+
+      const result = await executeFetchEntityDetails({
+        ids: ["space_1"],
+        floor_fields: ["tags"],
+      });
+
+      expect(directSelectionsOf(getCaptured(), "floor")).toContain("tags");
+      expect(result.entities[0].tags).toEqual([]);
+    });
+
+    it("rejects `tags` as a field for building (Building schema has no tags)", async () => {
+      await expect(
+        executeFetchEntityDetails({
+          ids: ["building_1"],
+          building_fields: ["tags"],
+        })
+      ).rejects.toThrow(/Invalid fields for building/);
     });
   });
 

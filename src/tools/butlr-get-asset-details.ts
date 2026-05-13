@@ -66,13 +66,15 @@ const GET_ASSET_DETAILS_DESCRIPTION =
   "5. \"Show me sensor MAC addresses for Room 'Café Barista' for field tech visit\"\n" +
   '6. "Get hive serial numbers and online status for Building 2"\n' +
   '7. "Show me site timezone and all buildings in the Chicago office"\n' +
-  '8. "Get room coordinates and rotation for floor plan mapping"\n\n' +
+  '8. "Get room coordinates and rotation for floor plan mapping"\n' +
+  '9. "Which tags are applied to this room?" (after finding the room ID via butlr_search_assets — tags always returned for rooms/zones/floors)\n\n' +
   "When to Use:\n" +
   "- Have asset IDs and need detailed configuration, metadata, or relationships\n" +
   "- Validating sensor/hive assignments for troubleshooting (which hive is this sensor on?)\n" +
   "- Need room capacities, areas, or coordinates for space planning or floor plan integrations\n" +
   "- Preparing for field technician site visit (need device identifiers: MACs, serials)\n" +
-  "- Building integrations and need to fetch parent context (room → floor → building → site)\n\n" +
+  "- Building integrations and need to fetch parent context (room → floor → building → site)\n" +
+  "- Inspecting which tags a specific room/zone/floor carries without searching the org tag list\n\n" +
   "When NOT to Use:\n" +
   "- Don't have asset IDs yet → use butlr_search_assets first to find IDs by name\n" +
   "- Need real-time occupancy or sensor data → use occupancy/traffic tools instead\n" +
@@ -80,7 +82,8 @@ const GET_ASSET_DETAILS_DESCRIPTION =
   "- Need to update/configure assets → this is read-only; use Butlr Dashboard for changes\n\n" +
   "Options: include_children (default true), include_devices (default false), include_parent_context (default true)\n\n" +
   "Batch Query: Supports multiple IDs in single call - mixed asset types supported\n\n" +
-  "See Also: butlr_search_assets, butlr_list_topology, butlr_fetch_entity_details, butlr_hardware_snapshot";
+  "Tags: rooms, zones, and floors include a `tags: [{id, name}]` array in the response (always present, empty if the asset has no tags). Buildings and sites do not have tags in the data model. Tags appear only on the top-level requested asset — when `include_children: true`, nested rooms/zones inside a floor response do NOT carry their own `tags`; call butlr_get_asset_details again with specific child IDs (up to 50 per batch) to see those. To discover what tag vocabulary exists in the org, use butlr_list_tags.\n\n" +
+  "See Also: butlr_search_assets, butlr_list_topology, butlr_list_tags, butlr_fetch_entity_details, butlr_hardware_snapshot";
 
 /**
  * Input arguments for get_asset_details (output type from Zod schema after defaults applied)
@@ -172,6 +175,12 @@ function buildQuery(
       `;
 
     case "floor":
+      // `tags { id name }` is always selected (no opt-in flag) — tags are
+      // entity metadata on the same level as name/capacity/area, not a
+      // fan-out relation that scales with topology size. The top-level
+      // asset gets its own tags; nested children (rooms/zones below)
+      // stay minimal — call `butlr_get_asset_details` on a specific
+      // child ID to see its tags.
       return gql`
         query GetFloorDetails($id: ID!) {
           floor(id: $id) {
@@ -184,6 +193,7 @@ function buildQuery(
             customID
             capacity { max mid }
             area { value unit }
+            tags { id name }
             ${
               includeParentContext
                 ? `
@@ -250,6 +260,8 @@ function buildQuery(
       `;
 
     case "room":
+      // `tags { id name }` is always selected — entity metadata, not a
+      // fan-out relation. Cost is bounded by the per-entity tag count.
       return gql`
         query GetRoomDetails($id: ID!) {
           room(id: $id) {
@@ -262,6 +274,7 @@ function buildQuery(
             coordinates
             rotation
             note
+            tags { id name }
             ${
               includeParentContext
                 ? `
@@ -301,6 +314,8 @@ function buildQuery(
       `;
 
     case "zone":
+      // `tags { id name }` is always selected — entity metadata, not a
+      // fan-out relation. Cost is bounded by the per-entity tag count.
       return gql`
         query GetZoneDetails($id: ID!) {
           zone(id: $id) {
@@ -313,6 +328,7 @@ function buildQuery(
             coordinates
             rotation
             note
+            tags { id name }
             ${
               includeDevices
                 ? `
@@ -401,7 +417,16 @@ export async function executeGetAssetDetails(args: GetAssetDetailsArgs) {
       }
       const asset = data[type];
       if (asset && typeof asset === "object") {
-        results.push({ ...(asset as Record<string, unknown>), _type: type });
+        const assetRecord = { ...(asset as Record<string, unknown>) };
+        // The MCP tool description guarantees `tags: TagRef[]` is always
+        // present on room/zone/floor responses. Apollo `errorPolicy: 'all'`
+        // and nullable list resolvers can yield `tags: null` or omit the
+        // field on partial-error paths; coerce here so the wire contract
+        // and the TypeScript type agree at the tool boundary.
+        if (type === "room" || type === "zone" || type === "floor") {
+          assetRecord.tags = Array.isArray(assetRecord.tags) ? assetRecord.tags : [];
+        }
+        results.push({ ...assetRecord, _type: type });
       } else {
         debug("get-asset-details", `Asset not found: ${id}`);
       }
