@@ -259,7 +259,9 @@ export function getTrafficCoverageNote(
  * Build measurement recommendation based on data availability AND query success.
  *
  * Unlike the previous implementation, this checks whether data was actually retrieved,
- * not just whether sensors exist.
+ * not just whether sensors exist. When both measurement types fail, the reason
+ * distinguishes three sub-cases (no sensors / sensors-but-quiet / call errored)
+ * so downstream LLMs don't conflate "uninstrumented space" with "no recent reads."
  */
 export function buildRecommendation(
   presence: BaseMeasurementData,
@@ -290,9 +292,73 @@ export function buildRecommendation(
     };
   }
 
-  const failureReason = presence.warning || traffic.warning || "No occupancy data available.";
   return {
     recommended_measurement: "none",
-    recommendation_reason: failureReason,
+    recommendation_reason: buildFailureReason(presence, traffic, presenceHasData, trafficHasData),
   };
+}
+
+/**
+ * Compose the recommendation_reason when neither presence nor traffic yielded a
+ * usable reading. Prefers the more actionable of the two measurement types,
+ * giving the customer something concrete to do next (instrument the space,
+ * wait for the next read, check sensor health, or retry the call).
+ *
+ * Avoids the literal phrase "no occupancy data" — downstream LLMs were quoting
+ * it verbatim and turning "quiet but instrumented" into "the space is
+ * unmonitored," which is the opposite of true.
+ */
+function buildFailureReason(
+  presence: BaseMeasurementData,
+  traffic: BaseMeasurementData,
+  presenceHasData: boolean,
+  trafficHasData: boolean
+): string {
+  const presenceReason = describeMeasurementFailure("presence", presence, presenceHasData);
+  const trafficReason = describeMeasurementFailure("traffic", traffic, trafficHasData);
+
+  // Prefer presence when it's applicable to this asset (zones in particular
+  // have traffic permanently unavailable, so the traffic reason is noise).
+  // For non-zone assets, also prefer presence — it's the more informative
+  // signal when both measurement types are configured but quiet.
+  if (presenceReason) return presenceReason;
+  if (trafficReason) return trafficReason;
+
+  // Defensive fallback: neither measurement type was applicable to this asset
+  // at all. Shouldn't happen in practice (an asset always has at least one
+  // applicable measurement type), but the type system can't guarantee it.
+  return "No recent occupancy reads. Check butlr_hardware_snapshot for sensor health.";
+}
+
+/**
+ * Returns a customer-facing explanation of why a measurement type produced no
+ * usable reading, or `undefined` if the measurement type is not applicable to
+ * this asset (e.g. traffic on a zone).
+ */
+function describeMeasurementFailure(
+  kind: "presence" | "traffic",
+  data: BaseMeasurementData,
+  hasData: boolean
+): string | undefined {
+  // Not applicable to this asset (e.g. traffic on a zone). The caller's
+  // coverage_note already explains why; surfacing it here would be redundant.
+  if (!data.available && !data.warning) return undefined;
+
+  // The call errored. Surface the warning verbatim so the customer (and any
+  // LLM reading the response) gets the actual failure mode.
+  if (data.warning) {
+    return `Tried to retrieve ${kind} occupancy but the request failed: ${data.warning}. Retry with a smaller asset set, or check butlr_hardware_snapshot for sensor health.`;
+  }
+
+  const sensorCount = data.sensor_count ?? 0;
+
+  // Sensors are configured but the Reporting API had no reads in the query
+  // window. Honest: we don't know if the space is empty or if the sensors
+  // are stuck — point at hardware_snapshot for the health-check answer.
+  if (sensorCount > 0 && !hasData) {
+    return `Sensor(s) configured but no ${kind} reads in the last 5 minutes. The asset may currently be empty, or the sensor(s) may need a health check via butlr_hardware_snapshot.`;
+  }
+
+  // No sensors at all. The space is uninstrumented for this measurement type.
+  return `No ${kind} sensors configured for this asset. Contact facilities to instrument it before requesting ${kind} occupancy.`;
 }

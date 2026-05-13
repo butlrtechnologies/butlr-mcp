@@ -97,6 +97,64 @@ describe("buildRecommendation", () => {
     );
     expect(result.recommended_measurement).toBe("traffic");
   });
+
+  // -------------------------------------------------------------------------
+  // Failure-reason distinguishes three sub-cases — zone-quiet-but-instrumented
+  // bug: downstream LLMs were quoting "no occupancy data available" verbatim
+  // and telling customers the space was unmonitored when sensors were fine.
+  // -------------------------------------------------------------------------
+
+  it('reason mentions "sensor(s) configured" when presence sensors exist but returned no reads (zone-quiet case)', () => {
+    // Mirrors the live zone_30IFLPtiaKLh... shape: presence available with one
+    // sensor configured, no warning, no recent reads. Traffic not applicable
+    // (zones don't support it).
+    const result = buildRecommendation(
+      makePresenceData({ available: true, sensor_count: 1 }),
+      { available: false, coverage_note: "Zones do not support traffic." },
+      false,
+      false
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).toMatch(/[Ss]ensor\(s\) configured/);
+    expect(result.recommendation_reason).toMatch(/butlr_hardware_snapshot/);
+    expect(result.recommendation_reason.toLowerCase()).not.toContain("no occupancy data");
+  });
+
+  it('reason mentions "no presence sensors configured" when presence is unavailable due to zero sensors', () => {
+    // Asset has no presence sensors at all (sensor_count: 0). For a zone this
+    // is the "uninstrumented space" case; for a room/floor it's
+    // available=false because the sensor-gating short-circuits the query.
+    const result = buildRecommendation(
+      {
+        available: true,
+        sensor_count: 0,
+        coverage_note: "Zones support presence measurement only.",
+      },
+      { available: false, coverage_note: "Zones do not support traffic." },
+      false,
+      false
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).toMatch(/[Nn]o presence sensors configured/);
+    expect(result.recommendation_reason.toLowerCase()).not.toContain("no occupancy data");
+  });
+
+  it("reason surfaces the warning text verbatim when the presence call errored", () => {
+    const result = buildRecommendation(
+      makePresenceData({
+        available: true,
+        sensor_count: 2,
+        warning: "Failed to retrieve current presence data. Occupancy value may be missing.",
+      }),
+      { available: false, coverage_note: "Zones do not support traffic." },
+      false,
+      false
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).toMatch(/Tried to retrieve presence/);
+    expect(result.recommendation_reason).toMatch(/Occupancy value may be missing/);
+    expect(result.recommendation_reason).toMatch(/butlr_hardware_snapshot/);
+  });
 });
 
 // ---------------------------------------------------------------------------
