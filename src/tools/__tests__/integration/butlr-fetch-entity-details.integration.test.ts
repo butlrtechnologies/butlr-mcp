@@ -379,6 +379,93 @@ describe("butlr_fetch_entity_details - Integration", () => {
     });
   });
 
+  // Regression: object-typed fields on the allowlist (capacity, area,
+  // collection fields, cross-entity refs) must emit a GraphQL
+  // subselection. A naked `capacity` previously produced
+  // `[INTERNAL_ERROR] Field "capacity" of type "Capacity!" must have a
+  // selection of subfields.` Surfaced via the e2e harness against v0.4.0.
+  describe("Object-typed field subselections", () => {
+    function captureQueryFor(rootField: "room" | "floor" | "building", responseData: unknown) {
+      let captured = "";
+      vi.mocked(apolloClient.query).mockImplementation((options: never) => {
+        captured =
+          (options as { query?: { loc?: { source?: { body?: string } } } })?.query?.loc?.source
+            ?.body ?? "";
+        return Promise.resolve({
+          data: { [rootField]: responseData },
+          loading: false,
+          networkStatus: 7,
+        } as never);
+      });
+      return () => captured;
+    }
+
+    function subselectionsOf(querySource: string, rootField: string, child: string): string[] {
+      const ast = parse(querySource);
+      for (const def of ast.definitions) {
+        if (def.kind !== "OperationDefinition") continue;
+        const op = def as OperationDefinitionNode;
+        const root = op.selectionSet.selections.find(
+          (s): s is FieldNode => s.kind === "Field" && s.name.value === rootField
+        );
+        const childNode = root?.selectionSet?.selections.find(
+          (s): s is FieldNode => s.kind === "Field" && s.name.value === child
+        );
+        if (!childNode?.selectionSet) return [];
+        return childNode.selectionSet.selections
+          .filter((s): s is FieldNode => s.kind === "Field")
+          .map((s) => s.name.value);
+      }
+      return [];
+    }
+
+    it("emits `capacity { max mid }` subselection (embedded value object)", async () => {
+      const getCaptured = captureQueryFor("room", {
+        id: "room_100",
+        name: "Conference Room A",
+        capacity: { max: 10, mid: 6 },
+      });
+
+      const result = await executeFetchEntityDetails({
+        ids: ["room_100"],
+        room_fields: ["name", "capacity"],
+      });
+
+      expect(subselectionsOf(getCaptured(), "room", "capacity")).toEqual(["max", "mid"]);
+      expect(result.entities[0].capacity).toEqual({ max: 10, mid: 6 });
+    });
+
+    it("emits `sensors { id name }` subselection (collection field)", async () => {
+      const getCaptured = captureQueryFor("floor", {
+        id: "space_001",
+        sensors: [{ id: "sensor_1", name: "Door A" }],
+      });
+
+      const result = await executeFetchEntityDetails({
+        ids: ["space_001"],
+        floor_fields: ["sensors"],
+      });
+
+      expect(subselectionsOf(getCaptured(), "floor", "sensors")).toEqual(["id", "name"]);
+      expect(result.entities[0].sensors).toEqual([{ id: "sensor_1", name: "Door A" }]);
+    });
+
+    it("emits `floor { id name }` subselection (cross-entity reference)", async () => {
+      const getCaptured = captureQueryFor("room", {
+        id: "room_100",
+        floor: { id: "space_001", name: "Floor 1" },
+      });
+
+      const result = await executeFetchEntityDetails({
+        ids: ["room_100"],
+        room_fields: ["floor"],
+      });
+
+      expect(subselectionsOf(getCaptured(), "room", "floor")).toEqual(["id", "name"]);
+      expect(result.entities[0].floor).toEqual({ id: "space_001", name: "Floor 1" });
+    });
+  });
+
   describe("Response structure", () => {
     it("includes all required top-level fields", async () => {
       vi.mocked(apolloClient.query).mockResolvedValue({

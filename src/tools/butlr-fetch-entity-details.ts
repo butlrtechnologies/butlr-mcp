@@ -77,8 +77,31 @@ type FetchEntityDetailsArgs = z.output<typeof FetchEntityDetailsArgsSchema>;
 // GraphQL object-typed fields require an explicit subselection. The
 // allowlist guard only checks for safe identifiers; the emitted query
 // substitutes the canonical subselection for any field listed here.
+// Every entry here corresponds to an object-typed (non-scalar) field in
+// the field-validator allowlist. Without these substitutions GraphQL
+// rejects the query with:
+//   `Field "X" of type "Y!" must have a selection of subfields.`
+// Scalars (id, name, *_id, coordinates, center, orientation, etc.) do
+// NOT belong here — adding them would re-introduce the same kind of bug
+// in the opposite direction (subselection on a scalar).
 const FIELD_SELECTIONS: Record<string, string> = {
+  // Tags (object-list on Floor/Room/Zone)
   tags: "tags { id name }",
+  // Embedded value objects
+  capacity: "capacity { max mid }",
+  address: "address { lines country }",
+  area: "area { value unit }",
+  // Collection fields (children in the topology hierarchy)
+  buildings: "buildings { id name }",
+  floors: "floors { id name }",
+  rooms: "rooms { id name }",
+  zones: "zones { id name }",
+  sensors: "sensors { id name }",
+  hives: "hives { id name }",
+  // Cross-entity parent references
+  site: "site { id name }",
+  building: "building { id name }",
+  floor: "floor { id name }",
 };
 
 function buildQueryForFields(type: string, fields: string[]): ReturnType<typeof gql> {
