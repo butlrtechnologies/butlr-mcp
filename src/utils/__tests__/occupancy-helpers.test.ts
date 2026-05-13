@@ -105,9 +105,9 @@ describe("buildRecommendation", () => {
   // -------------------------------------------------------------------------
 
   it('reason mentions "sensor(s) configured" when presence sensors exist but returned no reads (zone-quiet case)', () => {
-    // Mirrors the live zone_30IFLPtiaKLh... shape: presence available with one
-    // sensor configured, no warning, no recent reads. Traffic not applicable
-    // (zones don't support it).
+    // Zone-quiet shape: presence available with one sensor configured, no
+    // warning, no recent reads. Traffic not applicable (zones don't support
+    // it).
     const result = buildRecommendation(
       makePresenceData({ available: true, sensor_count: 1 }),
       { available: false, coverage_note: "Zones do not support traffic." },
@@ -393,7 +393,7 @@ describe("resolveAssetContext — zones read their own sensors via floor.zones[i
       zones: [
         {
           id: "zone_peloton",
-          name: "Peloton 1",
+          name: "Test Zone A",
           floor_id: "space_floor1",
           sensors: [zoneSensor],
         } as Zone,

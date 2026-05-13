@@ -402,7 +402,7 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
                           zones: [
                             {
                               id: "zone_target",
-                              name: "Peloton 1",
+                              name: "Test Zone A",
                               floor_id: floorId,
                             },
                           ],
@@ -484,7 +484,7 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
                           zones: [
                             {
                               id: "zone_with_sensor_ts",
-                              name: "Peloton 1",
+                              name: "Test Zone A",
                               floor_id: floorId,
                               sensors: [
                                 {

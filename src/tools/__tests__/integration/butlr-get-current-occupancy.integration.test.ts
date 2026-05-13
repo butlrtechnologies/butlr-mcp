@@ -487,7 +487,7 @@ describe("butlr_get_current_occupancy - Integration", () => {
                           zones: [
                             {
                               id: "zone_target",
-                              name: "Peloton 1",
+                              name: "Test Zone A",
                               floor_id: floorId,
                               room_id: "room_parent",
                             },
@@ -525,7 +525,7 @@ describe("butlr_get_current_occupancy - Integration", () => {
       const asset = result.assets[0];
       expect(asset.asset_id).toBe("zone_target");
       expect(asset.asset_type).toBe("zone");
-      expect(asset.asset_name).toBe("Peloton 1");
+      expect(asset.asset_name).toBe("Test Zone A");
       // Pre-fix: available was false (sensor_count === 0). Post-fix: zones are
       // always available — actual data presence is reflected in current_occupancy.
       expect(asset.presence.available).toBe(true);
@@ -605,8 +605,7 @@ describe("butlr_get_current_occupancy - Integration", () => {
     it("reports correct sensor_count for a zone with directly-attributed sensors", async () => {
       // Pre-fix: sensor_count was hardcoded to 0 for every zone, so an LLM
       // consumer would see "no sensors configured" even when the zone has
-      // a real presence sensor attached (verified against the live API:
-      // zone_30IFLPtiaKLhYOG3XgIvnts1PSF has 1 directly-attributed sensor).
+      // a real presence sensor attached via the GraphQL zone.sensors relation.
       const floorId = "space_zone_with_sensor";
       const zoneTopo = {
         topology: {
@@ -632,12 +631,12 @@ describe("butlr_get_current_occupancy - Integration", () => {
                           zones: [
                             {
                               id: "zone_with_sensor",
-                              name: "Peloton 1",
+                              name: "Test Zone A",
                               floor_id: floorId,
                               sensors: [
                                 {
                                   id: "sensor_zone_p1",
-                                  name: "Peloton Sensor",
+                                  name: "Test Sensor A",
                                   mac_address: "00:17:0d:00:00:6d:f3:0d",
                                   mode: "presence",
                                   floor_id: floorId,
