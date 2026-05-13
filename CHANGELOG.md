@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 - `butlr_get_current_occupancy` and `butlr_get_occupancy_timeseries` now report correct `sensor_count` for zones. Previously the responses hardcoded `sensor_count: 0` for every zone based on an incorrect assumption that zones had no client-visible sensor attribution. The GraphQL `zone.sensors` field returns directly-attributed sensors, which the topology query now fetches and `resolveAssetContext` correctly partitions by mode. Zones and rooms are sibling topology elements under a floor — the legacy `zone.room_id` field is decorative and does NOT roll up sensors from any notional parent room. Surfaced via the e2e harness: downstream LLMs were confidently hallucinating "no sensors configured" narratives whenever a zone was queried.
+- `butlr_space_busyness` no longer errors when computing the trend window. The trend computation called the v4 Stats API with a relative time format (`-4w`); the Stats API only accepts ISO-8601 absolute timestamps. Now converted at the call site.
 
 ## [0.4.0] - 2026-05-12
 
