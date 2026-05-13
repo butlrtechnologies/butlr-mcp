@@ -1,9 +1,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { apolloClient } from "../clients/graphql-client.js";
-import { GET_TAGS_WITH_USAGE } from "../clients/queries/tags.js";
+import {
+  GET_TAGS_WITH_USAGE,
+  type RawTagWithUsage,
+  type TaggedEntityRef,
+} from "../clients/queries/tags.js";
 import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
-import { withToolErrorHandling } from "../errors/mcp-errors.js";
+import { projectValidRefs } from "../utils/tag-resolver.js";
+import { withToolErrorHandling, throwInternalError } from "../errors/mcp-errors.js";
 import { debug } from "../utils/debug.js";
 
 const listTagsInputShape = {
@@ -23,6 +28,13 @@ const listTagsInputShape = {
     .describe(
       "Exclude tags whose total application count (rooms + zones + floors) is below this threshold"
     ),
+
+  include_entities: z
+    .boolean()
+    .default(false)
+    .describe(
+      "When true, each tag's response includes `applied_to_entities` with the id and name of every valid tagged room, zone, and floor (not just counts). Refs without a usable id (deleted entities whose tag link survived; partial GraphQL responses) are dropped silently — `applied_to.{rooms,zones,floors}` counts are derived from the SAME filtered list so they cannot disagree. Default false to keep the response token-light; set true when you need to know exactly which entities are tagged without follow-up calls."
+    ),
 };
 
 export const ListTagsArgsSchema = z.object(listTagsInputShape).strict();
@@ -39,44 +51,52 @@ const LIST_TAGS_DESCRIPTION =
   '1. "What tags are used in this org?" → list everything\n' +
   '2. "Show me video-conferencing tags" → name_contains: "videoconf"\n' +
   '3. "Which tags are actually in use?" → min_usage: 1\n' +
-  '4. "Find tags applied to many zones" → list, then look at applied_to.zones\n\n' +
+  '4. "Find tags applied to many zones" → list, then look at applied_to.zones\n' +
+  '5. "What rooms and zones are tagged \'huddle\'?" → name_contains: "huddle", include_entities: true\n\n' +
   "When to Use:\n" +
   "- Before any tag-based filter, to map a human term (e.g. 'videoconf') to the right tag id and entity level\n" +
   "- To understand whether a tag lives on rooms, zones, floors, or several levels at once\n" +
-  "- To audit tagging hygiene (unused tags, single-level tags, etc.)\n\n" +
+  "- To audit tagging hygiene (unused tags, single-level tags, etc.)\n" +
+  "- With include_entities=true, to enumerate every tagged entity in one call (avoids per-tag follow-up to butlr_get_asset_details)\n\n" +
   "When NOT to Use:\n" +
-  "- You already have tag IDs and want the actual tagged rooms/zones — call the appropriate tag-filtered tool instead\n" +
-  "- You want full topology browsing — use butlr_list_topology\n\n" +
-  "Response Shape: { tags: [{ id, name, applied_to: { rooms, zones, floors } }], total, timestamp }. Tags are sorted by total usage descending (most-used first).\n\n" +
-  "Note on coverage: spot-level tags exist in the data model but are not yet exposed by this tool — applied_to includes rooms, zones, and floors only.\n\n" +
-  "See Also: butlr_available_rooms (uses tag IDs from this tool), butlr_search_assets, butlr_list_topology";
+  "- You want full topology browsing — use butlr_list_topology (supports tag_names filter for tagged-only views)\n" +
+  "- You only need available rooms by tag — use butlr_available_rooms\n\n" +
+  "Response Shape: { tags: [{ id, name, applied_to: { rooms: number, zones: number, floors: number }, applied_to_entities?: { rooms: [{id, name?}], zones: [{id, name?}], floors: [{id, name?}] } }], total, timestamp }. Tags are sorted by total usage descending. `applied_to_entities` is present only when include_entities=true; the inner `name` is best-effort (omitted when upstream returns no name for the tagged entity).\n\n" +
+  "Note on coverage: spot-level tags exist in the data model but are not yet exposed by this tool — applied_to and applied_to_entities cover rooms, zones, and floors only.\n\n" +
+  "See Also: butlr_list_topology (tag_names filter for tagged subtrees), butlr_available_rooms (uses tag names from this tool), butlr_search_assets";
 
 export interface TagFootprint {
-  rooms: number;
-  zones: number;
-  floors: number;
+  readonly rooms: number;
+  readonly zones: number;
+  readonly floors: number;
+}
+
+export interface TaggedEntities {
+  readonly rooms: ReadonlyArray<TaggedEntityRef>;
+  readonly zones: ReadonlyArray<TaggedEntityRef>;
+  readonly floors: ReadonlyArray<TaggedEntityRef>;
 }
 
 export interface TagSummary {
-  id: string;
-  name: string;
-  applied_to: TagFootprint;
+  readonly id: string;
+  readonly name: string;
+  readonly applied_to: TagFootprint;
+  readonly applied_to_entities?: TaggedEntities;
 }
 
 export interface ListTagsResponse {
-  tags: TagSummary[];
-  total: number;
-  timestamp: string;
-  filtered_by?: Record<string, unknown>;
-}
-
-interface RawTag {
-  id: string;
-  name: string;
-  organization_id?: string;
-  rooms?: Array<{ id: string }> | null;
-  zones?: Array<{ id: string }> | null;
-  floors?: Array<{ id: string }> | null;
+  readonly tags: ReadonlyArray<TagSummary>;
+  readonly total: number;
+  readonly timestamp: string;
+  readonly filtered_by?: Record<string, unknown>;
+  /**
+   * Set when upstream returned tag rows missing a usable id/name
+   * (`malformed_tag_rows` analogue). Counts and entities reflect the
+   * surviving valid rows; this field tells the caller how many were
+   * dropped so they can surface or escalate the upstream contract
+   * violation rather than misread it as "tag deleted".
+   */
+  readonly warning?: string;
 }
 
 function totalUsage(t: TagSummary): number {
@@ -86,30 +106,73 @@ function totalUsage(t: TagSummary): number {
 export async function executeListTags(args: ListTagsArgs): Promise<ListTagsResponse> {
   debug("list-tags", "Listing tags with args:", JSON.stringify(args));
 
-  let rawTags: RawTag[] = [];
+  let rawTags: RawTagWithUsage[] = [];
 
   try {
-    const result = await apolloClient.query<{ tags: RawTag[] | null }>({
+    const result = await apolloClient.query<{ tags: RawTagWithUsage[] | null }>({
       query: GET_TAGS_WITH_USAGE,
       fetchPolicy: "network-only",
     });
 
     throwIfGraphQLErrors(result);
-    rawTags = result.data?.tags ?? [];
+    // Distinguish "empty array" (legitimate — org has no tags) from
+    // "null" (upstream contract violation — the schema should send `[]`
+    // when empty, never `null`). Treating `null` as legitimate-empty
+    // would silently launder a serialisation regression. `undefined`
+    // (field omitted entirely) is similarly treated as a contract
+    // violation; only an explicit array survives.
+    const tags = result.data?.tags;
+    if (!Array.isArray(tags)) {
+      throwInternalError(
+        "Unexpected response shape from tags query (expected array, got " +
+          `${tags === null ? "null" : typeof tags}). Please retry; if persistent, the upstream API contract may have changed.`
+      );
+    }
+    rawTags = tags;
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
     throw error;
   }
 
-  let tags: TagSummary[] = rawTags.map((t) => ({
-    id: t.id,
-    name: t.name,
-    applied_to: {
-      rooms: t.rooms?.length ?? 0,
-      zones: t.zones?.length ?? 0,
-      floors: t.floors?.length ?? 0,
-    },
-  }));
+  // Validate each row at the boundary. Mirrors the contract that
+  // `resolveTagNames` enforces on the topology path: any row missing a
+  // usable id/name is dropped, and the dropped count is surfaced as a
+  // `malformed_tag_rows` diagnostic. Without this, the name_contains
+  // filter below would call `.toLowerCase()` on a non-string and crash
+  // with a raw TypeError outside the MCP error translator.
+  const isValidRow = (t: RawTagWithUsage): boolean =>
+    typeof t?.id === "string" &&
+    t.id.trim().length > 0 &&
+    typeof t?.name === "string" &&
+    t.name.trim().length > 0;
+  const validTagRows = rawTags.filter(isValidRow);
+  const malformedTagRowCount = rawTags.length - validTagRows.length;
+
+  // `projectValidRefs` filters out refs without a usable id (dangling
+  // associations after a hard delete, or partial GraphQL responses).
+  // Counts and the optional entity array are computed off the same
+  // filtered list so they cannot disagree within a single response. The
+  // helper is shared with `butlr_list_topology` so the validity predicate
+  // lives in one place — if the rule ever tightens, both tools update
+  // together.
+  let tags: TagSummary[] = validTagRows.map((t) => {
+    const rooms = projectValidRefs(t.rooms);
+    const zones = projectValidRefs(t.zones);
+    const floors = projectValidRefs(t.floors);
+    const applied_to: TagFootprint = {
+      rooms: rooms.length,
+      zones: zones.length,
+      floors: floors.length,
+    };
+    return args.include_entities
+      ? {
+          id: t.id,
+          name: t.name,
+          applied_to,
+          applied_to_entities: { rooms, zones, floors },
+        }
+      : { id: t.id, name: t.name, applied_to };
+  });
 
   if (args.name_contains) {
     const needle = args.name_contains.toLowerCase();
@@ -123,17 +186,28 @@ export async function executeListTags(args: ListTagsArgs): Promise<ListTagsRespo
 
   tags.sort((a, b) => totalUsage(b) - totalUsage(a));
 
-  const response: ListTagsResponse = {
+  // Surface the args used to filter, but only when at least one filter was
+  // actually supplied. `include_entities` defaults to false at the schema
+  // layer so it's always set on `args`; treat the all-defaults case as
+  // "no filter applied".
+  const { include_entities, ...rest } = args;
+  const explicitFilters: Record<string, unknown> = { ...rest };
+  if (include_entities === true) explicitFilters.include_entities = true;
+  const hasFilters = Object.keys(explicitFilters).length > 0;
+
+  const warning =
+    malformedTagRowCount > 0
+      ? `${malformedTagRowCount} tag row(s) skipped — upstream returned entries ` +
+        "with missing or empty id/name fields. If unexpected, contact support."
+      : undefined;
+
+  return {
     tags,
     total: tags.length,
     timestamp: new Date().toISOString(),
+    ...(hasFilters ? { filtered_by: explicitFilters } : {}),
+    ...(warning !== undefined ? { warning } : {}),
   };
-
-  if (Object.keys(args).length > 0) {
-    response.filtered_by = args;
-  }
-
-  return response;
 }
 
 export function registerListTags(server: McpServer): void {

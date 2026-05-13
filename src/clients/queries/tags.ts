@@ -12,22 +12,76 @@ import { gql } from "@apollo/client";
  * Branded string types for tag identifiers.
  *
  * The Butlr API filter `roomsByTag` accepts tag *IDs*, not tag *names*.
- * These two are both `string` at runtime, which previously led to silent
- * filter failures when names were sent in the IDs slot. Branding them keeps
- * the distinction visible at the type level so the wrong one cannot be
- * passed by accident.
+ * Both are `string` at runtime, which previously led to silent filter
+ * failures when names were sent in the IDs slot. Branding them keeps the
+ * distinction visible at the type level so the wrong one cannot be passed
+ * by accident.
  */
 export type TagId = string & { readonly __brand: "TagId" };
 export type TagName = string & { readonly __brand: "TagName" };
 
-export const asTagId = (value: string): TagId => value as TagId;
-export const asTagName = (value: string): TagName => value as TagName;
+/** Multi-tag composition mode shared across every tag-aware tool surface. */
+export type TagMatch = "all" | "any";
+
+/**
+ * Brand a string as a tag id. Throws on empty/whitespace-only input — the
+ * brand exists to catch "wrong slot" mistakes at compile time, but a blank
+ * value would brand cleanly and slip through. Constructors that accept
+ * arbitrary strings need a runtime check too.
+ */
+export const asTagId = (value: string): TagId => {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Invalid TagId: expected a non-empty string, got ${JSON.stringify(value)}`);
+  }
+  return value as TagId;
+};
+
+/** Brand a string as a tag name. Same empty-input guard as `asTagId`. */
+export const asTagName = (value: string): TagName => {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Invalid TagName: expected a non-empty string, got ${JSON.stringify(value)}`);
+  }
+  return value as TagName;
+};
+
+/**
+ * Shape of each tagged-entity reference returned by `GET_TAGS_WITH_USAGE`.
+ * `name` is best-effort: older API responses or partial entity records may
+ * omit it, so consumers must treat it as optional.
+ *
+ * Both `id` and `name` are runtime-guarded against partial GraphQL
+ * responses by `projectValidRefs` (src/utils/tag-resolver.ts) — refs with
+ * a missing/null/empty `id` are dropped, and a missing `name` is elided
+ * from the projection. Consumers should route through `projectValidRefs`
+ * rather than reading the fields directly, even though the type declares
+ * `id` as required.
+ */
+export interface TaggedEntityRef {
+  id: string;
+  name?: string;
+}
+
+/**
+ * Raw `tags` row returned by `GET_TAGS_WITH_USAGE`. Used by `butlr_list_tags`
+ * and the shared tag resolver — kept here so the GraphQL shape lives next
+ * to the query that produces it.
+ */
+export interface RawTagWithUsage {
+  id: string;
+  name: string;
+  organization_id?: string;
+  rooms?: TaggedEntityRef[] | null;
+  zones?: TaggedEntityRef[] | null;
+  floors?: TaggedEntityRef[] | null;
+}
 
 /**
  * List every tag in the org along with its application footprint.
  *
- * Each tag's `rooms`, `zones`, and `floors` arrays are returned with
- * id-only payloads so the response stays bounded by tag count.
+ * Each tag's `rooms`, `zones`, and `floors` arrays carry both `id` and
+ * `name` so callers (e.g. `butlr_list_tags { include_entities: true }`,
+ * `butlr_list_topology { tag_names: [...] }`) can render the tagged
+ * entities without an extra resolution step.
  */
 export const GET_TAGS_WITH_USAGE = gql`
   query GetTagsWithUsage {
@@ -37,12 +91,15 @@ export const GET_TAGS_WITH_USAGE = gql`
       organization_id
       rooms {
         id
+        name
       }
       zones {
         id
+        name
       }
       floors {
         id
+        name
       }
     }
   }
