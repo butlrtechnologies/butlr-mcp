@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ReportingRequestBuilder } from "../clients/reporting-client.js";
+import { ReportingRequestBuilder, ApiError } from "../clients/reporting-client.js";
 import { z } from "zod";
 import { validateTimeRange } from "../utils/time-range-validator.js";
 import {
@@ -130,6 +130,9 @@ export async function executeGetOccupancyTimeseries(
         }
       } catch (error: unknown) {
         debug("occupancy-timeseries", "Presence query failed:", error);
+        if (error instanceof ApiError && error.statusCode >= 400) {
+          throw error;
+        }
         presenceData.warning =
           "Failed to retrieve presence timeseries data. Results may be incomplete.";
       }
@@ -161,6 +164,9 @@ export async function executeGetOccupancyTimeseries(
         }
       } catch (error: unknown) {
         debug("occupancy-timeseries", "Traffic query failed:", error);
+        if (error instanceof ApiError && error.statusCode >= 400) {
+          throw error;
+        }
         trafficData.warning =
           "Failed to retrieve traffic timeseries data. Results may be incomplete.";
       }

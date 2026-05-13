@@ -5,8 +5,11 @@ import {
   getTrafficMeasurement,
   getPresenceCoverageNote,
   getTrafficCoverageNote,
+  resolveAssetContext,
+  type TopologyContext,
 } from "../occupancy-helpers.js";
 import type { BaseMeasurementData } from "../../types/responses.js";
+import type { Sensor, Site, Building, Floor } from "../../clients/types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers for building BaseMeasurementData fixtures
@@ -198,5 +201,115 @@ describe("getTrafficCoverageNote", () => {
   it('does not mention "main entrance" for room', () => {
     const note = getTrafficCoverageNote("room", 3);
     expect(note).not.toMatch(/main entrance/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveAssetContext — sensor partitioning by mode + is_entrance (B2 regression)
+// ---------------------------------------------------------------------------
+
+function makeSensor(overrides: Partial<Sensor> & { id: string }): Sensor {
+  return {
+    id: overrides.id,
+    mac_address: `aa:bb:cc:dd:ee:${overrides.id.slice(-2).padStart(2, "0")}`,
+    mode: "presence",
+    is_online: true,
+    is_entrance: false,
+    ...overrides,
+  } as Sensor;
+}
+
+function makeTopologyContext(opts: {
+  floors: Floor[];
+  sensors: Sensor[];
+  siteTimezone?: string;
+}): TopologyContext {
+  const sites: Site[] = [
+    {
+      id: "site_001",
+      name: "Test Site",
+      timezone: opts.siteTimezone ?? "America/New_York",
+      buildings: [
+        {
+          id: "building_001",
+          name: "Building",
+          site_id: "site_001",
+          floors: opts.floors,
+        } as Building,
+      ],
+    } as Site,
+  ];
+  const buildings = sites.flatMap((s) => s.buildings || []);
+  const floors = buildings.flatMap((b) => b.floors || []);
+  return { sites, buildings, floors, productionSensors: opts.sensors };
+}
+
+describe("resolveAssetContext — B2 regression: room-level traffic ignores is_entrance flag", () => {
+  it("counts traffic-mode sensors at a room regardless of is_entrance (B2 fix)", () => {
+    const floor: Floor = {
+      id: "space_floor1",
+      name: "Floor 1",
+      building_id: "building_001",
+      rooms: [{ id: "room_cafe", name: "Café", floor_id: "space_floor1" }],
+      zones: [],
+    } as Floor;
+
+    const ctx = makeTopologyContext({
+      floors: [floor],
+      sensors: [
+        makeSensor({
+          id: "sensor_t1",
+          mode: "traffic",
+          floor_id: "space_floor1",
+          room_id: "room_cafe",
+          is_entrance: true,
+        }),
+        makeSensor({
+          id: "sensor_t2",
+          mode: "traffic",
+          floor_id: "space_floor1",
+          room_id: "room_cafe",
+          is_entrance: true,
+        }),
+      ],
+    });
+
+    const result = resolveAssetContext("room_cafe", ctx);
+    expect(result.assetType).toBe("room");
+    expect(result.trafficSensors).toHaveLength(2);
+    expect(result.trafficSensors.map((s) => s.id).sort()).toEqual(["sensor_t1", "sensor_t2"]);
+  });
+
+  it("floor-level traffic still filters to is_entrance=true only (negative guard for B2)", () => {
+    const floor: Floor = {
+      id: "space_floor1",
+      name: "Floor 1",
+      building_id: "building_001",
+      rooms: [],
+      zones: [],
+    } as Floor;
+
+    const ctx = makeTopologyContext({
+      floors: [floor],
+      sensors: [
+        makeSensor({
+          id: "sensor_entry",
+          mode: "traffic",
+          floor_id: "space_floor1",
+          is_entrance: true,
+        }),
+        makeSensor({
+          id: "sensor_interior",
+          mode: "traffic",
+          floor_id: "space_floor1",
+          is_entrance: false,
+        }),
+      ],
+    });
+
+    const result = resolveAssetContext("space_floor1", ctx);
+    expect(result.assetType).toBe("floor");
+    expect(result.trafficSensors).toHaveLength(1);
+    expect(result.trafficSensors[0].id).toBe("sensor_entry");
   });
 });

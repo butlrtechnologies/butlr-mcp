@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ReportingRequestBuilder } from "../clients/reporting-client.js";
+import { ReportingRequestBuilder, ApiError } from "../clients/reporting-client.js";
 import { z } from "zod";
 import {
   fetchTopologyAndSensors,
@@ -91,6 +91,9 @@ export async function executeGetCurrentOccupancy(
         }
       } catch (error: unknown) {
         debug("current-occupancy", "Presence query failed:", error);
+        if (error instanceof ApiError && error.statusCode >= 400) {
+          throw error;
+        }
         presenceData.warning =
           "Failed to retrieve current presence data. Occupancy value may be missing.";
       }
@@ -125,6 +128,9 @@ export async function executeGetCurrentOccupancy(
         }
       } catch (error: unknown) {
         debug("current-occupancy", "Traffic query failed:", error);
+        if (error instanceof ApiError && error.statusCode >= 400) {
+          throw error;
+        }
         trafficData.warning =
           "Failed to retrieve current traffic data. Occupancy value may be missing.";
       }

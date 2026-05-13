@@ -480,7 +480,7 @@ describe("butlr_get_current_occupancy - Integration", () => {
                             {
                               id: "room_parent",
                               name: "Parent Room",
-                              floorID: floorId,
+                              floor_id: floorId,
                               capacity: {},
                             },
                           ],
@@ -488,7 +488,7 @@ describe("butlr_get_current_occupancy - Integration", () => {
                             {
                               id: "zone_target",
                               name: "Peloton 1",
-                              floorID: floorId,
+                              floor_id: floorId,
                               room_id: "room_parent",
                             },
                           ],
@@ -566,7 +566,7 @@ describe("butlr_get_current_occupancy - Integration", () => {
                             {
                               id: "zone_dark",
                               name: "Dark Zone",
-                              floorID: floorId,
+                              floor_id: floorId,
                             },
                           ],
                         },

@@ -12,7 +12,7 @@ import type { Sensor, Site, Floor, Building } from "../clients/types.js";
 import type { TimezoneMetadata } from "./timezone-helpers.js";
 import type { MeasurementRecommendation, BaseMeasurementData } from "../types/responses.js";
 import { detectAssetType } from "./asset-helpers.js";
-import { isProductionSensor } from "./graphql-helpers.js";
+import { isProductionSensor, throwIfGraphQLErrors } from "./graphql-helpers.js";
 import { getTimezoneForAsset, buildTimezoneMetadata } from "./timezone-helpers.js";
 import { rethrowIfGraphQLError } from "./graphql-helpers.js";
 
@@ -44,6 +44,8 @@ export async function fetchTopologyAndSensors(): Promise<TopologyContext> {
         fetchPolicy: "network-only",
       }),
     ]);
+    throwIfGraphQLErrors(topoResult);
+    throwIfGraphQLErrors(sensorsResult);
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
     throw error;
@@ -131,10 +133,13 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
       trafficSensors = assetSensors.filter((s) => s.mode === "traffic" && s.is_entrance === true);
       break;
     case "room":
-      // Every traffic-mode sensor bound to the room contributes — `is_entrance`
-      // is a semantic flag, not a routing one. Filtering on it dropped real
-      // traffic counts for rooms whose sensors are all entrances (e.g. cafés
-      // covering the floor's entry area).
+      // Room-level traffic includes every traffic-mode sensor bound to the
+      // room. `is_entrance` is a semantic flag indicating the sensor sits at
+      // a building/floor entrance — it is not a routing flag. The Reporting
+      // API aggregates by `room_id` regardless, so filtering on
+      // `is_entrance === false` here would silently drop counts for rooms
+      // whose sensors are all entrances (e.g. a café occupying the floor's
+      // entry area).
       trafficSensors = assetSensors.filter((s) => s.mode === "traffic");
       break;
     default:

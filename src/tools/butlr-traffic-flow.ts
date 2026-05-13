@@ -13,7 +13,7 @@ import {
 } from "../utils/timezone-helpers.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
 import { createValidationError, withToolErrorHandling } from "../errors/mcp-errors.js";
-import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
 import { debug } from "../utils/debug.js";
 import type { TrafficFlowResponse } from "../types/responses.js";
 
@@ -177,6 +177,9 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
         fetchPolicy: "network-only",
       }),
     ]);
+    throwIfGraphQLErrors(roomResult);
+    throwIfGraphQLErrors(topoResult);
+    throwIfGraphQLErrors(sensorsResult);
 
     if (!roomResult.data?.room) {
       throw new Error(`Room ${spaceId} not found`);
@@ -201,12 +204,10 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     // Analyze traffic sensors for this room
     const allSensors = sensorsResult.data?.sensors?.data || [];
     const roomSensors = allSensors.filter((s) => (s.room_id || s.roomID) === spaceId);
-    // Every traffic sensor bound to the room contributes to room-level traffic
-    // counts. `is_entrance` is a semantic flag (does this sensor sit at a
-    // building/floor entrance), not a routing flag — the Reporting API
-    // aggregates by `room_id` regardless. Excluding `is_entrance=true` here
-    // used to drop legitimate room traffic for rooms whose sensors all happen
-    // to be entrances (e.g. cafés that occupy an entire floor's entry area).
+    // Room-level traffic counts every traffic-mode sensor bound to the room.
+    // See `resolveAssetContext` in occupancy-helpers.ts for the canonical
+    // rationale: `is_entrance` is a semantic flag, not a routing one, and the
+    // Reporting API aggregates by `room_id` regardless.
     trafficSensors = roomSensors.filter((s) => s.mode === "traffic");
 
     if (trafficSensors.length === 0) {

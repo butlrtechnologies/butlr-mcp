@@ -370,6 +370,93 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
     });
   });
 
+  // Regression for B3 (parallel to the current-occupancy test): the timeseries
+  // tool's presence gate (`assetType === "zone" || presenceSensors.length > 0`)
+  // applied to butlr-get-occupancy-timeseries.ts independently of
+  // butlr-get-current-occupancy.ts. Without this dedicated test, a regression
+  // of the timeseries gate alone would ship undetected.
+  describe("Regression: B3 — always query zone_occupancy regardless of sensor count", () => {
+    it("returns zone_occupancy timeseries for a zone with 0 sensors", async () => {
+      const floorId = "space_zone_test";
+      const zoneTopo = {
+        topology: {
+          data: {
+            sites: {
+              data: [
+                {
+                  id: "site_001",
+                  name: "Test Site",
+                  timezone: "America/Los_Angeles",
+                  org_id: "org_001",
+                  buildings: [
+                    {
+                      id: "building_001",
+                      name: "Building",
+                      site_id: "site_001",
+                      floors: [
+                        {
+                          id: floorId,
+                          name: "Floor 1",
+                          building_id: "building_001",
+                          rooms: [],
+                          zones: [
+                            {
+                              id: "zone_target",
+                              name: "Peloton 1",
+                              floor_id: floorId,
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          loading: false,
+          networkStatus: 7,
+        },
+        sensors: {
+          data: { sensors: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        },
+      };
+      setupTopologyMocks(zoneTopo);
+
+      const presenceBuilder = mockReportingBuilder({
+        data: [
+          { time: "2025-10-14T15:00:00Z", value: 2 },
+          { time: "2025-10-14T16:00:00Z", value: 4 },
+        ],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["zone_target"],
+        interval: "1h",
+        start: "-24h",
+        stop: "now",
+      });
+
+      const asset = result.assets[0];
+      expect(asset.asset_id).toBe("zone_target");
+      expect(asset.asset_type).toBe("zone");
+      // Pre-fix: gated on presenceSensors.length > 0 (always 0 for zones), so
+      // available was false and timeseries was empty even when the Reporting
+      // API had data.
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.sensor_count).toBe(0);
+      expect(asset.presence.timeseries).toHaveLength(2);
+      // Must have fired the zone-specific measurement, not room_occupancy.
+      expect(presenceBuilder.measurements).toHaveBeenCalledWith(["zone_occupancy"]);
+      expect(presenceBuilder.execute).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("Null site timezone fallback", () => {
     it("falls back to UTC with warnings when site timezone is null", async () => {
       const topo = buildTopologyResponse({ presenceSensors: 1, siteTimezone: null });
