@@ -76,6 +76,24 @@ export interface RawTagWithUsage {
 }
 
 /**
+ * Inline tag projection returned when a Room/Zone/Floor query selects
+ * `tags { id name }` directly (e.g. `butlr_get_asset_details`).
+ *
+ * Lightweight `{id, name}` projection — both fields are required by
+ * the GraphQL schema and surfaced unchanged. Structurally similar to
+ * but intentionally distinct from `TaggedEntityRef`: `TaggedEntityRef`
+ * is best-effort (name optional) and represents the reverse direction
+ * (entities under a tag); `TagRef` represents tags applied to an
+ * entity. The bare name `Tag` is reserved for the full GraphQL Tag
+ * entity (with organization_id, associations, etc.); callers needing
+ * that shape go through `GET_TAGS_WITH_USAGE` instead.
+ */
+export interface TagRef {
+  id: string;
+  name: string;
+}
+
+/**
  * List every tag in the org along with its application footprint.
  *
  * Each tag's `rooms`, `zones`, and `floors` arrays carry both `id` and
