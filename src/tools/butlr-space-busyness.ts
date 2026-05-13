@@ -3,7 +3,7 @@ import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
 import type { Room, Zone, Floor } from "../clients/types.js";
-import { getCurrentOccupancy } from "../clients/reporting-client.js";
+import { getCurrentOccupancy, ApiError } from "../clients/reporting-client.js";
 import { getSingleAssetStats } from "../clients/stats-client.js";
 import { executeSearchAssets } from "./butlr-search-assets.js";
 import {
@@ -14,22 +14,34 @@ import {
   formatDayAndTime,
 } from "../utils/natural-language.js";
 import { getCachedOccupancy, setCachedOccupancy } from "../cache/occupancy-cache.js";
-import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
 import { debug } from "../utils/debug.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type { SpaceBusynessResponse } from "../types/responses.js";
 
-/** Room with floor populated via GraphQL (includes building/site for timezone) */
+/** Room with floor populated via GraphQL (includes building/site for timezone). */
 type RoomWithFloor = Room & {
   floor: Floor & {
-    building: { id: string; name: string; site_id: string; site?: { timezone: string } };
+    building: {
+      id: string;
+      name: string;
+      site_id: string;
+      // `site.id` must remain in the GraphQL selection — see GET_ROOM below.
+      site?: { id: string; timezone: string };
+    };
   };
 };
 
-/** Zone with floor populated via GraphQL (includes building/site for timezone) */
+/** Zone with floor populated via GraphQL (includes building/site for timezone). */
 type ZoneWithFloor = Zone & {
   floor: Floor & {
-    building: { id: string; name: string; site_id: string; site?: { timezone: string } };
+    building: {
+      id: string;
+      name: string;
+      site_id: string;
+      // `site.id` must remain in the GraphQL selection — see GET_ZONE below.
+      site?: { id: string; timezone: string };
+    };
   };
 };
 
@@ -82,6 +94,11 @@ const SPACE_BUSYNESS_DESCRIPTION =
 
 export type SpaceBusynessArgs = z.output<typeof SpaceBusynessArgsSchema>;
 
+// The `site { id ... }` selection is load-bearing. graphql-client.ts declares
+// `Site: { keyFields: ['id'] }` on the Apollo cache; a Site returned without
+// its `id` cannot be normalized, and under `errorPolicy: 'all'` Apollo then
+// resolves with `result.data === undefined` and no thrown error. The same
+// rule applies to Building and Floor (already selected here).
 const GET_ROOM = gql`
   query GetRoom($roomId: ID!) {
     room(id: $roomId) {
@@ -102,6 +119,7 @@ const GET_ROOM = gql`
           name
           site_id
           site {
+            id
             timezone
           }
         }
@@ -129,6 +147,7 @@ const GET_ZONE = gql`
           name
           site_id
           site {
+            id
             timezone
           }
         }
@@ -184,6 +203,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
         variables: { roomId: spaceId },
         fetchPolicy: "network-only",
       });
+      throwIfGraphQLErrors(result);
 
       if (!result.data?.room) {
         throw new Error(`Room ${spaceId} not found`);
@@ -203,6 +223,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
         variables: { zoneId: spaceId },
         fetchPolicy: "network-only",
       });
+      throwIfGraphQLErrors(result);
 
       if (!result.data?.zone) {
         throw new Error(`Zone ${spaceId} not found`);
@@ -239,6 +260,9 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       }
     } catch (error: unknown) {
       debug("space-busyness", "Failed to get occupancy:", error);
+      if (error instanceof ApiError && error.statusCode >= 400) {
+        throw error;
+      }
       throw new Error(
         `Failed to get current occupancy for ${space.name}. The space may not have active sensors.`
       );
@@ -315,6 +339,9 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       }
     } catch (error: unknown) {
       debug("space-busyness", "Failed to get trend data:", error);
+      if (error instanceof ApiError && error.statusCode >= 400) {
+        throw error;
+      }
       warnings.push("Could not retrieve historical trend data. Trend comparison is unavailable.");
     }
   }

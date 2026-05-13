@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ReportingRequestBuilder } from "../clients/reporting-client.js";
+import { ReportingRequestBuilder, ApiError } from "../clients/reporting-client.js";
 import { z } from "zod";
 import { validateTimeRange } from "../utils/time-range-validator.js";
 import {
@@ -100,15 +100,20 @@ export async function executeGetOccupancyTimeseries(
   for (const assetId of args.asset_ids) {
     const asset = resolveAssetContext(assetId, ctx);
 
-    // Build presence measurement data
+    // Build presence measurement data. Zones have no client-visible sensor
+    // attribution (see occupancy-helpers `resolveAssetContext`), but the
+    // server computes `zone_occupancy` independently. Always query for
+    // zones; gate on sensor count for rooms/floors where 0 sensors really
+    // does mean "no data possible".
+    const shouldQueryPresence = asset.assetType === "zone" || asset.presenceSensors.length > 0;
     const presenceData: TimeseriesMeasurementData = {
-      available: asset.presenceSensors.length > 0,
+      available: shouldQueryPresence,
       sensor_count: asset.presenceSensors.length,
       coverage_note: getPresenceCoverageNote(asset.assetType, asset.presenceSensors.length),
       timeseries: [],
     };
 
-    if (asset.presenceSensors.length > 0) {
+    if (shouldQueryPresence) {
       const measurement = getPresenceMeasurement(asset.assetType);
       try {
         const points = await queryTimeseries(
@@ -125,6 +130,9 @@ export async function executeGetOccupancyTimeseries(
         }
       } catch (error: unknown) {
         debug("occupancy-timeseries", "Presence query failed:", error);
+        if (error instanceof ApiError && error.statusCode >= 400) {
+          throw error;
+        }
         presenceData.warning =
           "Failed to retrieve presence timeseries data. Results may be incomplete.";
       }
@@ -156,6 +164,9 @@ export async function executeGetOccupancyTimeseries(
         }
       } catch (error: unknown) {
         debug("occupancy-timeseries", "Traffic query failed:", error);
+        if (error instanceof ApiError && error.statusCode >= 400) {
+          throw error;
+        }
         trafficData.warning =
           "Failed to retrieve traffic timeseries data. Results may be incomplete.";
       }

@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ReportingRequestBuilder } from "../clients/reporting-client.js";
+import { ReportingRequestBuilder, ApiError } from "../clients/reporting-client.js";
 import { z } from "zod";
 import {
   fetchTopologyAndSensors,
@@ -59,15 +59,20 @@ export async function executeGetCurrentOccupancy(
     const asset = resolveAssetContext(assetId, ctx);
 
     // ---- Presence ----
+    // Zones have no client-visible sensor attribution (see occupancy-helpers
+    // `resolveAssetContext`), but the server computes `zone_occupancy`
+    // independently. Always query for zones; gate on sensor count for
+    // rooms/floors where 0 sensors really does mean "no data possible".
+    const shouldQueryPresence = asset.assetType === "zone" || asset.presenceSensors.length > 0;
     const presenceData: CurrentMeasurementData = {
-      available: asset.presenceSensors.length > 0,
+      available: shouldQueryPresence,
       sensor_count: asset.presenceSensors.length,
       coverage_note: getPresenceCoverageNote(asset.assetType, asset.presenceSensors.length),
     };
 
     let presenceHasData = false;
 
-    if (asset.presenceSensors.length > 0) {
+    if (shouldQueryPresence) {
       const measurement = getPresenceMeasurement(asset.assetType);
 
       try {
@@ -86,6 +91,9 @@ export async function executeGetCurrentOccupancy(
         }
       } catch (error: unknown) {
         debug("current-occupancy", "Presence query failed:", error);
+        if (error instanceof ApiError && error.statusCode >= 400) {
+          throw error;
+        }
         presenceData.warning =
           "Failed to retrieve current presence data. Occupancy value may be missing.";
       }
@@ -120,6 +128,9 @@ export async function executeGetCurrentOccupancy(
         }
       } catch (error: unknown) {
         debug("current-occupancy", "Traffic query failed:", error);
+        if (error instanceof ApiError && error.statusCode >= 400) {
+          throw error;
+        }
         trafficData.warning =
           "Failed to retrieve current traffic data. Occupancy value may be missing.";
       }

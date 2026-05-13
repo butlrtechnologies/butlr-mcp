@@ -13,7 +13,7 @@ import {
 } from "../utils/timezone-helpers.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
 import { createValidationError, withToolErrorHandling } from "../errors/mcp-errors.js";
-import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
 import { debug } from "../utils/debug.js";
 import type { TrafficFlowResponse } from "../types/responses.js";
 
@@ -177,6 +177,9 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
         fetchPolicy: "network-only",
       }),
     ]);
+    throwIfGraphQLErrors(roomResult);
+    throwIfGraphQLErrors(topoResult);
+    throwIfGraphQLErrors(sensorsResult);
 
     if (!roomResult.data?.room) {
       throw new Error(`Room ${spaceId} not found`);
@@ -201,8 +204,11 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     // Analyze traffic sensors for this room
     const allSensors = sensorsResult.data?.sensors?.data || [];
     const roomSensors = allSensors.filter((s) => (s.room_id || s.roomID) === spaceId);
-    // Non-entrance traffic sensors (room-level traffic counting)
-    trafficSensors = roomSensors.filter((s) => s.mode === "traffic" && s.is_entrance === false);
+    // Room-level traffic counts every traffic-mode sensor bound to the room.
+    // See `resolveAssetContext` in occupancy-helpers.ts for the canonical
+    // rationale: `is_entrance` is a semantic flag, not a routing one, and the
+    // Reporting API aggregates by `room_id` regardless.
+    trafficSensors = roomSensors.filter((s) => s.mode === "traffic");
 
     if (trafficSensors.length === 0) {
       throw new Error(

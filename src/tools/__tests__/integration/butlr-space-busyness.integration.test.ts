@@ -387,6 +387,53 @@ describe("butlr_space_busyness - Integration", () => {
     });
   });
 
+  // Regression test for B1: GET_ROOM / GET_ZONE used to select `site { timezone }`
+  // without `id`. graphql-client.ts declares `Site: { keyFields: ['id'] }` on the
+  // InMemoryCache, so Apollo 4 silently set `result.data = undefined` (under
+  // `errorPolicy: 'all'`) when the Site object came back without its keyField —
+  // which the tool then mis-reported as "Room/Zone not found". This test pins
+  // the query shape so a future cleanup that strips `id` doesn't reintroduce
+  // the bug. The Apollo mock used by these tests bypasses the cache, so we
+  // can't reproduce the runtime symptom here; checking the query AST is the
+  // only way to catch the regression without spinning up a real Apollo client.
+  describe("Regression: B1 — Apollo cache normalization requires site.id", () => {
+    function captureQueryFor(typeName: "room" | "zone") {
+      let capturedSource = "";
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        capturedSource = options.query?.loc?.source?.body ?? "";
+        return Promise.resolve({
+          data: {
+            [typeName]: {
+              id: typeName === "room" ? "room_x" : "zone_x",
+              name: "X",
+              capacity: { max: 1 },
+            },
+          },
+          loading: false,
+          networkStatus: 7,
+        } as any);
+      });
+      vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([]);
+      return () => capturedSource;
+    }
+
+    it("GET_ROOM selects id inside the site { ... } subselection", async () => {
+      const getSource = captureQueryFor("room");
+      await executeSpaceBusyness({ space_id_or_name: "room_x", include_trend: false });
+      const source = getSource();
+      // Look for `site { ... id ... }` somewhere in the query body. Tolerant
+      // of whitespace/ordering so a maintainer can reformat without breaking.
+      expect(source).toMatch(/site\s*\{[^{}]*\bid\b[^{}]*\}/);
+    });
+
+    it("GET_ZONE selects id inside the site { ... } subselection", async () => {
+      const getSource = captureQueryFor("zone");
+      await executeSpaceBusyness({ space_id_or_name: "zone_x", include_trend: false });
+      const source = getSource();
+      expect(source).toMatch(/site\s*\{[^{}]*\bid\b[^{}]*\}/);
+    });
+  });
+
   describe("Null site timezone fallback", () => {
     it("includes timezone fallback warning when site has no timezone", async () => {
       vi.mocked(apolloClient.query).mockResolvedValue({

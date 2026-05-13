@@ -429,6 +429,96 @@ describe("butlr_traffic_flow - Integration", () => {
     });
   });
 
+  // Regression test for B2: room-level traffic used to filter `s.is_entrance === false`,
+  // which dropped every traffic sensor at rooms whose sensors all happen to be entrances
+  // (e.g. a cafe room that owns the floor's stairwell/elevator entrance sensors). The
+  // Reporting API aggregates by room_id regardless — `is_entrance` is a semantic flag,
+  // not a routing one. Floor-level traffic still uses `is_entrance === true`.
+  describe("Regression: B2 — room-level traffic accepts is_entrance=true sensors", () => {
+    it("returns traffic data when all room sensors have is_entrance=true", async () => {
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+
+        if (queryString.includes("GetRoomSensors")) {
+          return Promise.resolve({
+            data: {
+              room: {
+                id: "room_cafe",
+                name: "MB2 Cafe",
+                floorID: "floor_test",
+                sensors: [{ id: "sensor_entrance_1", mode: "traffic" }],
+                floor: {
+                  id: "floor_test",
+                  name: "Floor 2",
+                  building: { id: "building_test", name: "MB2" },
+                },
+              },
+            },
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({
+            data: MOCK_TOPOLOGY,
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        if (queryString.includes("GetAllSensors")) {
+          return Promise.resolve({
+            data: {
+              sensors: {
+                data: [
+                  // Every sensor is is_entrance=true — pre-fix the room-level
+                  // traffic filter excluded these and the tool threw "does not
+                  // have traffic-mode sensors".
+                  {
+                    id: "sensor_entrance_1",
+                    mode: "traffic",
+                    room_id: "room_cafe",
+                    is_entrance: true,
+                  },
+                  {
+                    id: "sensor_entrance_2",
+                    mode: "traffic",
+                    room_id: "room_cafe",
+                    is_entrance: true,
+                  },
+                ],
+              },
+            },
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        return Promise.reject(new Error("Unknown query"));
+      });
+
+      const mockExecute = vi.fn().mockResolvedValue({
+        data: [
+          { field: "in", sensor_id: "sensor_entrance_1", time: "2025-10-14T10:00:00Z", value: 88 },
+          { field: "out", sensor_id: "sensor_entrance_1", time: "2025-10-14T10:00:00Z", value: 8 },
+          { field: "in", sensor_id: "sensor_entrance_2", time: "2025-10-14T10:00:00Z", value: 28 },
+          { field: "out", sensor_id: "sensor_entrance_2", time: "2025-10-14T10:00:00Z", value: 66 },
+        ],
+      });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_cafe",
+        time_window: "1h",
+      });
+
+      expect(result.traffic.sensor_count).toBe(2);
+      expect(result.traffic.total_entries).toBe(116); // 88 + 28
+      expect(result.traffic.total_exits).toBe(74); // 8 + 66
+      expect(result.traffic.total_traffic).toBe(190);
+    });
+  });
+
   describe("Error handling", () => {
     it("throws validation error for empty space_id_or_name", async () => {
       // Note: Validation happens in MCP handler, not execute function
