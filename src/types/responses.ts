@@ -6,6 +6,7 @@
  */
 
 import type { Capacity, Area } from "../clients/types.js";
+import type { TagMatch, TagName } from "../clients/queries/tags.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -83,7 +84,7 @@ export interface AvailableRoomsResponse {
   building_context?: BuildingContext;
   warning?: string;
   /** Tag names from the request that did not resolve to any tag in this org. */
-  unknown_tags?: string[];
+  unknown_tags?: ReadonlyArray<TagName>;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,18 +162,105 @@ export interface TrafficFlowResponse {
 // butlr_list_topology
 // ---------------------------------------------------------------------------
 
-/** Ultra-compact tree node: [id, displayName] or [id, displayName, children] */
-export type TopologyNode = [string, string] | [string, string, TopologyNode[]];
+/**
+ * Ultra-compact tree node: [id, displayName] or [id, displayName, children].
+ *
+ * The tuple shape is intentionally `readonly`: nodes are emitted as a
+ * response surface and consumers should not mutate them.
+ */
+export type TopologyNode =
+  | readonly [string, string]
+  | readonly [string, string, ReadonlyArray<TopologyNode>];
+
+/**
+ * Structured diagnostic emitted by `butlr_list_topology`. Callers should
+ * branch on `kind` instead of parsing the prose `warning` string. The
+ * prose `warning` remains the human-readable rendering of the same set —
+ * both fields describe the same condition.
+ *
+ * Every embedded array is `readonly` because diagnostics are part
+ * of the public response surface; mutating one would alter the response
+ * after `executeListTopology` returns.
+ */
+export type TopologyDiagnostic =
+  /** Upstream returned errors alongside data; tree may be incomplete. */
+  | { kind: "partial_topology" }
+  /** Every supplied `tag_names` was unknown — no tag-side match possible. */
+  | { kind: "tag_no_match"; unknown_names: ReadonlyArray<TagName> }
+  /** One or more `tag_names` did not resolve; the resolved subset still applies. */
+  | { kind: "unknown_tags"; names: ReadonlyArray<TagName> }
+  /**
+   * `tag_match='all'` cannot be satisfied because at least one requested
+   * tag is unknown. `partial_resolved_count` reports how many of the
+   * requested names DID resolve (always >= 1 by construction —
+   * all-unknown takes the `tag_no_match` branch instead).
+   */
+  | {
+      kind: "tag_match_all_unsatisfiable";
+      unknown_names: ReadonlyArray<TagName>;
+      partial_resolved_count: number;
+    }
+  /** Every supplied tag resolved but none have associated entities. */
+  | { kind: "tag_no_associations"; tag_match: TagMatch; tag_names: ReadonlyArray<TagName> }
+  /** `asset_ids` did not resolve to any entity in the org. */
+  | { kind: "asset_scope_empty"; asset_ids: ReadonlyArray<string> }
+  /** `asset_ids` and `tag_names` both resolved but their subtrees do not overlap. */
+  | { kind: "asset_tag_disjoint" }
+  /** Every tagged-entity association points at entities missing from the active topology. */
+  | { kind: "tag_associations_all_ghost"; total: number }
+  /** Some tagged-entity associations point at missing entities; others resolved. */
+  | { kind: "tag_associations_partial_ghost"; ghost: number; total: number }
+  /** Dual-typo path with a cold topology cache — `asset_ids` were not validated. */
+  | { kind: "asset_ids_unverified" }
+  /**
+   * Upstream tag rows had missing/empty id or name fields, or two rows
+   * collided on the same canonical (case-folded) name. Such rows are
+   * skipped (first-write-wins for canonical duplicates) and counted
+   * here. `sample_names` carries up to ~5 representative names of
+   * affected rows where the name was available — primarily useful for
+   * the duplicate-canonical case so operators can see WHICH names
+   * collided. Rows with no usable name contribute to `count` but not
+   * to `sample_names`.
+   */
+  | {
+      kind: "malformed_tag_rows";
+      count: number;
+      sample_names?: ReadonlyArray<string>;
+    }
+  /**
+   * `tag_match='all'` — every requested tag resolved AND each carries at
+   * least one association, but the per-tag SUBTREE intersection is empty
+   * (e.g. tag A on Room X, tag B on Room Y in a different floor, with no
+   * common ancestor). Distinct from `tag_no_associations` (no tag has any
+   * associations) and `asset_tag_disjoint` (intersection narrowed by a
+   * separate `asset_ids` filter).
+   */
+  | { kind: "tag_match_all_no_overlap"; resolved_names: ReadonlyArray<TagName> }
+  /**
+   * The composed filter resolved to a non-empty entity set, but every
+   * matched entity sits outside the rendered tree window — i.e. the
+   * `starting_depth` / `traversal_depth` slice excludes them. The user
+   * should widen the depth window to see the matches.
+   */
+  | { kind: "depth_excludes_matches"; starting_depth: number; traversal_depth: number };
 
 export interface ListTopologyResponse {
-  tree: TopologyNode[];
+  tree: ReadonlyArray<TopologyNode>;
   query_params: {
     starting_depth: number;
     traversal_depth: number;
-    asset_filter: string[] | "all";
+    asset_filter: ReadonlyArray<string> | "all";
+    tag_filter?: {
+      names: ReadonlyArray<TagName>;
+      match: TagMatch;
+    };
   };
   timestamp: string;
+  /** Human-readable summary of every diagnostic emitted; back-compat with v0.1.x. */
   warning?: string;
+  /** Structured diagnostics — preferred over `warning` for programmatic consumers. */
+  warnings?: ReadonlyArray<TopologyDiagnostic>;
+  unknown_tags?: ReadonlyArray<TagName>;
 }
 
 // ---------------------------------------------------------------------------

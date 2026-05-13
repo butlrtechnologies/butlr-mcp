@@ -7,30 +7,15 @@ import { getCurrentOccupancy } from "../clients/reporting-client.js";
 import { buildAvailableRoomsSummary } from "../utils/natural-language.js";
 import { getCachedOccupancy, setBulkCachedOccupancy } from "../cache/occupancy-cache.js";
 import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
-import {
-  GET_TAGS_MINIMAL,
-  asTagId,
-  asTagName,
-  type TagId,
-  type TagName,
-} from "../clients/queries/tags.js";
+import { GET_TAGS_MINIMAL, type TagName } from "../clients/queries/tags.js";
+import { resolveTagNames } from "../utils/tag-resolver.js";
 import type { AvailableRoom, AvailableRoomsResponse, BuildingContext } from "../types/responses.js";
 import { debug } from "../utils/debug.js";
 import {
+  ensureArrayOrEmpty,
+  throwInternalError,
   withToolErrorHandling,
-  formatMCPError,
-  MCPErrorCode,
-  type MCPError,
 } from "../errors/mcp-errors.js";
-
-function throwInternalError(message: string): never {
-  const mcpError: MCPError = {
-    code: MCPErrorCode.INTERNAL_ERROR,
-    message,
-    retryable: true,
-  };
-  throw new Error(formatMCPError(mcpError));
-}
 
 /** Shared shape — used by both registerTool (SDK schema) and full validation */
 const availableRoomsInputShape = {
@@ -51,7 +36,7 @@ const availableRoomsInputShape = {
     .describe("Maximum room capacity"),
 
   tags: z
-    .array(z.string().min(1, "Tag cannot be empty").trim())
+    .array(z.string().trim().min(1, "Tag cannot be empty"))
     .min(1, "tags array cannot be empty")
     .optional()
     .describe(
@@ -272,8 +257,36 @@ const GET_ALL_ROOMS = gql`
 /**
  * Execute available rooms tool
  */
-export async function executeAvailableRooms(args: AvailableRoomsArgs) {
+export async function executeAvailableRooms(
+  args: AvailableRoomsArgs
+): Promise<AvailableRoomsResponse> {
   debug("available-rooms", "Finding available rooms with filters:", JSON.stringify(args, null, 2));
+
+  // Strip Zod defaults before exposing args as `filtered_by`. Mirrors
+  // butlr_list_tags's behaviour — without this, every response carries
+  // `tag_match: "all"` and `max_results: 50` even when the caller never
+  // supplied a tag or a result cap, and "no filter applied" is
+  // indistinguishable from "default filter applied". The two tools'
+  // `filtered_by` shapes drift if this is not consistent.
+  const explicitFilters = (() => {
+    const out: Record<string, unknown> = {};
+    if (args.min_capacity !== undefined) out.min_capacity = args.min_capacity;
+    if (args.max_capacity !== undefined) out.max_capacity = args.max_capacity;
+    if (args.building_id !== undefined) out.building_id = args.building_id;
+    if (args.floor_id !== undefined) out.floor_id = args.floor_id;
+    if (args.tags !== undefined) {
+      out.tags = args.tags;
+      // tag_match is only meaningful with a non-empty tags filter.
+      if (args.tag_match !== undefined && args.tag_match !== "all") {
+        out.tag_match = args.tag_match;
+      }
+    }
+    if (args.max_results !== undefined && args.max_results !== 50) {
+      out.max_results = args.max_results;
+    }
+    return out;
+  })();
+  const hasExplicitFilters = Object.keys(explicitFilters).length > 0;
 
   // Query rooms based on scope
   let rooms: Room[] = [];
@@ -295,7 +308,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
         throw new Error(`Floor ${args.floor_id} not found`);
       }
 
-      rooms = result.data.floor.rooms || [];
+      rooms = [...ensureArrayOrEmpty<Room>(result.data.floor.rooms, "floor.rooms")];
       floors = [result.data.floor];
       buildings = result.data.floor.building ? [result.data.floor.building] : [];
     } else if (args.building_id) {
@@ -311,8 +324,8 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       }
 
       buildings = [result.data.building];
-      floors = result.data.building.floors || [];
-      rooms = floors.flatMap((f) => f.rooms || []);
+      floors = [...ensureArrayOrEmpty<Floor>(result.data.building.floors, "building.floors")];
+      rooms = floors.flatMap((f) => [...ensureArrayOrEmpty<Room>(f.rooms, "floor.rooms")]);
     } else if (args.tags && args.tags.length > 0) {
       // Resolve tag names → tag IDs (the API requires IDs, not names)
       const tagsResult = await apolloClient.query<{
@@ -323,58 +336,80 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
       });
       throwIfGraphQLErrors(tagsResult);
 
-      const allTags = tagsResult.data?.tags ?? [];
-      // Lookup is keyed by lowercased name; values are typed TagIds so the
-      // resolver boundary cannot accidentally surface raw names downstream.
-      const lookup = new Map<string, TagId>(
-        allTags.map((t) => [t.name.toLowerCase(), asTagId(t.id)])
-      );
-
-      const resolvedIDs: TagId[] = [];
-      const unknownNames: TagName[] = [];
-      for (const rawName of args.tags) {
-        const name = asTagName(rawName);
-        const id = lookup.get(name.toLowerCase());
-        if (id) {
-          resolvedIDs.push(id);
-        } else {
-          unknownNames.push(name);
-        }
+      // Same null-is-violation rule as butlr-list-tags — see comment there.
+      const allTags = tagsResult.data?.tags;
+      if (!Array.isArray(allTags)) {
+        throwInternalError(
+          "Unexpected response shape from tags query (expected array, got " +
+            `${allTags === null ? "null" : typeof allTags}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
       }
 
-      if (resolvedIDs.length === 0) {
+      // Apply tag_match default at the call site so direct invocations
+      // (tests bypassing Zod parsing, downstream programmatic callers)
+      // get the same semantics as the schema default.
+      //
+      // The default ("all") here DIFFERS from butlr_list_topology's
+      // default ("any") on purpose — available-rooms filters one entity type
+      // (rooms), where AND is intuitive; list-topology filters across rooms,
+      // zones, and floors, where AND is rarely satisfied. Do not unify these
+      // defaults via a shared helper without changing the user-facing
+      // semantics described in each tool's description string.
+      const tagMatch = args.tag_match ?? "all";
+      const resolution = resolveTagNames({
+        allTags,
+        requestedNames: args.tags,
+        match: tagMatch,
+      });
+
+      if (resolution.droppedRowCount > 0) {
+        warnings.push(
+          `${resolution.droppedRowCount} tag row(s) skipped — upstream returned entries with missing or empty id/name fields.`
+        );
+      }
+
+      // Compose the early-return warning from the resolver-prepended
+      // warnings array AND the primary diagnostic, so signals like
+      // droppedRowCount aren't lost on the no_match / unsatisfiable arms.
+      const composeWarning = (primary: string): string => [...warnings, primary].join(" ");
+
+      if (resolution.kind === "no_match") {
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
           available_rooms: [],
           total_available: 0,
           showing: 0,
           timestamp: new Date().toISOString(),
-          filtered_by: args,
-          unknown_tags: unknownNames,
-          warning:
-            `No matching tags found in this org for: ${unknownNames.join(", ")}. ` +
-            "Use butlr_list_tags to see available tag names.",
+          filtered_by: explicitFilters,
+          unknown_tags: resolution.unknownNames,
+          warning: composeWarning(
+            `No matching tags found in this org for: ${resolution.unknownNames.join(", ")}. ` +
+              "Use butlr_list_tags to see available tag names."
+          ),
         };
       }
 
-      // Under tag_match='all' (the default), an unresolved tag means the AND
-      // constraint is unsatisfiable — querying with the resolved subset would
-      // return a strictly broader result that silently answers a different
-      // question. Only continue-with-warning is safe under tag_match='any'.
-      if (unknownNames.length > 0 && args.tag_match !== "any") {
+      if (resolution.kind === "unsatisfiable") {
+        // Gate on the resolver's discriminant rather than re-deriving the
+        // all-vs-any rule inline, so the semantics live in one place
+        // (resolveTagNames) and can't drift between tools.
         return {
           summary: buildAvailableRoomsSummary({ count: 0, roomType: args.tags?.[0] }),
           available_rooms: [],
           total_available: 0,
           showing: 0,
           timestamp: new Date().toISOString(),
-          filtered_by: args,
-          unknown_tags: unknownNames,
-          warning:
-            `Cannot satisfy tag_match='all': unknown tag(s) ${unknownNames.join(", ")}. ` +
-            "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match rooms tagged with any of the supplied tags.",
+          filtered_by: explicitFilters,
+          unknown_tags: resolution.unknownNames,
+          warning: composeWarning(
+            `Cannot satisfy tag_match='all': unknown tag(s) ${resolution.unknownNames.join(", ")}. ` +
+              "Use butlr_list_tags to see available tag names, or pass tag_match='any' to match rooms tagged with any of the supplied tags."
+          ),
         };
       }
+
+      // resolution.kind === "ok" — safe to read resolvedIds / resolvedRows.
+      const { resolvedIds, unknownNames } = resolution;
 
       if (unknownNames.length > 0) {
         unknownTagNames = unknownNames;
@@ -383,11 +418,11 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
         );
       }
 
-      const useOR = args.tag_match === "any";
+      const useOR = tagMatch === "any";
 
       const result = await apolloClient.query<{ roomsByTag: { data: Room[] } | null }>({
         query: GET_ROOMS_BY_TAG,
-        variables: { tagIDs: resolvedIDs, useOR },
+        variables: { tagIDs: resolvedIds, useOR },
         fetchPolicy: "network-only",
       });
       throwIfGraphQLErrors(result);
@@ -424,9 +459,13 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
         );
       }
 
-      buildings = result.data.sites.data.flatMap((s) => s.buildings || []);
-      floors = buildings.flatMap((b) => b.floors || []);
-      rooms = floors.flatMap((f) => f.rooms || []);
+      buildings = result.data.sites.data.flatMap((s) => [
+        ...ensureArrayOrEmpty<Building>(s.buildings, "site.buildings"),
+      ]);
+      floors = buildings.flatMap((b) => [
+        ...ensureArrayOrEmpty<Floor>(b.floors, "building.floors"),
+      ]);
+      rooms = floors.flatMap((f) => [...ensureArrayOrEmpty<Room>(f.rooms, "floor.rooms")]);
     }
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
@@ -470,7 +509,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
     };
 
     if (Object.keys(args).length > 0) {
-      response.filtered_by = args;
+      if (hasExplicitFilters) response.filtered_by = explicitFilters;
     }
 
     if (warnings.length > 0) {
@@ -526,7 +565,20 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
 
       setBulkCachedOccupancy(cacheEntries);
     } catch (error: unknown) {
-      debug("available-rooms", "Failed to get occupancy data:", error);
+      // Translate auth / rate-limit / validation errors via the MCP error
+      // pipeline so the user gets actionable AUTH_EXPIRED / RATE_LIMITED
+      // signals instead of a generic "occupancy unavailable" warning.
+      // Only unknown / non-translatable errors fall through to the
+      // cache-only degraded path below.
+      rethrowIfGraphQLError(error);
+      const msg = error instanceof Error ? error.message : String(error);
+      debug("available-rooms", "Failed to get occupancy data:", msg);
+      // Include the upstream message in the user-visible warning so an
+      // operator inspecting a degraded response can correlate without
+      // needing DEBUG=butlr-mcp turned on.
+      warnings.push(
+        `real-time occupancy unavailable (${msg}); availability inferred from cached topology where possible`
+      );
       occupancyFetchFailed = true;
     }
   }
@@ -632,7 +684,7 @@ export async function executeAvailableRooms(args: AvailableRoomsArgs) {
   };
 
   if (Object.keys(args).length > 0) {
-    response.filtered_by = args;
+    if (hasExplicitFilters) response.filtered_by = explicitFilters;
   }
 
   if (buildingContext) {
