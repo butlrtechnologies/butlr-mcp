@@ -601,6 +601,90 @@ describe("butlr_get_current_occupancy - Integration", () => {
       expect(asset.presence.current_occupancy).toBeUndefined(); // but no data
       expect(asset.recommended_measurement).toBe("none");
     });
+
+    it("reports correct sensor_count for a zone with directly-attributed sensors", async () => {
+      // Pre-fix: sensor_count was hardcoded to 0 for every zone, so an LLM
+      // consumer would see "no sensors configured" even when the zone has
+      // a real presence sensor attached (verified against the live API:
+      // zone_30IFLPtiaKLhYOG3XgIvnts1PSF has 1 directly-attributed sensor).
+      const floorId = "space_zone_with_sensor";
+      const zoneTopo = {
+        topology: {
+          data: {
+            sites: {
+              data: [
+                {
+                  id: "site_001",
+                  name: "Test Site",
+                  timezone: "America/New_York",
+                  org_id: "org_001",
+                  buildings: [
+                    {
+                      id: "building_001",
+                      name: "Building",
+                      site_id: "site_001",
+                      floors: [
+                        {
+                          id: floorId,
+                          name: "Floor 1",
+                          building_id: "building_001",
+                          rooms: [],
+                          zones: [
+                            {
+                              id: "zone_with_sensor",
+                              name: "Peloton 1",
+                              floor_id: floorId,
+                              sensors: [
+                                {
+                                  id: "sensor_zone_p1",
+                                  name: "Peloton Sensor",
+                                  mac_address: "00:17:0d:00:00:6d:f3:0d",
+                                  mode: "presence",
+                                  floor_id: floorId,
+                                  hive_serial: "HIVE001",
+                                  is_entrance: false,
+                                  is_online: true,
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          loading: false,
+          networkStatus: 7,
+        },
+        sensors: {
+          // The flat sensors list does NOT contain zone-attributed sensors —
+          // they only appear nested under zone.sensors in the topology.
+          data: { sensors: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        },
+      };
+      setupTopologyMocks(zoneTopo);
+
+      const presenceBuilder = mockReportingBuilder({
+        data: [{ time: "2025-10-14T15:04:00Z", value: 1 }],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["zone_with_sensor"] });
+      const asset = result.assets[0];
+      expect(asset.asset_type).toBe("zone");
+      expect(asset.presence.sensor_count).toBe(1); // NOT 0 (pre-fix value)
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.current_occupancy).toBe(1);
+      // Coverage note should reflect the real sensor count.
+      expect(asset.presence.coverage_note).not.toMatch(/^Zones support presence/);
+    });
   });
 
   describe("Null site timezone fallback", () => {

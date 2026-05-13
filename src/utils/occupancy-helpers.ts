@@ -8,7 +8,7 @@
 
 import { apolloClient } from "../clients/graphql-client.js";
 import { GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
-import type { Sensor, Site, Floor, Building } from "../clients/types.js";
+import type { Sensor, Site, Floor, Building, Zone } from "../clients/types.js";
 import type { TimezoneMetadata } from "./timezone-helpers.js";
 import type { MeasurementRecommendation, BaseMeasurementData } from "../types/responses.js";
 import { detectAssetType } from "./asset-helpers.js";
@@ -104,24 +104,23 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
   // Resolve asset name
   const assetName = findAssetName(assetId, typedAssetType, ctx.floors);
 
-  // Filter sensors for this asset. Zones have no direct sensor attribution —
-  // zone_occupancy is computed server-side and is not a roll-up of any
-  // single sensor we can identify client-side. The callers (current /
-  // timeseries occupancy tools) detect zones by asset_type and query
-  // anyway; the sensor count is correctly reported as 0 for zones.
-  const assetSensors = ctx.productionSensors.filter((s) => {
-    const sensorFloorId = s.floor_id || s.floorID;
-    const sensorRoomId = s.room_id || s.roomID;
-
-    switch (typedAssetType) {
-      case "floor":
-        return sensorFloorId === assetId;
-      case "room":
-        return sensorRoomId === assetId;
-      case "zone":
-        return false; // Zones do not inherit room sensors — see comment above.
-    }
-  });
+  // Filter sensors for this asset. Rooms get sensors via the flat
+  // productionSensors list (joined by sensor.room_id). Zones get them
+  // via the topology's floor.zones[i].sensors relation — they have
+  // their own directly-attributed sensors, NOT inherited from any
+  // notional "parent room" (zones and rooms are siblings under a
+  // floor; the legacy zone.room_id field is decorative).
+  let assetSensors: Sensor[];
+  if (typedAssetType === "zone") {
+    const zone = findZone(assetId, ctx.floors);
+    assetSensors = (zone?.sensors ?? []).filter(isProductionSensor);
+  } else {
+    assetSensors = ctx.productionSensors.filter((s) => {
+      const sensorFloorId = s.floor_id || s.floorID;
+      const sensorRoomId = s.room_id || s.roomID;
+      return typedAssetType === "floor" ? sensorFloorId === assetId : sensorRoomId === assetId;
+    });
+  }
 
   // Partition sensors by mode
   const presenceSensors = assetSensors.filter((s) => s.mode === "presence");
@@ -182,6 +181,18 @@ function findAssetName(
       }
       return undefined;
   }
+}
+
+/**
+ * Find a zone object in the topology by id. Returns undefined if the zone
+ * isn't present (e.g. stale id or topology that didn't include zones).
+ */
+function findZone(zoneId: string, floors: Floor[]): Zone | undefined {
+  for (const floor of floors) {
+    const zone = floor.zones?.find((z) => z.id === zoneId);
+    if (zone) return zone;
+  }
+  return undefined;
 }
 
 /**
