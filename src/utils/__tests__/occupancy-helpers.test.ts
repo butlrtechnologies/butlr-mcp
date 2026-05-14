@@ -9,7 +9,7 @@ import {
   type TopologyContext,
 } from "../occupancy-helpers.js";
 import type { BaseMeasurementData } from "../../types/responses.js";
-import type { Sensor, Site, Building, Floor } from "../../clients/types.js";
+import type { Sensor, Site, Building, Floor, Zone } from "../../clients/types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers for building BaseMeasurementData fixtures
@@ -96,6 +96,64 @@ describe("buildRecommendation", () => {
       true
     );
     expect(result.recommended_measurement).toBe("traffic");
+  });
+
+  // -------------------------------------------------------------------------
+  // Failure-reason distinguishes three sub-cases — zone-quiet-but-instrumented
+  // bug: downstream LLMs were quoting "no occupancy data available" verbatim
+  // and telling customers the space was unmonitored when sensors were fine.
+  // -------------------------------------------------------------------------
+
+  it('reason mentions "sensor(s) configured" when presence sensors exist but returned no reads (zone-quiet case)', () => {
+    // Zone-quiet shape: presence available with one sensor configured, no
+    // warning, no recent reads. Traffic not applicable (zones don't support
+    // it).
+    const result = buildRecommendation(
+      makePresenceData({ available: true, sensor_count: 1 }),
+      { available: false, coverage_note: "Zones do not support traffic." },
+      false,
+      false
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).toMatch(/[Ss]ensor\(s\) configured/);
+    expect(result.recommendation_reason).toMatch(/butlr_hardware_snapshot/);
+    expect(result.recommendation_reason.toLowerCase()).not.toContain("no occupancy data");
+  });
+
+  it('reason mentions "no presence sensors configured" when presence is unavailable due to zero sensors', () => {
+    // Asset has no presence sensors at all (sensor_count: 0). For a zone this
+    // is the "uninstrumented space" case; for a room/floor it's
+    // available=false because the sensor-gating short-circuits the query.
+    const result = buildRecommendation(
+      {
+        available: true,
+        sensor_count: 0,
+        coverage_note: "Zones support presence measurement only.",
+      },
+      { available: false, coverage_note: "Zones do not support traffic." },
+      false,
+      false
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).toMatch(/[Nn]o presence sensors configured/);
+    expect(result.recommendation_reason.toLowerCase()).not.toContain("no occupancy data");
+  });
+
+  it("reason surfaces the warning text verbatim when the presence call errored", () => {
+    const result = buildRecommendation(
+      makePresenceData({
+        available: true,
+        sensor_count: 2,
+        warning: "Failed to retrieve current presence data. Occupancy value may be missing.",
+      }),
+      { available: false, coverage_note: "Zones do not support traffic." },
+      false,
+      false
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).toMatch(/Tried to retrieve presence/);
+    expect(result.recommendation_reason).toMatch(/Occupancy value may be missing/);
+    expect(result.recommendation_reason).toMatch(/butlr_hardware_snapshot/);
   });
 });
 
@@ -311,5 +369,128 @@ describe("resolveAssetContext — B2 regression: room-level traffic ignores is_e
     expect(result.assetType).toBe("floor");
     expect(result.trafficSensors).toHaveLength(1);
     expect(result.trafficSensors[0].id).toBe("sensor_entry");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveAssetContext — zone sensor attribution (zone.sensors relation)
+// ---------------------------------------------------------------------------
+
+describe("resolveAssetContext — zones read their own sensors via floor.zones[i].sensors", () => {
+  it("returns directly-attributed presence sensors for a zone", () => {
+    const zoneSensor = makeSensor({
+      id: "sensor_z1",
+      mode: "presence",
+      floor_id: "space_floor1",
+      // Note: zone.sensors are NOT joined via room_id. The flat sensor list
+      // doesn't carry them — they live on zone.sensors directly.
+    });
+    const floor: Floor = {
+      id: "space_floor1",
+      name: "Floor 1",
+      building_id: "building_001",
+      rooms: [],
+      zones: [
+        {
+          id: "zone_peloton",
+          name: "Test Zone A",
+          floor_id: "space_floor1",
+          sensors: [zoneSensor],
+        } as Zone,
+      ],
+    } as Floor;
+
+    // The flat productionSensors list does NOT include the zone sensor —
+    // this mirrors live API behavior, where zone-attributed sensors are not
+    // returned by the org-wide sensors query.
+    const ctx = makeTopologyContext({ floors: [floor], sensors: [] });
+
+    const result = resolveAssetContext("zone_peloton", ctx);
+    expect(result.assetType).toBe("zone");
+    expect(result.presenceSensors).toHaveLength(1);
+    expect(result.presenceSensors[0].id).toBe("sensor_z1");
+    // Zones never contribute to traffic.
+    expect(result.trafficSensors).toHaveLength(0);
+  });
+
+  it("filters mirror/fake sensors out of zone.sensors", () => {
+    const realSensor = makeSensor({
+      id: "sensor_real",
+      mac_address: "aa:bb:cc:dd:ee:01",
+      mode: "presence",
+    });
+    const mirrorSensor = makeSensor({
+      id: "sensor_mirror",
+      mac_address: "mi-rr-or-aa-bb-cc",
+      mode: "presence",
+    });
+    const floor: Floor = {
+      id: "space_floor1",
+      name: "Floor 1",
+      building_id: "building_001",
+      rooms: [],
+      zones: [
+        {
+          id: "zone_filter",
+          name: "Filtered",
+          floor_id: "space_floor1",
+          sensors: [realSensor, mirrorSensor],
+        } as Zone,
+      ],
+    } as Floor;
+
+    const ctx = makeTopologyContext({ floors: [floor], sensors: [] });
+    const result = resolveAssetContext("zone_filter", ctx);
+    expect(result.presenceSensors).toHaveLength(1);
+    expect(result.presenceSensors[0].id).toBe("sensor_real");
+  });
+
+  it("returns empty arrays when zone has no sensors field (defensive)", () => {
+    const floor: Floor = {
+      id: "space_floor1",
+      name: "Floor 1",
+      building_id: "building_001",
+      rooms: [],
+      // zone without a `sensors` field — common in older fixtures and a real
+      // possibility if upstream omits it.
+      zones: [{ id: "zone_empty", name: "Empty", floor_id: "space_floor1" } as Zone],
+    } as Floor;
+
+    const ctx = makeTopologyContext({ floors: [floor], sensors: [] });
+    const result = resolveAssetContext("zone_empty", ctx);
+    expect(result.assetType).toBe("zone");
+    expect(result.presenceSensors).toHaveLength(0);
+    expect(result.trafficSensors).toHaveLength(0);
+  });
+
+  it("does NOT pull sensors from the flat list joined by zone.room_id (legacy field is decorative)", () => {
+    // A sensor exists with room_id matching the zone's legacy room_id field.
+    // Pre-existing code would have ignored it (return false). New code must
+    // also ignore it — zone coverage comes only from zone.sensors.
+    const flatSensor = makeSensor({
+      id: "sensor_room_attached",
+      mode: "presence",
+      floor_id: "space_floor1",
+      room_id: "room_parent",
+    });
+    const floor: Floor = {
+      id: "space_floor1",
+      name: "Floor 1",
+      building_id: "building_001",
+      rooms: [{ id: "room_parent", name: "Parent", floor_id: "space_floor1" }],
+      zones: [
+        {
+          id: "zone_decorative_room_id",
+          name: "Z",
+          floor_id: "space_floor1",
+          room_id: "room_parent",
+          sensors: [],
+        } as Zone,
+      ],
+    } as Floor;
+
+    const ctx = makeTopologyContext({ floors: [floor], sensors: [flatSensor] });
+    const result = resolveAssetContext("zone_decorative_room_id", ctx);
+    expect(result.presenceSensors).toHaveLength(0);
   });
 });

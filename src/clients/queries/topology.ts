@@ -120,6 +120,17 @@ export const GET_FULL_TOPOLOGY = gql`
               room_id
               customID
               coordinates
+              sensors {
+                id
+                name
+                mac_address
+                mode
+                floor_id
+                room_id
+                hive_serial
+                is_entrance
+                is_online
+              }
             }
           }
         }
