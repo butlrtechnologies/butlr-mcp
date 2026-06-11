@@ -8,7 +8,7 @@
 
 import { apolloClient } from "../clients/graphql-client.js";
 import { GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
-import type { Sensor, Site, Floor, Building } from "../clients/types.js";
+import type { Sensor, Site, Floor, Building, Zone } from "../clients/types.js";
 import type { TimezoneMetadata } from "./timezone-helpers.js";
 import type { MeasurementRecommendation, BaseMeasurementData } from "../types/responses.js";
 import { detectAssetType } from "./asset-helpers.js";
@@ -104,24 +104,23 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
   // Resolve asset name
   const assetName = findAssetName(assetId, typedAssetType, ctx.floors);
 
-  // Filter sensors for this asset. Zones have no direct sensor attribution —
-  // zone_occupancy is computed server-side and is not a roll-up of any
-  // single sensor we can identify client-side. The callers (current /
-  // timeseries occupancy tools) detect zones by asset_type and query
-  // anyway; the sensor count is correctly reported as 0 for zones.
-  const assetSensors = ctx.productionSensors.filter((s) => {
-    const sensorFloorId = s.floor_id || s.floorID;
-    const sensorRoomId = s.room_id || s.roomID;
-
-    switch (typedAssetType) {
-      case "floor":
-        return sensorFloorId === assetId;
-      case "room":
-        return sensorRoomId === assetId;
-      case "zone":
-        return false; // Zones do not inherit room sensors — see comment above.
-    }
-  });
+  // Filter sensors for this asset. Rooms get sensors via the flat
+  // productionSensors list (joined by sensor.room_id). Zones get them
+  // via the topology's floor.zones[i].sensors relation — they have
+  // their own directly-attributed sensors, NOT inherited from any
+  // notional "parent room" (zones and rooms are siblings under a
+  // floor; the legacy zone.room_id field is decorative).
+  let assetSensors: Sensor[];
+  if (typedAssetType === "zone") {
+    const zone = findZone(assetId, ctx.floors);
+    assetSensors = (zone?.sensors ?? []).filter(isProductionSensor);
+  } else {
+    assetSensors = ctx.productionSensors.filter((s) => {
+      const sensorFloorId = s.floor_id || s.floorID;
+      const sensorRoomId = s.room_id || s.roomID;
+      return typedAssetType === "floor" ? sensorFloorId === assetId : sensorRoomId === assetId;
+    });
+  }
 
   // Partition sensors by mode
   const presenceSensors = assetSensors.filter((s) => s.mode === "presence");
@@ -185,6 +184,18 @@ function findAssetName(
 }
 
 /**
+ * Find a zone object in the topology by id. Returns undefined if the zone
+ * isn't present (e.g. stale id or topology that didn't include zones).
+ */
+function findZone(zoneId: string, floors: Floor[]): Zone | undefined {
+  for (const floor of floors) {
+    const zone = floor.zones?.find((z) => z.id === zoneId);
+    if (zone) return zone;
+  }
+  return undefined;
+}
+
+/**
  * Get the measurement name for presence data based on asset type.
  */
 export function getPresenceMeasurement(assetType: "floor" | "room" | "zone"): string {
@@ -245,16 +256,31 @@ export function getTrafficCoverageNote(
 }
 
 /**
+ * Caller context threaded through recommendation building. `assetType` decides
+ * structural applicability (zones don't support traffic); `windowLabel` is a
+ * human-readable description of the query window so failure copy doesn't claim
+ * a window the caller never queried (the current-occupancy tool uses a fixed
+ * 5-minute snapshot; the timeseries tool uses a caller-supplied range).
+ */
+export interface RecommendationContext {
+  assetType: "floor" | "room" | "zone";
+  windowLabel: string;
+}
+
+/**
  * Build measurement recommendation based on data availability AND query success.
  *
  * Unlike the previous implementation, this checks whether data was actually retrieved,
- * not just whether sensors exist.
+ * not just whether sensors exist. When both measurement types fail, the reason
+ * distinguishes three sub-cases (no sensors / sensors-but-quiet / call errored)
+ * so downstream LLMs don't conflate "uninstrumented space" with "no recent reads."
  */
 export function buildRecommendation(
   presence: BaseMeasurementData,
   traffic: BaseMeasurementData,
   presenceHasData: boolean,
-  trafficHasData: boolean
+  trafficHasData: boolean,
+  ctx: RecommendationContext
 ): MeasurementRecommendation {
   const presenceSucceeded = presence.available && presenceHasData && !presence.warning;
   const trafficSucceeded = traffic.available && trafficHasData && !traffic.warning;
@@ -279,9 +305,89 @@ export function buildRecommendation(
     };
   }
 
-  const failureReason = presence.warning || traffic.warning || "No occupancy data available.";
   return {
     recommended_measurement: "none",
-    recommendation_reason: failureReason,
+    recommendation_reason: buildFailureReason(presence, traffic, ctx),
   };
+}
+
+/**
+ * Number of sensors configured for a measurement, regardless of which field
+ * the caller populated: floors report traffic via `entrance_sensor_count`;
+ * rooms and zones use `sensor_count`.
+ */
+function configuredSensorCount(data: BaseMeasurementData): number {
+  return data.sensor_count ?? data.entrance_sensor_count ?? 0;
+}
+
+/**
+ * Compose the recommendation_reason when neither presence nor traffic yielded a
+ * usable reading. Prefers the more actionable of the two measurement types,
+ * giving the customer something concrete to do next (instrument the space,
+ * wait for the next read, check sensor health, or retry the call).
+ *
+ * Avoids the literal phrase "no occupancy data" — downstream LLMs were quoting
+ * it verbatim and turning "quiet but instrumented" into "the space is
+ * unmonitored," which is the opposite of true.
+ */
+function buildFailureReason(
+  presence: BaseMeasurementData,
+  traffic: BaseMeasurementData,
+  ctx: RecommendationContext
+): string {
+  const presenceReason = describeMeasurementFailure("presence", presence, ctx);
+  const trafficReason = describeMeasurementFailure("traffic", traffic, ctx);
+
+  // Prefer the measurement type carrying real signal: one with sensors
+  // configured, or whose call errored mid-flight. Without this, a floor with
+  // working entrance sensors but zero presence sensors would surface
+  // presence's "no sensors configured" copy and read as uninstrumented.
+  // Presence wins ties — it's the more informative signal when both
+  // measurement types are instrumented but quiet.
+  const presenceHasSignal = configuredSensorCount(presence) > 0 || Boolean(presence.warning);
+  const trafficHasSignal = configuredSensorCount(traffic) > 0 || Boolean(traffic.warning);
+  if (presenceReason && presenceHasSignal) return presenceReason;
+  if (trafficReason && trafficHasSignal) return trafficReason;
+
+  // Neither measurement type has sensors: the space is uninstrumented.
+  // Presence first — it applies to every asset type.
+  if (presenceReason) return presenceReason;
+  if (trafficReason) return trafficReason;
+
+  // Defensive fallback for totality only. Unreachable today: presence is
+  // applicable to every asset type, so `presenceReason` is always set.
+  return "No recent occupancy reads. Check butlr_hardware_snapshot for sensor health.";
+}
+
+/**
+ * Returns a customer-facing explanation of why a measurement type produced no
+ * usable reading, or `undefined` if the measurement type is structurally
+ * inapplicable to this asset (traffic on a zone). Only called for measurements
+ * that yielded no usable reading, so "sensors configured" below means
+ * configured-but-quiet.
+ */
+function describeMeasurementFailure(
+  kind: "presence" | "traffic",
+  data: BaseMeasurementData,
+  ctx: RecommendationContext
+): string | undefined {
+  // Traffic on a zone is the only structurally-N/A combination. The caller's
+  // coverage_note already explains why; surfacing it here would be redundant.
+  if (kind === "traffic" && ctx.assetType === "zone") return undefined;
+
+  // The call errored. Surface the warning verbatim so the customer (and any
+  // LLM reading the response) gets the actual failure mode.
+  if (data.warning) {
+    return `Tried to retrieve ${kind} occupancy but the request failed: ${data.warning}. Retry with a smaller asset set, or check butlr_hardware_snapshot for sensor health.`;
+  }
+
+  // Sensors are configured but the Reporting API had no reads in the query
+  // window. Honest: we don't know if the space is empty or if the sensors
+  // are stuck — point at hardware_snapshot for the health-check answer.
+  if (configuredSensorCount(data) > 0) {
+    return `Sensor(s) configured but no ${kind} reads in ${ctx.windowLabel}. The asset may currently be empty, or the sensor(s) may need a health check via butlr_hardware_snapshot.`;
+  }
+
+  // No sensors at all. The space is uninstrumented for this measurement type.
+  return `No ${kind} sensors configured for this asset. Contact facilities to instrument it before requesting ${kind} occupancy.`;
 }

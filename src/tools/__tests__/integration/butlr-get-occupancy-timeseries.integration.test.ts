@@ -285,6 +285,32 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       expect(asset.recommended_measurement).toBe("none");
     });
 
+    it("no-data reason references the requested window, not 'last 5 minutes'", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 1 });
+      setupTopologyMocks(topo);
+
+      const emptyBuilder = mockReportingBuilder({ data: [] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => emptyBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_100"],
+        interval: "1d",
+        start: "-7d",
+        stop: "now",
+      });
+
+      const asset = result.assets[0];
+      expect(asset.recommended_measurement).toBe("none");
+      // Regression: the failure copy used to hardcode the current-occupancy
+      // tool's 5-minute snapshot window — false for a caller-supplied range
+      // like -7d, and an LLM would relay "only checked the last 5 minutes"
+      // to a customer who asked about a week.
+      expect(asset.recommendation_reason).not.toMatch(/last 5 minutes/);
+      expect(asset.recommendation_reason).toMatch(/no presence reads in the requested time range/);
+    });
+
     it("recommends traffic when only traffic query returns data", async () => {
       const topo = buildTopologyResponse({
         presenceSensors: 1,
@@ -402,7 +428,7 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
                           zones: [
                             {
                               id: "zone_target",
-                              name: "Peloton 1",
+                              name: "Test Zone A",
                               floor_id: floorId,
                             },
                           ],
@@ -454,6 +480,90 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       // Must have fired the zone-specific measurement, not room_occupancy.
       expect(presenceBuilder.measurements).toHaveBeenCalledWith(["zone_occupancy"]);
       expect(presenceBuilder.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports correct sensor_count for a zone with directly-attributed sensors", async () => {
+      // Companion to the current-occupancy variant: assert the timeseries
+      // tool surfaces zone.sensors rather than a hardcoded 0.
+      const floorId = "space_zone_with_sensor_ts";
+      const zoneTopo = {
+        topology: {
+          data: {
+            sites: {
+              data: [
+                {
+                  id: "site_001",
+                  name: "Test Site",
+                  timezone: "America/Los_Angeles",
+                  org_id: "org_001",
+                  buildings: [
+                    {
+                      id: "building_001",
+                      name: "Building",
+                      site_id: "site_001",
+                      floors: [
+                        {
+                          id: floorId,
+                          name: "Floor 1",
+                          building_id: "building_001",
+                          rooms: [],
+                          zones: [
+                            {
+                              id: "zone_with_sensor_ts",
+                              name: "Test Zone A",
+                              floor_id: floorId,
+                              sensors: [
+                                {
+                                  id: "sensor_zone_ts1",
+                                  mac_address: "00:17:0d:00:00:6d:f3:0d",
+                                  mode: "presence",
+                                  floor_id: floorId,
+                                  hive_serial: "HIVE001",
+                                  is_entrance: false,
+                                  is_online: true,
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          loading: false,
+          networkStatus: 7,
+        },
+        sensors: {
+          data: { sensors: { data: [] } },
+          loading: false,
+          networkStatus: 7,
+        },
+      };
+      setupTopologyMocks(zoneTopo);
+
+      const presenceBuilder = mockReportingBuilder({
+        data: [{ time: "2025-10-14T15:00:00Z", value: 1 }],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["zone_with_sensor_ts"],
+        interval: "1h",
+        start: "-24h",
+        stop: "now",
+      });
+
+      const asset = result.assets[0];
+      expect(asset.asset_type).toBe("zone");
+      expect(asset.presence.sensor_count).toBe(1);
+      // Coverage note should reflect the real sensor count (mirrors the
+      // current-occupancy sibling test).
+      expect(asset.presence.coverage_note).not.toMatch(/^Zones support presence/);
     });
   });
 

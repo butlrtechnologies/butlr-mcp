@@ -314,9 +314,12 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
   // Get trend if requested
   if (args.include_trend !== false) {
     try {
-      // Query last 4 weeks of data (v4 Stats API uses occupancy_avg_presence for both rooms and zones)
+      // Query last 4 weeks of data (v4 Stats API uses occupancy_avg_presence for both rooms and zones).
+      // The v4 Stats API requires ISO-8601 absolute timestamps and rejects relative formats
+      // like "-4w" (stats-client's parseRelativeTime only handles m/h/d, not weeks).
       const measurement = "occupancy_avg_presence";
-      const stats = await getSingleAssetStats(measurement, spaceId, "-4w", "now");
+      const trendStart = new Date(now.getTime() - 28 * 24 * 60 * 60 * 1000).toISOString();
+      const stats = await getSingleAssetStats(measurement, spaceId, trendStart, now.toISOString());
 
       if (stats) {
         const typical = stats.mean;
