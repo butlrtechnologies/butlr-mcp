@@ -141,7 +141,8 @@ export async function executeGetCurrentOccupancy(
       presenceData,
       trafficData,
       presenceHasData,
-      trafficHasData
+      trafficHasData,
+      { assetType: asset.assetType, windowLabel: "the last 5 minutes" }
     );
 
     const assetEntry: AssetCurrentOccupancy = {

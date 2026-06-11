@@ -285,6 +285,32 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       expect(asset.recommended_measurement).toBe("none");
     });
 
+    it("no-data reason references the requested window, not 'last 5 minutes'", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 1 });
+      setupTopologyMocks(topo);
+
+      const emptyBuilder = mockReportingBuilder({ data: [] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => emptyBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_100"],
+        interval: "1d",
+        start: "-7d",
+        stop: "now",
+      });
+
+      const asset = result.assets[0];
+      expect(asset.recommended_measurement).toBe("none");
+      // Regression: the failure copy used to hardcode the current-occupancy
+      // tool's 5-minute snapshot window — false for a caller-supplied range
+      // like -7d, and an LLM would relay "only checked the last 5 minutes"
+      // to a customer who asked about a week.
+      expect(asset.recommendation_reason).not.toMatch(/last 5 minutes/);
+      expect(asset.recommendation_reason).toMatch(/no presence reads in the requested time range/);
+    });
+
     it("recommends traffic when only traffic query returns data", async () => {
       const topo = buildTopologyResponse({
         presenceSensors: 1,
@@ -535,6 +561,9 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       const asset = result.assets[0];
       expect(asset.asset_type).toBe("zone");
       expect(asset.presence.sensor_count).toBe(1);
+      // Coverage note should reflect the real sensor count (mirrors the
+      // current-occupancy sibling test).
+      expect(asset.presence.coverage_note).not.toMatch(/^Zones support presence/);
     });
   });
 

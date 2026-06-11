@@ -7,6 +7,7 @@ import {
   getTrafficCoverageNote,
   resolveAssetContext,
   type TopologyContext,
+  type RecommendationContext,
 } from "../occupancy-helpers.js";
 import type { BaseMeasurementData } from "../../types/responses.js";
 import type { Sensor, Site, Building, Floor, Zone } from "../../clients/types.js";
@@ -23,13 +24,23 @@ function makeTrafficData(overrides: Partial<BaseMeasurementData> = {}): BaseMeas
   return { available: true, entrance_sensor_count: 2, ...overrides };
 }
 
+function makeCtx(overrides: Partial<RecommendationContext> = {}): RecommendationContext {
+  return { assetType: "floor", windowLabel: "the last 5 minutes", ...overrides };
+}
+
 // ---------------------------------------------------------------------------
 // buildRecommendation
 // ---------------------------------------------------------------------------
 
 describe("buildRecommendation", () => {
   it('recommends "presence" when both presence and traffic have data', () => {
-    const result = buildRecommendation(makePresenceData(), makeTrafficData(), true, true);
+    const result = buildRecommendation(
+      makePresenceData(),
+      makeTrafficData(),
+      true,
+      true,
+      makeCtx()
+    );
     expect(result.recommended_measurement).toBe("presence");
     expect(result.recommendation_reason).toMatch(/Both available/);
   });
@@ -39,7 +50,8 @@ describe("buildRecommendation", () => {
       makePresenceData(),
       makeTrafficData({ available: false }),
       true,
-      false
+      false,
+      makeCtx()
     );
     expect(result.recommended_measurement).toBe("presence");
     expect(result.recommendation_reason).toMatch(/Presence available/);
@@ -50,7 +62,8 @@ describe("buildRecommendation", () => {
       makePresenceData({ available: false }),
       makeTrafficData(),
       false,
-      true
+      true,
+      makeCtx()
     );
     expect(result.recommended_measurement).toBe("traffic");
     expect(result.recommendation_reason).toMatch(/Traffic available/);
@@ -61,7 +74,8 @@ describe("buildRecommendation", () => {
       makePresenceData({ available: false }),
       makeTrafficData({ available: false }),
       false,
-      false
+      false,
+      makeCtx()
     );
     expect(result.recommended_measurement).toBe("none");
   });
@@ -71,7 +85,8 @@ describe("buildRecommendation", () => {
       makePresenceData({ available: true, warning: "Query timed out" }),
       makeTrafficData({ available: false }),
       false,
-      false
+      false,
+      makeCtx()
     );
     expect(result.recommended_measurement).toBe("none");
     expect(result.recommendation_reason).toMatch(/Query timed out/);
@@ -83,7 +98,8 @@ describe("buildRecommendation", () => {
       makePresenceData({ available: true, warning: "Partial data" }),
       makeTrafficData({ available: true }),
       true,
-      false
+      false,
+      makeCtx()
     );
     expect(result.recommended_measurement).toBe("none");
   });
@@ -93,7 +109,8 @@ describe("buildRecommendation", () => {
       makePresenceData({ available: true, warning: "Sensor offline" }),
       makeTrafficData(),
       true,
-      true
+      true,
+      makeCtx()
     );
     expect(result.recommended_measurement).toBe("traffic");
   });
@@ -112,7 +129,8 @@ describe("buildRecommendation", () => {
       makePresenceData({ available: true, sensor_count: 1 }),
       { available: false, coverage_note: "Zones do not support traffic." },
       false,
-      false
+      false,
+      makeCtx({ assetType: "zone" })
     );
     expect(result.recommended_measurement).toBe("none");
     expect(result.recommendation_reason).toMatch(/[Ss]ensor\(s\) configured/);
@@ -132,7 +150,8 @@ describe("buildRecommendation", () => {
       },
       { available: false, coverage_note: "Zones do not support traffic." },
       false,
-      false
+      false,
+      makeCtx({ assetType: "zone" })
     );
     expect(result.recommended_measurement).toBe("none");
     expect(result.recommendation_reason).toMatch(/[Nn]o presence sensors configured/);
@@ -148,12 +167,114 @@ describe("buildRecommendation", () => {
       }),
       { available: false, coverage_note: "Zones do not support traffic." },
       false,
-      false
+      false,
+      makeCtx({ assetType: "zone" })
     );
     expect(result.recommended_measurement).toBe("none");
     expect(result.recommendation_reason).toMatch(/Tried to retrieve presence/);
     expect(result.recommendation_reason).toMatch(/Occupancy value may be missing/);
     expect(result.recommendation_reason).toMatch(/butlr_hardware_snapshot/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Floor/room failure copy — instrumented-but-quiet must never read as
+  // uninstrumented, and uninstrumented must never read as a sensor-health
+  // problem. Floors store their traffic count in entrance_sensor_count
+  // (sensor_count stays undefined), which previously made a quiet floor with
+  // working entrance sensors fall through to "No traffic sensors configured."
+  // -------------------------------------------------------------------------
+
+  it("floor with quiet entrance sensors is NOT reported as uninstrumented", () => {
+    const result = buildRecommendation(
+      { available: false, sensor_count: 0, coverage_note: "No presence sensors on this floor." },
+      {
+        available: true,
+        entrance_sensor_count: 3,
+        coverage_note: "Traffic from 3 main entrance sensors.",
+      },
+      false,
+      false,
+      makeCtx({ assetType: "floor" })
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).not.toMatch(/[Nn]o traffic sensors configured/);
+    expect(result.recommendation_reason).toMatch(/no traffic reads/);
+  });
+
+  it("uninstrumented room says 'no sensors configured', not 'check hardware_snapshot'", () => {
+    const result = buildRecommendation(
+      { available: false, sensor_count: 0, coverage_note: "No presence sensors on this room." },
+      { available: false, sensor_count: 0, coverage_note: "No traffic sensors." },
+      false,
+      false,
+      makeCtx({ assetType: "room" })
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).toMatch(/[Nn]o (presence|traffic) sensors configured/);
+    expect(result.recommendation_reason).not.toMatch(/No recent occupancy reads/);
+  });
+
+  it("surfaces the traffic warning verbatim when traffic errored and presence is uninstrumented", () => {
+    const result = buildRecommendation(
+      { available: false, sensor_count: 0, coverage_note: "No presence sensors on this room." },
+      {
+        available: true,
+        sensor_count: 2,
+        coverage_note: "Traffic from 2 sensors.",
+        warning: "Failed to retrieve current traffic data. Occupancy value may be missing.",
+      },
+      false,
+      false,
+      makeCtx({ assetType: "room" })
+    );
+    expect(result.recommended_measurement).toBe("none");
+    expect(result.recommendation_reason).toMatch(/Tried to retrieve traffic/);
+    expect(result.recommendation_reason).toMatch(/butlr_hardware_snapshot/);
+  });
+
+  it("uses the caller-supplied window label in the quiet-but-instrumented copy", () => {
+    const result = buildRecommendation(
+      makePresenceData({ sensor_count: 2 }),
+      { available: false, sensor_count: 0, coverage_note: "No traffic sensors." },
+      false,
+      false,
+      makeCtx({ assetType: "room", windowLabel: "the requested time range" })
+    );
+    expect(result.recommendation_reason).toMatch(/no presence reads in the requested time range/);
+    expect(result.recommendation_reason).not.toMatch(/last 5 minutes/);
+  });
+
+  it("never emits the generic 'No recent occupancy reads' fallback for uninstrumented assets", () => {
+    // The buildFailureReason fallback is defensive-only: presence applies to
+    // every asset type, so a specific reason is always produced. Pins the
+    // regression where uninstrumented rooms/floors leaked the generic copy
+    // (implying sensors exist when there are none).
+    const shapes: Array<{
+      assetType: "floor" | "room" | "zone";
+      presence: BaseMeasurementData;
+      traffic: BaseMeasurementData;
+    }> = [
+      {
+        assetType: "zone",
+        presence: { available: true, sensor_count: 0 },
+        traffic: { available: false },
+      },
+      {
+        assetType: "room",
+        presence: { available: false, sensor_count: 0 },
+        traffic: { available: false, sensor_count: 0 },
+      },
+      {
+        assetType: "floor",
+        presence: { available: false, sensor_count: 0 },
+        traffic: { available: false, entrance_sensor_count: 0 },
+      },
+    ];
+    for (const { assetType, presence, traffic } of shapes) {
+      const result = buildRecommendation(presence, traffic, false, false, makeCtx({ assetType }));
+      expect(result.recommendation_reason).not.toMatch(/No recent occupancy reads/);
+      expect(result.recommendation_reason).toMatch(/sensors configured/);
+    }
   });
 });
 

@@ -256,6 +256,18 @@ export function getTrafficCoverageNote(
 }
 
 /**
+ * Caller context threaded through recommendation building. `assetType` decides
+ * structural applicability (zones don't support traffic); `windowLabel` is a
+ * human-readable description of the query window so failure copy doesn't claim
+ * a window the caller never queried (the current-occupancy tool uses a fixed
+ * 5-minute snapshot; the timeseries tool uses a caller-supplied range).
+ */
+export interface RecommendationContext {
+  assetType: "floor" | "room" | "zone";
+  windowLabel: string;
+}
+
+/**
  * Build measurement recommendation based on data availability AND query success.
  *
  * Unlike the previous implementation, this checks whether data was actually retrieved,
@@ -267,7 +279,8 @@ export function buildRecommendation(
   presence: BaseMeasurementData,
   traffic: BaseMeasurementData,
   presenceHasData: boolean,
-  trafficHasData: boolean
+  trafficHasData: boolean,
+  ctx: RecommendationContext
 ): MeasurementRecommendation {
   const presenceSucceeded = presence.available && presenceHasData && !presence.warning;
   const trafficSucceeded = traffic.available && trafficHasData && !traffic.warning;
@@ -294,8 +307,17 @@ export function buildRecommendation(
 
   return {
     recommended_measurement: "none",
-    recommendation_reason: buildFailureReason(presence, traffic, presenceHasData, trafficHasData),
+    recommendation_reason: buildFailureReason(presence, traffic, ctx),
   };
+}
+
+/**
+ * Number of sensors configured for a measurement, regardless of which field
+ * the caller populated: floors report traffic via `entrance_sensor_count`;
+ * rooms and zones use `sensor_count`.
+ */
+function configuredSensorCount(data: BaseMeasurementData): number {
+  return data.sensor_count ?? data.entrance_sensor_count ?? 0;
 }
 
 /**
@@ -311,38 +333,47 @@ export function buildRecommendation(
 function buildFailureReason(
   presence: BaseMeasurementData,
   traffic: BaseMeasurementData,
-  presenceHasData: boolean,
-  trafficHasData: boolean
+  ctx: RecommendationContext
 ): string {
-  const presenceReason = describeMeasurementFailure("presence", presence, presenceHasData);
-  const trafficReason = describeMeasurementFailure("traffic", traffic, trafficHasData);
+  const presenceReason = describeMeasurementFailure("presence", presence, ctx);
+  const trafficReason = describeMeasurementFailure("traffic", traffic, ctx);
 
-  // Prefer presence when it's applicable to this asset (zones in particular
-  // have traffic permanently unavailable, so the traffic reason is noise).
-  // For non-zone assets, also prefer presence — it's the more informative
-  // signal when both measurement types are configured but quiet.
+  // Prefer the measurement type carrying real signal: one with sensors
+  // configured, or whose call errored mid-flight. Without this, a floor with
+  // working entrance sensors but zero presence sensors would surface
+  // presence's "no sensors configured" copy and read as uninstrumented.
+  // Presence wins ties — it's the more informative signal when both
+  // measurement types are instrumented but quiet.
+  const presenceHasSignal = configuredSensorCount(presence) > 0 || Boolean(presence.warning);
+  const trafficHasSignal = configuredSensorCount(traffic) > 0 || Boolean(traffic.warning);
+  if (presenceReason && presenceHasSignal) return presenceReason;
+  if (trafficReason && trafficHasSignal) return trafficReason;
+
+  // Neither measurement type has sensors: the space is uninstrumented.
+  // Presence first — it applies to every asset type.
   if (presenceReason) return presenceReason;
   if (trafficReason) return trafficReason;
 
-  // Defensive fallback: neither measurement type was applicable to this asset
-  // at all. Shouldn't happen in practice (an asset always has at least one
-  // applicable measurement type), but the type system can't guarantee it.
+  // Defensive fallback for totality only. Unreachable today: presence is
+  // applicable to every asset type, so `presenceReason` is always set.
   return "No recent occupancy reads. Check butlr_hardware_snapshot for sensor health.";
 }
 
 /**
  * Returns a customer-facing explanation of why a measurement type produced no
- * usable reading, or `undefined` if the measurement type is not applicable to
- * this asset (e.g. traffic on a zone).
+ * usable reading, or `undefined` if the measurement type is structurally
+ * inapplicable to this asset (traffic on a zone). Only called for measurements
+ * that yielded no usable reading, so "sensors configured" below means
+ * configured-but-quiet.
  */
 function describeMeasurementFailure(
   kind: "presence" | "traffic",
   data: BaseMeasurementData,
-  hasData: boolean
+  ctx: RecommendationContext
 ): string | undefined {
-  // Not applicable to this asset (e.g. traffic on a zone). The caller's
+  // Traffic on a zone is the only structurally-N/A combination. The caller's
   // coverage_note already explains why; surfacing it here would be redundant.
-  if (!data.available && !data.warning) return undefined;
+  if (kind === "traffic" && ctx.assetType === "zone") return undefined;
 
   // The call errored. Surface the warning verbatim so the customer (and any
   // LLM reading the response) gets the actual failure mode.
@@ -350,13 +381,11 @@ function describeMeasurementFailure(
     return `Tried to retrieve ${kind} occupancy but the request failed: ${data.warning}. Retry with a smaller asset set, or check butlr_hardware_snapshot for sensor health.`;
   }
 
-  const sensorCount = data.sensor_count ?? 0;
-
   // Sensors are configured but the Reporting API had no reads in the query
   // window. Honest: we don't know if the space is empty or if the sensors
   // are stuck — point at hardware_snapshot for the health-check answer.
-  if (sensorCount > 0 && !hasData) {
-    return `Sensor(s) configured but no ${kind} reads in the last 5 minutes. The asset may currently be empty, or the sensor(s) may need a health check via butlr_hardware_snapshot.`;
+  if (configuredSensorCount(data) > 0) {
+    return `Sensor(s) configured but no ${kind} reads in ${ctx.windowLabel}. The asset may currently be empty, or the sensor(s) may need a health check via butlr_hardware_snapshot.`;
   }
 
   // No sensors at all. The space is uninstrumented for this measurement type.

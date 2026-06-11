@@ -177,7 +177,8 @@ export async function executeGetOccupancyTimeseries(
       presenceData,
       trafficData,
       presenceData.timeseries.length > 0,
-      trafficData.timeseries.length > 0
+      trafficData.timeseries.length > 0,
+      { assetType: asset.assetType, windowLabel: "the requested time range" }
     );
 
     const assetEntry: AssetOccupancyTimeseries = {
