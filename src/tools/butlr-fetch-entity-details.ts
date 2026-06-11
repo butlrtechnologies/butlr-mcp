@@ -84,7 +84,8 @@ type FetchEntityDetailsArgs = z.output<typeof FetchEntityDetailsArgsSchema>;
 // Scalars (id, name, *_id, coordinates, center, orientation, etc.) do
 // NOT belong here — adding them would re-introduce the same kind of bug
 // in the opposite direction (subselection on a scalar).
-const FIELD_SELECTIONS: Record<string, string> = {
+// Exported for unit testing (sync invariant against VALID_FIELDS).
+export const FIELD_SELECTIONS: Record<string, string> = {
   // Tags (object-list on Floor/Room/Zone)
   tags: "tags { id name }",
   // Embedded value objects
