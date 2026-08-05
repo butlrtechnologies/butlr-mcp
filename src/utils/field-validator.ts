@@ -38,8 +38,9 @@ function normalizeFieldName(field: string): string {
 /**
  * Valid fields for each entity type
  * Based on GraphQL schema (mix of snake_case and camelCase)
+ * Exported for unit testing (FIELD_SELECTIONS sync invariant)
  */
-const VALID_FIELDS: Record<EntityType, readonly string[]> = {
+export const VALID_FIELDS: Record<EntityType, readonly string[]> = {
   site: ["id", "name", "timezone", "siteNumber", "customID", "org_id", "buildings"],
   building: [
     "id",
@@ -68,6 +69,7 @@ const VALID_FIELDS: Record<EntityType, readonly string[]> = {
     "sensors",
     "hives",
     "building",
+    "tags",
   ],
   room: [
     "id",
@@ -82,6 +84,7 @@ const VALID_FIELDS: Record<EntityType, readonly string[]> = {
     "note",
     "sensors",
     "floor",
+    "tags",
   ],
   zone: [
     "id",
@@ -95,6 +98,7 @@ const VALID_FIELDS: Record<EntityType, readonly string[]> = {
     "rotation",
     "note",
     "sensors",
+    "tags",
   ],
   sensor: [
     "id",

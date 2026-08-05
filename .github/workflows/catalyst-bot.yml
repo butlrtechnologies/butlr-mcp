@@ -1,0 +1,81 @@
+# Copy this file to your repo's .github/workflows/catalyst-bot.yml.
+#
+# What it does
+# ------------
+# Adds a comment-triggered PR conversation bot named @catalyst-bot, powered by
+# Claude. Devs invoke it explicitly — it never auto-runs on push/sync, so it
+# costs nothing outside of active reviews.
+#
+# Slash commands available on any PR:
+#   /review         fast single-pass review
+#   /review-deep    multi-agent thorough review (security + perf + correctness)
+#   /security       security-only focus (OWASP top 10, secrets, auth)
+#   /explain        plain-English summary of what the PR does
+#   @catalyst-bot   open-ended Q&A on the PR
+#
+# How it differs from bot-pr-review.yml
+# -------------------------------------
+# - Auth: Max plan OAuth (CLAUDE_CODE_OAUTH_TOKEN) instead of API key — cost
+#   rolls into the Max subscription, no per-token billing.
+# - Trigger: comment-driven (this file) instead of pull_request — opt-in.
+# - Use this when you want unlimited-feeling iteration on a repo without
+#   burning paid API credits. Use bot-pr-review.yml for auto-on-PR reviews.
+#
+# Setup checklist
+# ---------------
+# 1. Drop this file at .github/workflows/catalyst-bot.yml in the consumer repo.
+# 2. Confirm these org-level secrets are scoped to this repo
+#    (Settings → Secrets and variables → Actions → Repository access):
+#    - CLAUDE_CODE_OAUTH_TOKEN — Max plan OAuth token (`claude setup-token`)
+#    - GH_AUTOMATIONS_TOKEN    — fine-grained PAT with Contents:Read on
+#                                butlrtechnologies/github-automations, used by
+#                                the reusable workflow to checkout the shared
+#                                review agents. The default GITHUB_TOKEN is
+#                                scoped to the calling repo and cannot read
+#                                this private repo (would 404). One org-wide
+#                                PAT covers every consumer repo; no per-repo
+#                                token needed.
+# 3. Open any PR. Comment `@catalyst-bot explain` to verify it responds.
+
+name: Catalyst-bot
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+# Caller must declare the permissions the reusable workflow needs.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
+# Per-PR concurrency: a flurry of comments queues cleanly, doesn't drop responses.
+concurrency:
+  group: catalyst-bot-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  catalyst-bot:
+    # Only run on human comments containing @catalyst-bot or a slash command.
+    # Filters out bot-on-bot loops via user.type != 'Bot'.
+    if: |
+      (github.event.comment != null
+        && github.event.comment.user.type != 'Bot'
+        && (contains(github.event.comment.body, '@catalyst-bot')
+            || startsWith(github.event.comment.body, '/review')
+            || startsWith(github.event.comment.body, '/review-deep')
+            || startsWith(github.event.comment.body, '/security')
+            || startsWith(github.event.comment.body, '/explain')))
+      || (github.event.review != null
+          && github.event.review.user.type != 'Bot'
+          && contains(github.event.review.body, '@catalyst-bot'))
+    uses: butlrtechnologies/github-automations/.github/workflows/bot-catalyst.yml@main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      GH_AUTOMATIONS_TOKEN:    ${{ secrets.GH_AUTOMATIONS_TOKEN }}

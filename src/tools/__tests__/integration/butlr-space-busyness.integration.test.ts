@@ -233,9 +233,6 @@ describe("butlr_space_busyness - Integration", () => {
         },
       ]);
 
-      // Mock stats to return data
-      // Note: Tool currently uses "room_occupancy" which v4 doesn't accept
-      // So in practice this will fail, but test validates the logic path
       vi.mocked(statsClient.getSingleAssetStats).mockResolvedValue({
         count: 1000,
         mean: 3,
@@ -253,8 +250,27 @@ describe("butlr_space_busyness - Integration", () => {
         include_trend: true,
       });
 
-      // Stats call should have been attempted (even if it would fail in production)
+      // Stats call should have been attempted
       expect(statsClient.getSingleAssetStats).toHaveBeenCalled();
+
+      // Regression: the v4 Stats API requires ISO-8601 absolute timestamps and
+      // rejects relative formats like "-4w". Pin the call-site to pass ISO-8601
+      // strings (parseable by Date.parse) so a future "convenience" refactor
+      // back to relative formats doesn't reintroduce the bug.
+      const callArgs = vi.mocked(statsClient.getSingleAssetStats).mock.calls[0];
+      const [, , start, stop] = callArgs;
+      expect(typeof start).toBe("string");
+      expect(typeof stop).toBe("string");
+      expect(Number.isNaN(Date.parse(start as string))).toBe(false);
+      expect(Number.isNaN(Date.parse(stop as string))).toBe(false);
+      // Should NOT be a relative format like "-4w" / "-7d" / "now"
+      expect(start).not.toMatch(/^-?\d+[mhdw]$|^now$/);
+      expect(stop).not.toMatch(/^-?\d+[mhdw]$|^now$/);
+      // Window should be ~28 days
+      const windowMs = Date.parse(stop as string) - Date.parse(start as string);
+      const days = windowMs / (24 * 60 * 60 * 1000);
+      expect(days).toBeGreaterThan(27.5);
+      expect(days).toBeLessThan(28.5);
 
       // If stats succeeded, trend would be included
       if (result.trend) {
@@ -384,6 +400,53 @@ describe("butlr_space_busyness - Integration", () => {
       await expect(executeSpaceBusyness({ space_id_or_name: "room_nonexistent" })).rejects.toThrow(
         "Room room_nonexistent not found"
       );
+    });
+  });
+
+  // Regression test for B1: GET_ROOM / GET_ZONE used to select `site { timezone }`
+  // without `id`. graphql-client.ts declares `Site: { keyFields: ['id'] }` on the
+  // InMemoryCache, so Apollo 4 silently set `result.data = undefined` (under
+  // `errorPolicy: 'all'`) when the Site object came back without its keyField —
+  // which the tool then mis-reported as "Room/Zone not found". This test pins
+  // the query shape so a future cleanup that strips `id` doesn't reintroduce
+  // the bug. The Apollo mock used by these tests bypasses the cache, so we
+  // can't reproduce the runtime symptom here; checking the query AST is the
+  // only way to catch the regression without spinning up a real Apollo client.
+  describe("Regression: B1 — Apollo cache normalization requires site.id", () => {
+    function captureQueryFor(typeName: "room" | "zone") {
+      let capturedSource = "";
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        capturedSource = options.query?.loc?.source?.body ?? "";
+        return Promise.resolve({
+          data: {
+            [typeName]: {
+              id: typeName === "room" ? "room_x" : "zone_x",
+              name: "X",
+              capacity: { max: 1 },
+            },
+          },
+          loading: false,
+          networkStatus: 7,
+        } as any);
+      });
+      vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([]);
+      return () => capturedSource;
+    }
+
+    it("GET_ROOM selects id inside the site { ... } subselection", async () => {
+      const getSource = captureQueryFor("room");
+      await executeSpaceBusyness({ space_id_or_name: "room_x", include_trend: false });
+      const source = getSource();
+      // Look for `site { ... id ... }` somewhere in the query body. Tolerant
+      // of whitespace/ordering so a maintainer can reformat without breaking.
+      expect(source).toMatch(/site\s*\{[^{}]*\bid\b[^{}]*\}/);
+    });
+
+    it("GET_ZONE selects id inside the site { ... } subselection", async () => {
+      const getSource = captureQueryFor("zone");
+      await executeSpaceBusyness({ space_id_or_name: "zone_x", include_trend: false });
+      const source = getSource();
+      expect(source).toMatch(/site\s*\{[^{}]*\bid\b[^{}]*\}/);
     });
   });
 

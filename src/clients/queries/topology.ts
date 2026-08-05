@@ -58,8 +58,14 @@ export const GET_SITE_STRUCTURE = gql`
 
 /**
  * Full topology with all sites, buildings, floors, rooms, zones
- * NOTE: Does NOT include sensors/hives in nested fields (broken - only returns 5 sensors)
- * Use GET_ALL_SENSORS and GET_ALL_HIVES separately, then merge by floor_id/room_id
+ * Zones include a nested `sensors` selection — the only way to attribute sensors
+ * to zones, since GET_ALL_SENSORS selects no zone linkage. Verified live against
+ * the API: nested sensor selections are NOT truncated (an earlier note here
+ * claimed nested fields returned only 5 sensors; that does not reproduce — zone
+ * and floor nested counts match the flat sensors list exactly, and introspection
+ * shows no pagination args on the nested `sensors` field).
+ * Still use GET_ALL_SENSORS and GET_ALL_HIVES for full device detail (model,
+ * battery, heartbeat, ...), merged by floor_id/room_id.
  */
 export const GET_FULL_TOPOLOGY = gql`
   query GetFullTopology {
@@ -120,6 +126,17 @@ export const GET_FULL_TOPOLOGY = gql`
               room_id
               customID
               coordinates
+              sensors {
+                id
+                name
+                mac_address
+                mode
+                floor_id
+                room_id
+                hive_serial
+                is_entrance
+                is_online
+              }
             }
           }
         }

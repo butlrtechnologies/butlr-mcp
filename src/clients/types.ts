@@ -2,6 +2,16 @@
  * TypeScript type definitions for Butlr GraphQL API
  */
 
+import type { TagRef } from "./queries/tags.js";
+
+/*
+ * Schema asymmetry: `tags` exists only on Floor/Room/Zone in Butlr's
+ * GraphQL schema (verified by introspection). Building and Site have
+ * no `tags` field — adding one to those interfaces would compile but
+ * any query selecting it would fail at the GraphQL layer. Do not
+ * widen this without confirming the upstream schema.
+ */
+
 export interface Capacity {
   max?: number;
   mid?: number;
@@ -77,6 +87,7 @@ export interface Floor {
   hives?: Hive[];
   floor_plans?: FloorPlan[];
   building: Building;
+  tags: TagRef[];
 }
 
 /**
@@ -100,6 +111,7 @@ export interface Room {
   pir_zero_window?: number;
   sensors?: Sensor[];
   floor: Floor;
+  tags: TagRef[];
 }
 
 /**
@@ -120,6 +132,7 @@ export interface Zone {
   customID?: string;
   note?: string;
   sensors?: Sensor[];
+  tags: TagRef[];
 }
 
 /**
