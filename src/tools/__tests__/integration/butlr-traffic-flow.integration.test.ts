@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { executeTrafficFlow } from "../../butlr-traffic-flow.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
@@ -540,6 +540,21 @@ describe("butlr_traffic_flow - Integration", () => {
   });
 
   describe("ETL backend time semantics", () => {
+    // Pinned to midday UTC (12:30 PT for the mocked site): the "today" range
+    // is well over 2h, so the 1h + 1m-tail branch always runs. Without this,
+    // runs between the site's local midnight and 02:00 flip the tool to the
+    // single 1m query and the tail assertions go stale.
+    const NOW = new Date("2026-08-05T19:30:00.000Z");
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     const mockGraphQLForRoomTest = () => {
       vi.mocked(apolloClient.query).mockImplementation((options: any) => {
         const queryString = options.query.loc?.source?.body || "";
@@ -602,15 +617,9 @@ describe("butlr_traffic_flow - Integration", () => {
     it("merges the 1m tail for long windows without double counting closed hours", async () => {
       mockGraphQLForRoomTest();
 
-      const closedHourEnd = new Date();
-      closedHourEnd.setUTCMinutes(0, 0, 0);
-      const closedHourIso = closedHourEnd.toISOString().replace(".000Z", "Z");
-      const inProgressMinute = new Date(closedHourEnd.getTime() + 5 * 60 * 1000)
-        .toISOString()
-        .replace(".000Z", "Z");
-      const staleMinute = new Date(closedHourEnd.getTime() - 10 * 60 * 1000)
-        .toISOString()
-        .replace(".000Z", "Z");
+      const closedHourIso = "2026-08-05T19:00:00Z";
+      const inProgressMinute = "2026-08-05T19:05:00Z";
+      const staleMinute = "2026-08-05T18:50:00Z";
 
       const mockExecute = vi
         .fn()
@@ -649,9 +658,7 @@ describe("butlr_traffic_flow - Integration", () => {
     it("does not let a tail bucket on an exact hour boundary overwrite the native bucket", async () => {
       mockGraphQLForRoomTest();
 
-      const closedHourEnd = new Date();
-      closedHourEnd.setUTCMinutes(0, 0, 0);
-      const closedHourIso = closedHourEnd.toISOString().replace(".000Z", "Z");
+      const closedHourIso = "2026-08-05T19:00:00Z";
 
       const mockExecute = vi
         .fn()
@@ -682,18 +689,9 @@ describe("butlr_traffic_flow - Integration", () => {
 
       // Native 1h bucket end-labeled on a :30 grid (e.g. Asia/Kolkata site),
       // covering the 60 minutes before it
-      const nativeEnd = new Date();
-      nativeEnd.setUTCMinutes(30, 0, 0);
-      if (nativeEnd.getTime() > Date.now()) {
-        nativeEnd.setUTCHours(nativeEnd.getUTCHours() - 1);
-      }
-      const nativeIso = nativeEnd.toISOString().replace(".000Z", "Z");
-      const insideNative = new Date(nativeEnd.getTime() - 15 * 60 * 1000)
-        .toISOString()
-        .replace(".000Z", "Z");
-      const afterNative = new Date(nativeEnd.getTime() + 5 * 60 * 1000)
-        .toISOString()
-        .replace(".000Z", "Z");
+      const nativeIso = "2026-08-05T18:30:00Z";
+      const insideNative = "2026-08-05T18:15:00Z";
+      const afterNative = "2026-08-05T18:35:00Z";
 
       const mockExecute = vi
         .fn()
@@ -718,6 +716,58 @@ describe("butlr_traffic_flow - Integration", () => {
       });
 
       expect(result.traffic.total_entries).toBe(12);
+    });
+
+    it("keeps a sensor's tail minutes when only another sensor's hourly bucket has materialized", async () => {
+      mockGraphQLForRoomTest();
+
+      const mockExecute = vi
+        .fn()
+        // Main 1h query: only sensor_1's bucket for the closed hour landed
+        .mockResolvedValueOnce({
+          data: [{ time: "2026-08-05T19:00:00Z", sensor_id: "sensor_1", field: "in", value: 10 }],
+        })
+        // Tail 1m query: sensor_1's minute inside its own landed hour must
+        // be dropped; sensor_2's minute in the same hour has no native
+        // bucket yet and must be kept
+        .mockResolvedValueOnce({
+          data: [
+            { time: "2026-08-05T18:50:00Z", sensor_id: "sensor_1", field: "in", value: 3 },
+            { time: "2026-08-05T18:45:00Z", sensor_id: "sensor_2", field: "in", value: 4 },
+          ],
+        });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_test",
+        time_window: "today",
+      });
+
+      expect(result.traffic.total_entries).toBe(14);
+    });
+
+    it("skips the tail query when the range stop is not recent", async () => {
+      mockGraphQLForRoomTest();
+
+      const mockExecute = vi.fn().mockResolvedValue({
+        data: [{ time: "2026-08-01T10:00:00Z", sensor_id: "sensor_1", field: "in", value: 5 }],
+      });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_test",
+        time_window: "custom",
+        custom_start: "2026-08-01T08:00:00Z",
+        custom_stop: "2026-08-01T12:00:00Z",
+      });
+
+      // Historical range: hourly buckets materialized long ago, no tail call
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+      expect(result.traffic.total_entries).toBe(5);
     });
 
     it("includes a freshness note when the window ends near now", async () => {

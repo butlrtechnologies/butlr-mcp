@@ -331,14 +331,17 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     // it, so a range ending at/near now silently misses the in-progress hour
     // and possibly the just-closed one. Re-query the trailing 2 hours at 1m
     // granularity and merge; hours already covered by a returned 1h bucket
-    // are deduplicated in the rollup below.
+    // are deduplicated in the rollup below. The tail exists solely to
+    // recover those not-yet-materialized recent hours (materialization lag
+    // measured at up to ~1h), so it is skipped when the range's stop is old
+    // enough that every hourly bucket has long since landed.
     if (windowEvery === "1h") {
       const stopDate = new Date(stop);
       const startDate = new Date(start);
       const twoHoursMs = 2 * 60 * 60 * 1000;
       const tailStartMs = Math.max(startDate.getTime(), stopDate.getTime() - twoHoursMs);
-      const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
-      if (tailStartMs < stopDate.getTime() && Date.now() - tailStartMs < threeDaysMs) {
+      const recentStopMs = 3 * 60 * 60 * 1000;
+      if (tailStartMs < stopDate.getTime() && Date.now() - stopDate.getTime() < recentStopMs) {
         try {
           const tailResponse = await new ReportingRequestBuilder()
             .assets("room", [spaceId])
@@ -370,12 +373,21 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   // part of the key: a 1m tail bucket ending exactly on an hour boundary
   // carries the same label as that hour's native 1h bucket, and must not
   // share (and overwrite) the native bucket's entry.
-  const byHourSensor = new Map<string, { time: string; fine: boolean; in: number; out: number }>();
+  const byHourSensor = new Map<
+    string,
+    { time: string; sensor_id: string; fine: boolean; in: number; out: number }
+  >();
 
   for (const point of trafficData) {
     const key = `${point.time}:${point.sensor_id}:${point.fine}`;
     if (!byHourSensor.has(key)) {
-      byHourSensor.set(key, { time: point.time, fine: point.fine, in: 0, out: 0 });
+      byHourSensor.set(key, {
+        time: point.time,
+        sensor_id: point.sensor_id,
+        fine: point.fine,
+        in: 0,
+        out: 0,
+      });
     }
 
     const counts = byHourSensor.get(key)!;
@@ -404,23 +416,29 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   // dropped to avoid double counting. Coverage is checked on the bucket
   // intervals themselves — an end-labeled 1h bucket T covers (T-1h, T] —
   // rather than on labels, so it also holds for sites whose local hour grid
-  // is not UTC-aligned (e.g. :30-offset timezones).
+  // is not UTC-aligned (e.g. :30-offset timezones). Coverage is tracked
+  // per sensor: bucket materialization is a per-series flush, so one
+  // sensor's landed hour must not suppress another sensor's tail minutes
+  // for that same hour.
   const HOUR_MS = 60 * 60 * 1000;
-  const nativeEndsMs: number[] = [];
+  const nativeEndsBySensor = new Map<string, number[]>();
   for (const [, data] of byHourSensor) {
     if (!data.fine) {
-      nativeEndsMs.push(new Date(data.time).getTime());
+      const ends = nativeEndsBySensor.get(data.sensor_id) || [];
+      ends.push(new Date(data.time).getTime());
+      nativeEndsBySensor.set(data.sensor_id, ends);
     }
   }
-  const coveredByNative = (iso: string): boolean => {
+  const coveredByNative = (sensorId: string, iso: string): boolean => {
     const t = new Date(iso).getTime();
-    return nativeEndsMs.some((end) => t <= end && t > end - HOUR_MS);
+    const ends = nativeEndsBySensor.get(sensorId);
+    return ends ? ends.some((end) => t <= end && t > end - HOUR_MS) : false;
   };
 
   // Aggregate across sensors by hour (group by time only)
   const byHour = new Map<string, { in: number; out: number }>();
   for (const [_key, data] of byHourSensor) {
-    if (data.fine && coveredByNative(data.time)) {
+    if (data.fine && coveredByNative(data.sensor_id, data.time)) {
       continue;
     }
     const time = data.fine ? toHourEnd(data.time) : data.time;
