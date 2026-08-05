@@ -1,5 +1,6 @@
 import { authClient } from "./auth-client.js";
 import { debug } from "../utils/debug.js";
+import { resolveTimeToIso } from "../utils/time-resolver.js";
 
 /**
  * Structured API error with status code for proper error translation
@@ -63,8 +64,8 @@ export interface ReportingRequest {
   };
   filter: {
     measurements: string[]; // Required: ['room_occupancy', 'traffic']
-    start: string; // ISO-8601 or relative '-24h'
-    stop?: string; // Defaults to 'now'
+    start: string; // RFC3339/ISO-8601 only — the ETL backend rejects relative forms like '-24h'
+    stop?: string; // RFC3339/ISO-8601; must be sent explicitly — omitting it returns empty data
     spaces?: { eq: string[] }; // Floors
     rooms?: { eq: string[] };
     zones?: { eq: string[] };
@@ -301,13 +302,14 @@ export class ReportingRequestBuilder {
 
   /**
    * Set time range (ISO-8601 or relative like '-24h')
+   *
+   * The ETL-backed reporting API rejects relative times with a 400 and
+   * returns empty data when stop is omitted, so both bounds are resolved
+   * to absolute ISO-8601 here.
    */
   timeRange(start: string, stop?: string): this {
-    this.request.filter.start = start;
-    // Only set stop if it's not "now" (API doesn't accept "now" as stop value)
-    if (stop && stop !== "now") {
-      this.request.filter.stop = stop;
-    }
+    this.request.filter.start = resolveTimeToIso(start);
+    this.request.filter.stop = resolveTimeToIso(stop || "now");
     return this;
   }
 
@@ -359,6 +361,11 @@ export class ReportingRequestBuilder {
     if (!this.request.filter.measurements.length) {
       throw new Error("At least one measurement is required");
     }
+
+    // Guarantee absolute timestamps and an explicit stop even when
+    // timeRange() was never called (e.g. the "-24h" constructor default)
+    this.request.filter.start = resolveTimeToIso(this.request.filter.start);
+    this.request.filter.stop = resolveTimeToIso(this.request.filter.stop || "now");
 
     return this.request;
   }

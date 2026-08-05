@@ -112,6 +112,9 @@ describe("reporting-client", () => {
 
   describe("ReportingRequestBuilder", () => {
     it("builds basic request with required fields", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-05T12:00:00.000Z"));
+
       const request = new ReportingRequestBuilder()
         .assets("room", ["room_123"])
         .measurementForAssetType("room")
@@ -120,9 +123,12 @@ describe("reporting-client", () => {
 
       expect(request.filter.measurements).toEqual(["room_occupancy"]);
       expect(request.filter.rooms).toEqual({ eq: ["room_123"] });
-      expect(request.filter.start).toBe("-24h");
-      // "now" is not set in stop (API doesn't accept "now")
-      expect(request.filter.stop).toBeUndefined();
+      // Relative times are resolved to absolute (ETL backend rejects "-24h")
+      expect(request.filter.start).toBe("2026-08-04T12:00:00.000Z");
+      // "now" is resolved and sent explicitly (omitting stop returns empty data)
+      expect(request.filter.stop).toBe("2026-08-05T12:00:00.000Z");
+
+      vi.useRealTimers();
     });
 
     it("sets default time range to -24h", () => {
@@ -229,15 +235,21 @@ describe("reporting-client", () => {
       });
     });
 
-    it("handles relative time ranges", () => {
+    it("resolves relative time ranges to absolute timestamps", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-05T12:00:00.000Z"));
+
       const request = new ReportingRequestBuilder()
         .assets("room", ["room_123"])
         .measurementForAssetType("room")
         .timeRange("-1h")
         .build();
 
-      expect(request.filter.start).toBe("-1h");
-      expect(request.filter.stop).toBeUndefined();
+      expect(request.filter.start).toBe("2026-08-05T11:00:00.000Z");
+      // stop defaults to "now", resolved to an explicit timestamp
+      expect(request.filter.stop).toBe("2026-08-05T12:00:00.000Z");
+
+      vi.useRealTimers();
     });
 
     it("handles ISO-8601 time ranges", () => {
@@ -247,8 +259,23 @@ describe("reporting-client", () => {
         .timeRange("2025-01-13T00:00:00Z", "2025-01-13T23:59:59Z")
         .build();
 
-      expect(request.filter.start).toBe("2025-01-13T00:00:00Z");
-      expect(request.filter.stop).toBe("2025-01-13T23:59:59Z");
+      expect(request.filter.start).toBe("2025-01-13T00:00:00.000Z");
+      expect(request.filter.stop).toBe("2025-01-13T23:59:59.000Z");
+    });
+
+    it("resolves the default -24h start and sets stop when timeRange is never called", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-05T12:00:00.000Z"));
+
+      const request = new ReportingRequestBuilder()
+        .assets("room", ["room_123"])
+        .measurementForAssetType("room")
+        .build();
+
+      expect(request.filter.start).toBe("2026-08-04T12:00:00.000Z");
+      expect(request.filter.stop).toBe("2026-08-05T12:00:00.000Z");
+
+      vi.useRealTimers();
     });
 
     it("supports fluent chaining", () => {
@@ -327,9 +354,12 @@ describe("reporting-client", () => {
 
       const request = builder.build();
 
-      expect(request.filter.start).toBe("-5m");
-      // "now" is not set (API doesn't accept it)
-      expect(request.filter.stop).toBeUndefined();
+      // Relative start is resolved to an absolute timestamp, stop is explicit
+      expect(request.filter.start).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(request.filter.stop).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(
+        new Date(request.filter.stop!).getTime() - new Date(request.filter.start).getTime()
+      ).toBe(5 * 60 * 1000);
       expect(request.window?.every).toBe("1m");
       expect(request.window?.function).toBe("max");
       expect(request.group_by?.order).toEqual(["room_id"]);

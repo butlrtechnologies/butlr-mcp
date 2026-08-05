@@ -13,6 +13,7 @@ import {
 } from "../utils/timezone-helpers.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
 import { createValidationError, withToolErrorHandling } from "../errors/mcp-errors.js";
+import { resolveTimeToIso } from "../utils/time-resolver.js";
 import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
 import { debug } from "../utils/debug.js";
 import type { TrafficFlowResponse } from "../types/responses.js";
@@ -266,7 +267,22 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     );
   }
 
-  debug("traffic-flow", `Querying traffic from ${start} to ${stop}`);
+  // Resolve relative forms ("-20m", "now") to absolute timestamps: the
+  // ETL-backed reporting API requires RFC3339, and the response period
+  // metadata should carry real timestamps rather than relative strings.
+  start = resolveTimeToIso(start);
+  stop = resolveTimeToIso(stop);
+
+  // Pick window granularity from the range length. The ETL backend only
+  // returns fully-closed, end-labeled buckets that fit inside [start, stop]:
+  // a 1h window over a short recent range drops the in-progress hour
+  // entirely (its bucket doesn't exist until the hour closes). Querying 1m
+  // buckets for short ranges keeps edge loss to at most the current minute;
+  // results are rolled back up to hours below.
+  const durationMs = new Date(stop).getTime() - new Date(start).getTime();
+  const windowEvery = durationMs <= 2 * 60 * 60 * 1000 ? "1m" : "1h";
+
+  debug("traffic-flow", `Querying traffic from ${start} to ${stop} (window ${windowEvery})`);
 
   // Query traffic data with timezone
   interface TrafficDataPoint {
@@ -276,14 +292,17 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     value: number;
   }
 
-  let trafficData: TrafficDataPoint[] = [];
+  // `fine` marks 1m-bucket points whose timestamps must be rolled up to the
+  // enclosing hour; native 1h bucket labels pass through untouched (they may
+  // sit on a non-UTC-aligned local grid, e.g. :30-offset timezones).
+  let trafficData: Array<TrafficDataPoint & { fine: boolean }> = [];
 
   try {
     const response = await new ReportingRequestBuilder()
       .assets("room", [spaceId])
       .measurements(["traffic"])
       .timeRange(start, stop)
-      .window("1h", "sum", timezone) // Sum traffic per hour, aligned to local timezone
+      .window(windowEvery, "sum", timezone) // Sum traffic per bucket, aligned to local timezone
       .execute();
 
     // Parse flat array response
@@ -292,12 +311,47 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       throw new Error("Expected array response from traffic query");
     }
 
-    trafficData = response.data as TrafficDataPoint[];
+    trafficData = (response.data as TrafficDataPoint[]).map((p) => ({
+      ...p,
+      fine: windowEvery === "1m",
+    }));
 
     debug(
       "traffic-flow",
       `Received ${trafficData.length} data points from ${trafficSensors.length} sensors`
     );
+
+    // A 1h bucket only exists once its hour closes AND the ETL has written
+    // it, so a range ending at/near now silently misses the in-progress hour
+    // and possibly the just-closed one. Re-query the trailing 2 hours at 1m
+    // granularity and merge; hours already covered by a returned 1h bucket
+    // are deduplicated in the rollup below.
+    if (windowEvery === "1h") {
+      const stopDate = new Date(stop);
+      const startDate = new Date(start);
+      const twoHoursMs = 2 * 60 * 60 * 1000;
+      const tailStartMs = Math.max(startDate.getTime(), stopDate.getTime() - twoHoursMs);
+      const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+      if (tailStartMs < stopDate.getTime() && Date.now() - tailStartMs < threeDaysMs) {
+        try {
+          const tailResponse = await new ReportingRequestBuilder()
+            .assets("room", [spaceId])
+            .measurements(["traffic"])
+            .timeRange(new Date(tailStartMs).toISOString(), stop)
+            .window("1m", "sum", timezone)
+            .execute();
+          if (Array.isArray(tailResponse.data)) {
+            trafficData = trafficData.concat(
+              (tailResponse.data as TrafficDataPoint[]).map((p) => ({ ...p, fine: true }))
+            );
+            debug("traffic-flow", `Merged ${tailResponse.data.length} tail data points (1m)`);
+          }
+        } catch (tailError: unknown) {
+          // The closed-hour data is still valid without the tail
+          debug("traffic-flow", "Partial-hour tail query failed:", tailError);
+        }
+      }
+    }
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
     debug("traffic-flow", "Failed to get traffic data:", error);
@@ -307,12 +361,12 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
   // Parse traffic data: group by time, then by sensor, then aggregate
   // Store time separately to preserve full ISO timestamp
-  const byHourSensor = new Map<string, { time: string; in: number; out: number }>();
+  const byHourSensor = new Map<string, { time: string; fine: boolean; in: number; out: number }>();
 
   for (const point of trafficData) {
     const key = `${point.time}:${point.sensor_id}`;
     if (!byHourSensor.has(key)) {
-      byHourSensor.set(key, { time: point.time, in: 0, out: 0 });
+      byHourSensor.set(key, { time: point.time, fine: point.fine, in: 0, out: 0 });
     }
 
     const counts = byHourSensor.get(key)!;
@@ -323,10 +377,36 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     }
   }
 
+  // Roll a bucket timestamp up to its enclosing hour. Bucket timestamps are
+  // end-labeled (a 1m bucket "17:29" covers 17:28–17:29), so ceil to the
+  // hour to stay on the same end-labeled convention the API uses for 1h
+  // buckets.
+  const toHourEnd = (iso: string): string => {
+    const d = new Date(iso);
+    if (d.getUTCMinutes() !== 0 || d.getUTCSeconds() !== 0 || d.getUTCMilliseconds() !== 0) {
+      d.setUTCMinutes(0, 0, 0);
+      d.setUTCHours(d.getUTCHours() + 1);
+    }
+    return d.toISOString().replace(".000Z", "Z");
+  };
+
+  // Hours already served by a native (closed) 1h bucket — those buckets are
+  // authoritative, so fine-grained tail points falling in them are dropped
+  // to avoid double counting.
+  const nativeHours = new Set<string>();
+  for (const [, data] of byHourSensor) {
+    if (!data.fine) {
+      nativeHours.add(data.time);
+    }
+  }
+
   // Aggregate across sensors by hour (group by time only)
   const byHour = new Map<string, { in: number; out: number }>();
   for (const [_key, data] of byHourSensor) {
-    const time = data.time; // Use actual time from data, not split key
+    const time = data.fine ? toHourEnd(data.time) : data.time;
+    if (data.fine && nativeHours.has(time)) {
+      continue;
+    }
     if (!byHour.has(time)) {
       byHour.set(time, { in: 0, out: 0 });
     }
