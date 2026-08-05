@@ -155,6 +155,7 @@ export interface TrafficFlowResponse {
   summary: string;
   timestamp: string;
   timezone_note: string;
+  freshness_note?: string;
   warning?: string;
 }
 

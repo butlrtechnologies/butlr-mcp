@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-05
+
+Adapts every reporting-API query to the Aug 3 reporting-backend cutover (InfluxDB → tiered ETL storage behind the same `/v3/reporting` endpoint). Root-caused and verified against the production API after Salesforce reported `butlr_traffic_flow` failures.
+
+### Fixed
+- All reporting tools now send RFC3339-only timestamps: the ETL-backed `/v3/reporting` rejects relative time forms (`-20m`, `-1h`) with a 400, which broke `butlr_traffic_flow` `time_window: 20m/1h` outright. `ReportingRequestBuilder` resolves relative forms and `now` to absolute ISO-8601 (new shared `src/utils/time-resolver.ts`, also used by the time-range validator).
+- All reporting queries now send an explicit `filter.stop`: the ETL backend returns an empty result set when `stop` is omitted (the Influx era defaulted to now), which made `time_window: today` and `custom_stop: now` return zeros.
+- `butlr_traffic_flow` no longer misses recent activity due to closed-bucket semantics (ETL buckets are end-labeled and only returned once fully closed and materialized; hourly buckets can take up to ~1h to land). Ranges ≤ 2h query 1m buckets; longer ranges merge a 1m tail over the trailing 2 hours, deduplicated per sensor against materialized hourly buckets via interval coverage (correct on non-UTC-aligned local hour grids, e.g. :30-offset timezones). The tail is skipped for historical ranges whose hourly buckets have long since materialized.
+- `butlr_traffic_flow` response `period.start_utc`/`stop_utc` now carry real timestamps instead of echoing relative input (`"-20m"`, `"now"`).
+
+### Added
+- `butlr_traffic_flow` responses whose window ends near now include a `freshness_note`: traffic events land in the reporting store ~5–6 minutes after they occur (measured against production) and counts are final after ~10 minutes.
+
 ## [0.5.0] - 2026-05-13
 
 Four bug fixes surfaced by agent-vs-agent end-to-end validation. All are non-breaking schema-wise; the response **values** for zones change (Fix #1) and one **string** in the response changes (Fix #4). Validation suite vs the prior release baseline: pass rate 26/30 → 30/30; friction-tag count 38 → 26 (-31.6%); errored tool calls 27 → 3.
