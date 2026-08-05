@@ -448,4 +448,128 @@ describe("butlr_traffic_flow - Integration", () => {
       );
     });
   });
+
+  describe("ETL backend time semantics", () => {
+    const mockGraphQLForRoomTest = () => {
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetRoomSensors")) {
+          return Promise.resolve({
+            data: {
+              room: {
+                id: "room_test",
+                name: "Test Room",
+                floorID: "floor_test",
+                sensors: [{ id: "sensor_1", mode: "traffic" }],
+                floor: {
+                  id: "floor_test",
+                  name: "Test Floor",
+                  building: { id: "building_test", name: "Test Building" },
+                },
+              },
+            },
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
+        }
+        if (queryString.includes("GetAllSensors")) {
+          return Promise.resolve({ data: MOCK_SENSORS, loading: false, networkStatus: 7 } as any);
+        }
+        return Promise.reject(new Error("Unknown query"));
+      });
+    };
+
+    it("uses 1m buckets for short windows and rolls them up to end-labeled hours", async () => {
+      mockGraphQLForRoomTest();
+
+      const windowSpy = vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "window");
+      const mockExecute = vi.fn().mockResolvedValue({
+        data: [
+          { time: "2026-08-05T17:29:00Z", sensor_id: "sensor_1", field: "in", value: 1 },
+          { time: "2026-08-05T17:31:00Z", sensor_id: "sensor_1", field: "out", value: 1 },
+        ],
+      });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_test",
+        time_window: "1h",
+      });
+
+      expect(windowSpy).toHaveBeenCalledWith("1m", "sum", expect.any(String));
+      expect(result.traffic.total_entries).toBe(1);
+      expect(result.traffic.total_exits).toBe(1);
+      // Both 1m buckets roll up into the single end-labeled hour 18:00
+      expect(result.hourly_breakdown).toHaveLength(1);
+      expect(result.hourly_breakdown[0].hour_utc).toBe("2026-08-05T18:00:00Z");
+    });
+
+    it("merges the 1m tail for long windows without double counting closed hours", async () => {
+      mockGraphQLForRoomTest();
+
+      const closedHourEnd = new Date();
+      closedHourEnd.setUTCMinutes(0, 0, 0);
+      const closedHourIso = closedHourEnd.toISOString().replace(".000Z", "Z");
+      const inProgressMinute = new Date(closedHourEnd.getTime() + 5 * 60 * 1000)
+        .toISOString()
+        .replace(".000Z", "Z");
+      const staleMinute = new Date(closedHourEnd.getTime() - 10 * 60 * 1000)
+        .toISOString()
+        .replace(".000Z", "Z");
+
+      const mockExecute = vi
+        .fn()
+        // Main 1h query: one closed hourly bucket
+        .mockResolvedValueOnce({
+          data: [
+            { time: closedHourIso, sensor_id: "sensor_1", field: "in", value: 10 },
+            { time: closedHourIso, sensor_id: "sensor_1", field: "out", value: 8 },
+          ],
+        })
+        // Tail 1m query: a stale minute inside the closed hour (must be
+        // deduped) plus a minute in the in-progress hour (must be added)
+        .mockResolvedValueOnce({
+          data: [
+            { time: staleMinute, sensor_id: "sensor_1", field: "in", value: 3 },
+            { time: inProgressMinute, sensor_id: "sensor_1", field: "in", value: 2 },
+          ],
+        });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_test",
+        time_window: "today",
+      });
+
+      expect(mockExecute).toHaveBeenCalledTimes(2);
+      // 10 in + 8 out from the closed hour, +2 in from the in-progress hour;
+      // the stale minute inside the closed hour is dropped, not double counted
+      expect(result.traffic.total_entries).toBe(12);
+      expect(result.traffic.total_exits).toBe(8);
+      expect(result.hourly_breakdown).toHaveLength(2);
+    });
+
+    it("includes a freshness note when the window ends near now", async () => {
+      mockGraphQLForRoomTest();
+
+      const mockExecute = vi.fn().mockResolvedValue({ data: [] });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_test",
+        time_window: "20m",
+      });
+
+      expect(result.freshness_note).toContain("5-10 minutes");
+    });
+  });
 });

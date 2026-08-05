@@ -481,6 +481,12 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     timestamp: new Date().toISOString(),
     timezone_note:
       "All timestamps are UTC (ISO-8601). Use site_timezone to interpret in local time.",
+    // Traffic events take ~5-6 minutes to land in the reporting store, so a
+    // window ending at/near now structurally undercounts the trailing minutes
+    ...(Date.now() - new Date(stop).getTime() < 10 * 60 * 1000 && {
+      freshness_note:
+        "Traffic data becomes available roughly 5-10 minutes after events occur. Counts for the most recent ~10 minutes may still be incomplete; re-query later for final numbers.",
+    }),
     ...(usedUtcFallback && {
       warning:
         "Could not determine local timezone for this space; timestamps use UTC midnight as fallback. 'Today' may not align with the site's actual local day.",
