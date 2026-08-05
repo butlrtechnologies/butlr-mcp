@@ -646,6 +646,80 @@ describe("butlr_traffic_flow - Integration", () => {
       expect(result.hourly_breakdown).toHaveLength(2);
     });
 
+    it("does not let a tail bucket on an exact hour boundary overwrite the native bucket", async () => {
+      mockGraphQLForRoomTest();
+
+      const closedHourEnd = new Date();
+      closedHourEnd.setUTCMinutes(0, 0, 0);
+      const closedHourIso = closedHourEnd.toISOString().replace(".000Z", "Z");
+
+      const mockExecute = vi
+        .fn()
+        // Main 1h query: closed hourly bucket with 10 entries
+        .mockResolvedValueOnce({
+          data: [{ time: closedHourIso, sensor_id: "sensor_1", field: "in", value: 10 }],
+        })
+        // Tail 1m query: the hour's final minute bucket carries the exact
+        // same end label as the native 1h bucket
+        .mockResolvedValueOnce({
+          data: [{ time: closedHourIso, sensor_id: "sensor_1", field: "in", value: 1 }],
+        });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_test",
+        time_window: "today",
+      });
+
+      // Native bucket total must survive; the duplicate tail minute is dropped
+      expect(result.traffic.total_entries).toBe(10);
+    });
+
+    it("dedups tail minutes against native buckets on a non-UTC-aligned hour grid", async () => {
+      mockGraphQLForRoomTest();
+
+      // Native 1h bucket end-labeled on a :30 grid (e.g. Asia/Kolkata site),
+      // covering the 60 minutes before it
+      const nativeEnd = new Date();
+      nativeEnd.setUTCMinutes(30, 0, 0);
+      if (nativeEnd.getTime() > Date.now()) {
+        nativeEnd.setUTCHours(nativeEnd.getUTCHours() - 1);
+      }
+      const nativeIso = nativeEnd.toISOString().replace(".000Z", "Z");
+      const insideNative = new Date(nativeEnd.getTime() - 15 * 60 * 1000)
+        .toISOString()
+        .replace(".000Z", "Z");
+      const afterNative = new Date(nativeEnd.getTime() + 5 * 60 * 1000)
+        .toISOString()
+        .replace(".000Z", "Z");
+
+      const mockExecute = vi
+        .fn()
+        .mockResolvedValueOnce({
+          data: [{ time: nativeIso, sensor_id: "sensor_1", field: "in", value: 10 }],
+        })
+        // Tail: one minute inside the native bucket's interval (drop), one
+        // after it (keep) — labels never match the :30 native label
+        .mockResolvedValueOnce({
+          data: [
+            { time: insideNative, sensor_id: "sensor_1", field: "in", value: 3 },
+            { time: afterNative, sensor_id: "sensor_1", field: "in", value: 2 },
+          ],
+        });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_test",
+        time_window: "today",
+      });
+
+      expect(result.traffic.total_entries).toBe(12);
+    });
+
     it("includes a freshness note when the window ends near now", async () => {
       mockGraphQLForRoomTest();
 

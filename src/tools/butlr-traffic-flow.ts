@@ -366,11 +366,14 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   }
 
   // Parse traffic data: group by time, then by sensor, then aggregate
-  // Store time separately to preserve full ISO timestamp
+  // Store time separately to preserve full ISO timestamp. The fine flag is
+  // part of the key: a 1m tail bucket ending exactly on an hour boundary
+  // carries the same label as that hour's native 1h bucket, and must not
+  // share (and overwrite) the native bucket's entry.
   const byHourSensor = new Map<string, { time: string; fine: boolean; in: number; out: number }>();
 
   for (const point of trafficData) {
-    const key = `${point.time}:${point.sensor_id}`;
+    const key = `${point.time}:${point.sensor_id}:${point.fine}`;
     if (!byHourSensor.has(key)) {
       byHourSensor.set(key, { time: point.time, fine: point.fine, in: 0, out: 0 });
     }
@@ -396,23 +399,31 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     return d.toISOString().replace(".000Z", "Z");
   };
 
-  // Hours already served by a native (closed) 1h bucket — those buckets are
-  // authoritative, so fine-grained tail points falling in them are dropped
-  // to avoid double counting.
-  const nativeHours = new Set<string>();
+  // Native (closed) 1h buckets are authoritative for the interval they
+  // cover, so fine-grained tail minutes falling inside any of them are
+  // dropped to avoid double counting. Coverage is checked on the bucket
+  // intervals themselves — an end-labeled 1h bucket T covers (T-1h, T] —
+  // rather than on labels, so it also holds for sites whose local hour grid
+  // is not UTC-aligned (e.g. :30-offset timezones).
+  const HOUR_MS = 60 * 60 * 1000;
+  const nativeEndsMs: number[] = [];
   for (const [, data] of byHourSensor) {
     if (!data.fine) {
-      nativeHours.add(data.time);
+      nativeEndsMs.push(new Date(data.time).getTime());
     }
   }
+  const coveredByNative = (iso: string): boolean => {
+    const t = new Date(iso).getTime();
+    return nativeEndsMs.some((end) => t <= end && t > end - HOUR_MS);
+  };
 
   // Aggregate across sensors by hour (group by time only)
   const byHour = new Map<string, { in: number; out: number }>();
   for (const [_key, data] of byHourSensor) {
-    const time = data.fine ? toHourEnd(data.time) : data.time;
-    if (data.fine && nativeHours.has(time)) {
+    if (data.fine && coveredByNative(data.time)) {
       continue;
     }
+    const time = data.fine ? toHourEnd(data.time) : data.time;
     if (!byHour.has(time)) {
       byHour.set(time, { in: 0, out: 0 });
     }
