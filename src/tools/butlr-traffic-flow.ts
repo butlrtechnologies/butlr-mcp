@@ -14,7 +14,12 @@ import {
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
 import { createValidationError, withToolErrorHandling } from "../errors/mcp-errors.js";
 import { resolveTimeToIso } from "../utils/time-resolver.js";
-import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
+import {
+  rethrowIfGraphQLError,
+  throwIfGraphQLErrors,
+  isProductionSensor,
+} from "../utils/graphql-helpers.js";
+import { detectAssetType } from "../utils/asset-helpers.js";
 import { debug } from "../utils/debug.js";
 import type { TrafficFlowResponse } from "../types/responses.js";
 
@@ -140,7 +145,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   // Direct sensor-level queries skip room resolution entirely: the reporting
   // API serves sensor-level traffic via the sensors filter, so a sensor does
   // not need a room wrapper to be queryable.
-  const isSensorQuery = /^sensor_/.test(spaceId);
+  const isSensorQuery = detectAssetType(spaceId) === "sensor";
 
   if (!isSensorQuery && !spaceId.match(/^room_/)) {
     debug("traffic-flow", `Searching for space: "${args.space_id_or_name}"`);
@@ -153,7 +158,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
     if (searchResults.matches.length === 0) {
       throw new Error(
-        `No rooms found matching "${args.space_id_or_name}". Try a different search term.`
+        `No rooms found matching "${args.space_id_or_name}". Try a different search term, or pass a room or sensor ID directly (find sensor IDs via butlr_hardware_snapshot).`
       );
     }
 
@@ -204,29 +209,46 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       if (!sensor) {
         throw new Error(`Sensor ${spaceId} not found`);
       }
-      if (sensor.mode !== "traffic") {
+      if (!isProductionSensor(sensor)) {
         throw new Error(
-          `Sensor "${sensor.name}" is a ${sensor.mode}-mode sensor, not traffic. Try butlr_get_current_occupancy for occupancy data instead.`
+          `Sensor "${sensor.name}" (${spaceId}) is a test/mirror device, not a production sensor — it has no real traffic data.`
+        );
+      }
+      if (sensor.mode !== "traffic") {
+        const sensorRoomId = sensor.room_id || sensor.roomID;
+        const suggestion = sensorRoomId
+          ? `Try butlr_get_current_occupancy with its room (${sensorRoomId}) instead.`
+          : `Try butlr_get_asset_details or butlr_hardware_snapshot to inspect it.`;
+        throw new Error(
+          `Sensor "${sensor.name}" is ${
+            sensor.mode ? `a ${sensor.mode}-mode sensor` : "not a traffic-mode sensor"
+          }, so it has no entry/exit counts. ${suggestion}`
         );
       }
 
       trafficSensors = [sensor];
       displayName = sensor.name || spaceId;
 
-      // Timezone and path come from the sensor's room or floor; a sensor
-      // with neither still works, falling back to UTC with a warning.
+      // Timezone comes from the sensor's room when that room resolves in the
+      // topology; a dangling room reference (deleted room) falls back to the
+      // floor, and only then to UTC with a warning.
       const roomId = sensor.room_id || sensor.roomID;
       const floorId = sensor.floor_id || sensor.floorID;
-      const resolved = roomId
-        ? getTimezoneForAsset(roomId, "room", floors, buildings, sites)
-        : getTimezoneForAsset(floorId || "", "floor", floors, buildings, sites);
+      const byRoom = roomId ? getTimezoneForAsset(roomId, "room", floors, buildings, sites) : null;
+      const resolved =
+        byRoom && !byRoom.isFallback
+          ? byRoom
+          : getTimezoneForAsset(floorId || "", "floor", floors, buildings, sites);
       timezone = resolved.timezone;
       timezoneFallback = resolved.isFallback;
       tzMetadata = buildTimezoneMetadata(timezone);
 
       const floor = floors.find((f) => f.id === floorId);
       const building = floor ? buildings.find((b) => b.id === floor.building_id) : undefined;
-      const pathParts = [building?.name, floor?.name, displayName].filter(Boolean);
+      const sensorRoom = roomId ? floor?.rooms?.find((r) => r.id === roomId) : undefined;
+      const pathParts = [building?.name, floor?.name, sensorRoom?.name, displayName].filter(
+        Boolean
+      );
       roomPath = pathParts.join(" > ");
 
       debug("traffic-flow", `Direct sensor query: ${displayName} (${spaceId})`);
