@@ -84,9 +84,29 @@ const MOCK_TOPOLOGY = {
 const MOCK_SENSORS = {
   sensors: {
     data: [
-      { id: "sensor_1", mode: "traffic", room_id: "room_test", is_entrance: false },
-      { id: "sensor_2", mode: "traffic", room_id: "room_lobby", is_entrance: false },
-      { id: "sensor_3", mode: "presence", room_id: "room_meeting", is_entrance: false },
+      // Real MACs: the room path filters through isProductionSensor, which
+      // drops MAC-less placeholder rows the way the aggregate views do.
+      {
+        id: "sensor_1",
+        mac_address: "aa:bb:cc:dd:ee:a1",
+        mode: "traffic",
+        room_id: "room_test",
+        is_entrance: false,
+      },
+      {
+        id: "sensor_2",
+        mac_address: "aa:bb:cc:dd:ee:a2",
+        mode: "traffic",
+        room_id: "room_lobby",
+        is_entrance: false,
+      },
+      {
+        id: "sensor_3",
+        mac_address: "aa:bb:cc:dd:ee:a3",
+        mode: "presence",
+        room_id: "room_meeting",
+        is_entrance: false,
+      },
     ],
   },
 };
@@ -483,12 +503,14 @@ describe("butlr_traffic_flow - Integration", () => {
                   // have traffic-mode sensors".
                   {
                     id: "sensor_entrance_1",
+                    mac_address: "aa:bb:cc:dd:ee:b1",
                     mode: "traffic",
                     room_id: "room_cafe",
                     is_entrance: true,
                   },
                   {
                     id: "sensor_entrance_2",
+                    mac_address: "aa:bb:cc:dd:ee:b2",
                     mode: "traffic",
                     room_id: "room_cafe",
                     is_entrance: true,

@@ -16,7 +16,7 @@ import { resolveTimeToIso } from "../utils/time-resolver.js";
 import {
   rethrowIfGraphQLError,
   throwIfGraphQLErrors,
-  isProductionSensor,
+  isKnownTestSensor,
 } from "../utils/graphql-helpers.js";
 import {
   fetchTopology,
@@ -230,7 +230,12 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     // rather than pointing the caller at an ID that may not resolve.
     const sensorContext = resolveSensorContext(sensor, topology);
 
-    if (!isProductionSensor(sensor)) {
+    // Only a KNOWN test device is refused. isProductionSensor is stricter (it
+    // also drops MAC-less placeholder rows) and is the right filter for the
+    // room path's aggregate below, but applying it to a caller's explicit
+    // request would tell the owner of a real, not yet MAC bound sensor that
+    // their device is fake and leave them no way to query it.
+    if (isKnownTestSensor(sensor)) {
       throw new Error(
         `Sensor "${sensor.name}" (${spaceId}) is a test/mirror device, not a production sensor — it has no real traffic data.`
       );

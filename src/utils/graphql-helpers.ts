@@ -53,25 +53,40 @@ export function throwIfGraphQLErrors(result: { error?: unknown }): void {
 }
 
 /**
+ * Check if a sensor is a KNOWN test device: a mirror/virtual sensor
+ * (mi-rr-or*) or a fake test sensor (fa-ke*).
+ *
+ * Use this when refusing a caller's explicit request for one named sensor.
+ * Refusing costs the caller their query, so it needs positive evidence, and
+ * the MAC prefixes are the only positive evidence available. A blank or
+ * missing `mac_address` is unknown provenance, not proof: a provisioned but
+ * not yet MAC bound sensor is a real device with real reporting rows, and
+ * sensors are addressed by `id` everywhere, so a blank MAC never makes a row
+ * unqueryable.
+ *
+ * `isProductionSensor` below is the stricter counterpart for FILTERING
+ * aggregate lists, where the trade runs the other way.
+ */
+export function isKnownTestSensor(sensor: Sensor): boolean {
+  const mac = sensor.mac_address?.trim() ?? "";
+  return mac.startsWith("mi-rr-or") || mac.startsWith("fa-ke");
+}
+
+/**
  * Check if a sensor is a production device (not a test/placeholder).
- * Filters out mirror/virtual sensors (mi-rr-or*) and fake test sensors (fa-ke*).
+ * Filters out mirror/virtual sensors (mi-rr-or*), fake test sensors (fa-ke*),
+ * and MAC-less placeholder rows.
  *
- * A blank or missing `mac_address` deliberately does NOT disqualify a sensor.
- * Test devices in this org are identified by their MAC *prefix*, so an absent
- * MAC is unknown provenance, not evidence of a test device: a provisioned but
- * not yet MAC bound sensor, or a row whose resolver returned null, is a real
- * device with real reporting rows. Sensors are addressed by `id` everywhere in
- * this codebase, so a blank MAC never makes a row unqueryable either. This is
- * the asymmetry with `isProductionHive` below, where the serial number IS the
- * addressing key.
- *
- * Callers use this both to filter aggregate lists and to reject a single
- * explicitly requested sensor (butlr_traffic_flow), and rejecting a caller's
- * own request needs positive evidence, which only the prefixes provide.
+ * Stricter than `isKnownTestSensor` on purpose. This is the filter for
+ * aggregate views (topology listings, hardware health, occupancy sensor
+ * counts), where a MAC-less placeholder row inflates every headline number it
+ * lands in, and `butlr_hardware_snapshot` reports those rows under
+ * `test_devices_excluded.sensors.placeholder`. Excluding an unknown row from a
+ * total is cheap; refusing a caller's explicit query for it is not, which is
+ * why the single-sensor path uses `isKnownTestSensor` instead.
  */
 export function isProductionSensor(sensor: Sensor): boolean {
-  const mac = sensor.mac_address?.trim() ?? "";
-  return !mac.startsWith("mi-rr-or") && !mac.startsWith("fa-ke");
+  return !!sensor.mac_address && sensor.mac_address.trim() !== "" && !isKnownTestSensor(sensor);
 }
 
 /**
