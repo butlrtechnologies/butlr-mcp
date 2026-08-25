@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-25
+
+### Added
+- `butlr_traffic_flow` now accepts a sensor ID (`sensor_...`) directly for per-access-point entry/exit counts. Sensors no longer need a room wrapper to be queryable: the tool skips room resolution, filters the reporting query by sensor, and resolves timezone/path from the sensor's room or floor (falling back to UTC with a warning when unassigned). Room-level queries are unchanged; the response `space.type` is `"sensor"` for direct sensor queries. Requested by customers who count per-door traffic without modeling each access point as a room.
+
 ## [0.5.1] - 2026-08-05
 
 Adapts every reporting-API query to the Aug 3 reporting-backend cutover (InfluxDB → tiered ETL storage behind the same `/v3/reporting` endpoint). Root-caused and verified against the production API after Salesforce reported `butlr_traffic_flow` failures.

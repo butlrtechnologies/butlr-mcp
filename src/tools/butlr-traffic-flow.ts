@@ -38,7 +38,9 @@ const trafficFlowInputShape = {
     .min(1, "space_id_or_name cannot be empty")
     .max(200)
     .trim()
-    .describe("Space ID or search term"),
+    .describe(
+      "Room ID (room_...), sensor ID (sensor_...) for per-access-point counts, or a room search term"
+    ),
 
   time_window: z
     .enum(["20m", "1h", "today", "custom"])
@@ -76,6 +78,7 @@ export const TrafficFlowArgsSchema = z
 
 const TRAFFIC_FLOW_DESCRIPTION =
   "Get entry and exit counts for spaces equipped with traffic-mode sensors (typically lobbies, building entrances, elevator banks). Returns total movements, net flow (entries - exits), and hourly breakdown in the space's local timezone. Designed for space activation analysis, security/compliance, and amenity demand forecasting.\n\n" +
+  "Accepts a room ID (counts aggregate across the room's traffic sensors) or a single sensor ID (sensor_...) for per-access-point counts — sensors do not need to be assigned to a room to be queried directly.\n\n" +
   "Primary Users:\n" +
   "- Facilities Manager: Monitor building entry/exit patterns, optimize security staffing, validate badge system accuracy\n" +
   "- Workplace Manager: Understand amenity traffic (café, gym, event spaces), measure activation of new spaces\n" +
@@ -134,7 +137,12 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   let spaceId = args.space_id_or_name;
 
   // If not an ID, search for the space
-  if (!spaceId.match(/^room_/)) {
+  // Direct sensor-level queries skip room resolution entirely: the reporting
+  // API serves sensor-level traffic via the sensors filter, so a sensor does
+  // not need a room wrapper to be queryable.
+  const isSensorQuery = /^sensor_/.test(spaceId);
+
+  if (!isSensorQuery && !spaceId.match(/^room_/)) {
     debug("traffic-flow", `Searching for space: "${args.space_id_or_name}"`);
 
     const searchResults = await executeSearchAssets({
@@ -154,8 +162,8 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     debug("traffic-flow", `Using best match: ${searchResults.matches[0].name} (${spaceId})`);
   }
 
-  // Query room details, topology for timezone, and all sensors
-  let room: Room | null = null;
+  // Query asset details, topology for timezone, and all sensors
+  let displayName = "";
   let roomPath = "";
   let timezone: string;
   let tzMetadata: TimezoneMetadata;
@@ -164,11 +172,13 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
   try {
     const [roomResult, topoResult, sensorsResult] = await Promise.all([
-      apolloClient.query<{ room: Room }>({
-        query: GET_ROOM_SENSORS,
-        variables: { roomId: spaceId },
-        fetchPolicy: "network-only",
-      }),
+      isSensorQuery
+        ? Promise.resolve(null)
+        : apolloClient.query<{ room: Room }>({
+            query: GET_ROOM_SENSORS,
+            variables: { roomId: spaceId },
+            fetchPolicy: "network-only",
+          }),
       apolloClient.query<{ sites: { data: Site[] } }>({
         query: GET_FULL_TOPOLOGY,
         fetchPolicy: "network-only",
@@ -178,46 +188,81 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
         fetchPolicy: "network-only",
       }),
     ]);
-    throwIfGraphQLErrors(roomResult);
+    if (roomResult) {
+      throwIfGraphQLErrors(roomResult);
+    }
     throwIfGraphQLErrors(topoResult);
     throwIfGraphQLErrors(sensorsResult);
 
-    if (!roomResult.data?.room) {
-      throw new Error(`Room ${spaceId} not found`);
-    }
-
-    room = roomResult.data.room;
-    const floor = room.floor;
-    const building = floor?.building;
-    roomPath = building ? `${building.name} > ${floor.name} > ${room.name}` : room.name;
-
-    // Get timezone for this room
     const sites = topoResult.data?.sites?.data || [];
     const buildings = sites.flatMap((s) => s.buildings || []);
     const floors = buildings.flatMap((b) => b.floors || []);
-
-    const resolved = getTimezoneForAsset(spaceId, "room", floors, buildings, sites);
-
-    timezone = resolved.timezone;
-    timezoneFallback = resolved.isFallback;
-    tzMetadata = buildTimezoneMetadata(timezone);
-
-    // Analyze traffic sensors for this room
     const allSensors = sensorsResult.data?.sensors?.data || [];
-    const roomSensors = allSensors.filter((s) => (s.room_id || s.roomID) === spaceId);
-    // Room-level traffic counts every traffic-mode sensor bound to the room.
-    // See `resolveAssetContext` in occupancy-helpers.ts for the canonical
-    // rationale: `is_entrance` is a semantic flag, not a routing one, and the
-    // Reporting API aggregates by `room_id` regardless.
-    trafficSensors = roomSensors.filter((s) => s.mode === "traffic");
 
-    if (trafficSensors.length === 0) {
-      throw new Error(
-        `Room "${room.name}" does not have traffic-mode sensors. Try butlr_get_current_occupancy for occupancy data instead.`
-      );
+    if (isSensorQuery) {
+      const sensor = allSensors.find((s) => s.id === spaceId);
+      if (!sensor) {
+        throw new Error(`Sensor ${spaceId} not found`);
+      }
+      if (sensor.mode !== "traffic") {
+        throw new Error(
+          `Sensor "${sensor.name}" is a ${sensor.mode}-mode sensor, not traffic. Try butlr_get_current_occupancy for occupancy data instead.`
+        );
+      }
+
+      trafficSensors = [sensor];
+      displayName = sensor.name || spaceId;
+
+      // Timezone and path come from the sensor's room or floor; a sensor
+      // with neither still works, falling back to UTC with a warning.
+      const roomId = sensor.room_id || sensor.roomID;
+      const floorId = sensor.floor_id || sensor.floorID;
+      const resolved = roomId
+        ? getTimezoneForAsset(roomId, "room", floors, buildings, sites)
+        : getTimezoneForAsset(floorId || "", "floor", floors, buildings, sites);
+      timezone = resolved.timezone;
+      timezoneFallback = resolved.isFallback;
+      tzMetadata = buildTimezoneMetadata(timezone);
+
+      const floor = floors.find((f) => f.id === floorId);
+      const building = floor ? buildings.find((b) => b.id === floor.building_id) : undefined;
+      const pathParts = [building?.name, floor?.name, displayName].filter(Boolean);
+      roomPath = pathParts.join(" > ");
+
+      debug("traffic-flow", `Direct sensor query: ${displayName} (${spaceId})`);
+    } else {
+      if (!roomResult?.data?.room) {
+        throw new Error(`Room ${spaceId} not found`);
+      }
+
+      const room = roomResult.data.room;
+      displayName = room.name;
+      const floor = room.floor;
+      const building = floor?.building;
+      roomPath = building ? `${building.name} > ${floor.name} > ${room.name}` : room.name;
+
+      const resolved = getTimezoneForAsset(spaceId, "room", floors, buildings, sites);
+
+      timezone = resolved.timezone;
+      timezoneFallback = resolved.isFallback;
+      tzMetadata = buildTimezoneMetadata(timezone);
+
+      // Analyze traffic sensors for this room
+      const roomSensors = allSensors.filter((s) => (s.room_id || s.roomID) === spaceId);
+      // Room-level traffic counts every traffic-mode sensor bound to the room.
+      // See `resolveAssetContext` in occupancy-helpers.ts for the canonical
+      // rationale: `is_entrance` is a semantic flag, not a routing one, and the
+      // Reporting API aggregates by `room_id` regardless.
+      trafficSensors = roomSensors.filter((s) => s.mode === "traffic");
+
+      if (trafficSensors.length === 0) {
+        throw new Error(
+          `Room "${room.name}" does not have traffic-mode sensors. Try butlr_get_current_occupancy for occupancy data instead.`
+        );
+      }
+
+      debug("traffic-flow", `Found ${trafficSensors.length} traffic sensors for room`);
     }
-
-    debug("traffic-flow", `Found ${trafficSensors.length} traffic sensors for room`);
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
     throw error;
@@ -303,9 +348,11 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   // sit on a non-UTC-aligned local grid, e.g. :30-offset timezones).
   let trafficData: Array<TrafficDataPoint & { fine: boolean }> = [];
 
+  const queryAssetType = isSensorQuery ? "sensor" : "room";
+
   try {
     const response = await new ReportingRequestBuilder()
-      .assets("room", [spaceId])
+      .assets(queryAssetType, [spaceId])
       .measurements(["traffic"])
       .timeRange(start, stop)
       .window(windowEvery, "sum", timezone) // Sum traffic per bucket, aligned to local timezone
@@ -344,7 +391,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       if (tailStartMs < stopDate.getTime() && Date.now() - stopDate.getTime() < recentStopMs) {
         try {
           const tailResponse = await new ReportingRequestBuilder()
-            .assets("room", [spaceId])
+            .assets(queryAssetType, [spaceId])
             .measurements(["traffic"])
             .timeRange(new Date(tailStartMs).toISOString(), stop)
             .window("1m", "sum", timezone)
@@ -365,7 +412,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     rethrowIfGraphQLError(error);
     debug("traffic-flow", "Failed to get traffic data:", error);
     const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to get traffic data for ${room.name}. ${msg}`);
+    throw new Error(`Failed to get traffic data for ${displayName}. ${msg}`);
   }
 
   // Parse traffic data: group by time, then by sensor, then aggregate
@@ -478,14 +525,14 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
   // Build enhanced summary
   const netFlowStr = netFlow >= 0 ? `+${netFlow}` : `${netFlow}`;
-  const summary = `${room.name}: ${totalTraffic.toLocaleString()} movements ${periodDescription} (${totalEntries.toLocaleString()} entries, ${totalExits.toLocaleString()} exits, net flow: ${netFlowStr})`;
+  const summary = `${displayName}: ${totalTraffic.toLocaleString()} movements ${periodDescription} (${totalEntries.toLocaleString()} entries, ${totalExits.toLocaleString()} exits, net flow: ${netFlowStr})`;
 
   // Build response with timezone metadata and in/out breakdown
   const response: TrafficFlowResponse = {
     space: {
-      id: room.id,
-      name: room.name,
-      type: "room",
+      id: spaceId,
+      name: displayName,
+      type: isSensorQuery ? "sensor" : "room",
       path: roomPath,
       sensor_mode: "traffic",
       ...tzMetadata,

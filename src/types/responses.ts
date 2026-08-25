@@ -134,7 +134,7 @@ export interface TrafficFlowResponse {
   space: {
     id: string;
     name: string;
-    type: "room";
+    type: "room" | "sensor";
     path: string;
     sensor_mode: "traffic";
   } & TimezoneMetadata;

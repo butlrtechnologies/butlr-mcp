@@ -539,6 +539,100 @@ describe("butlr_traffic_flow - Integration", () => {
     });
   });
 
+  describe("Sensor-level queries", () => {
+    const mockGraphQLTopologyAndSensors = (sensors: unknown[]) => {
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
+        }
+        if (queryString.includes("GetAllSensors")) {
+          return Promise.resolve({
+            data: { sensors: { data: sensors } },
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        return Promise.reject(new Error(`Unexpected query for sensor path: ${queryString}`));
+      });
+    };
+
+    it("queries a traffic sensor directly by ID without room resolution", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_direct",
+          name: "N. Elevator",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+          is_entrance: false,
+        },
+      ]);
+
+      const assetsSpy = vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "assets");
+      const mockExecute = vi.fn().mockResolvedValue({
+        data: [
+          { time: "2026-08-25T18:29:00Z", sensor_id: "sensor_direct", field: "in", value: 3 },
+          { time: "2026-08-25T18:31:00Z", sensor_id: "sensor_direct", field: "out", value: 2 },
+        ],
+      });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_direct",
+        time_window: "1h",
+      });
+
+      expect(assetsSpy).toHaveBeenCalledWith("sensor", ["sensor_direct"]);
+      expect(result.space.type).toBe("sensor");
+      expect(result.space.name).toBe("N. Elevator");
+      expect(result.traffic.sensor_count).toBe(1);
+      expect(result.traffic.total_entries).toBe(3);
+      expect(result.traffic.total_exits).toBe(2);
+    });
+
+    it("works for a traffic sensor with no room assigned", async () => {
+      mockGraphQLTopologyAndSensors([
+        { id: "sensor_orphan", name: "Dock Door", mode: "traffic", room_id: "", floor_id: "" },
+      ]);
+
+      const mockExecute = vi.fn().mockResolvedValue({ data: [] });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockImplementation(
+        mockExecute
+      );
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_orphan",
+        time_window: "1h",
+      });
+
+      expect(result.space.type).toBe("sensor");
+      expect(result.space.name).toBe("Dock Door");
+      // No room/floor → timezone falls back with a warning rather than failing
+      expect(result.warning).toBeDefined();
+    });
+
+    it("rejects a presence-mode sensor with a helpful error", async () => {
+      mockGraphQLTopologyAndSensors([
+        { id: "sensor_presence", name: "Desk 12", mode: "presence", room_id: "room_meeting" },
+      ]);
+
+      await expect(
+        executeTrafficFlow({ space_id_or_name: "sensor_presence", time_window: "1h" })
+      ).rejects.toThrow("presence-mode sensor");
+    });
+
+    it("errors clearly when the sensor ID does not exist", async () => {
+      mockGraphQLTopologyAndSensors([]);
+
+      await expect(
+        executeTrafficFlow({ space_id_or_name: "sensor_missing", time_window: "1h" })
+      ).rejects.toThrow("Sensor sensor_missing not found");
+    });
+  });
+
   describe("ETL backend time semantics", () => {
     // Pinned to midday UTC (12:30 PT for the mocked site): the "today" range
     // is well over 2h, so the 1h + 1m-tail branch always runs. Without this,
