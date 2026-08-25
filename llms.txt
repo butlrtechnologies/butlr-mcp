@@ -112,7 +112,7 @@ Users need edit access to Butlr Studio to create tokens. If they don't have edit
 - `butlr_hardware_snapshot` — Device health check: online/offline status and battery levels
 - `butlr_available_rooms` — Find currently unoccupied rooms, filterable by capacity and tags
 - `butlr_space_busyness` — Current occupancy with qualitative labels (quiet/moderate/busy) and trend comparison
-- `butlr_traffic_flow` — Entry/exit counts with hourly breakdown for traffic-mode sensors
+- `butlr_traffic_flow` — Entry/exit counts with hourly breakdown, for a room or for one traffic-mode sensor. Accepts a room ID, a sensor ID (`sensor_...`) for per-access-point counts, or a name to search. A sensor does not need to be assigned to a room to be queried directly
 - `butlr_list_topology` — Display org hierarchy tree with flexible depth control
 - `butlr_fetch_entity_details` — Retrieve specific fields for entities by ID (minimal token usage)
 - `butlr_get_occupancy_timeseries` — Historical occupancy data with configurable time ranges

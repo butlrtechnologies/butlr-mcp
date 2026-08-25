@@ -109,12 +109,23 @@ describe("isProductionSensor", () => {
     expect(isProductionSensor(makeSensor({ mac_address: "fa-ke:ab:cd:ef" }))).toBe(false);
   });
 
-  it("returns false for a sensor with an empty mac_address", () => {
-    expect(isProductionSensor(makeSensor({ mac_address: "" }))).toBe(false);
+  // A missing MAC is unknown provenance, not proof of a test device. Test
+  // devices are identified by MAC prefix, and sensors are addressed by `id`,
+  // so a MAC-less row is a real, queryable sensor.
+  it("returns true for a sensor with an empty mac_address", () => {
+    expect(isProductionSensor(makeSensor({ mac_address: "" }))).toBe(true);
   });
 
-  it("returns false for a sensor with whitespace-only mac_address", () => {
-    expect(isProductionSensor(makeSensor({ mac_address: "   " }))).toBe(false);
+  it("returns true for a sensor with whitespace-only mac_address", () => {
+    expect(isProductionSensor(makeSensor({ mac_address: "   " }))).toBe(true);
+  });
+
+  it("returns true for a sensor whose mac_address resolver returned null", () => {
+    expect(isProductionSensor(makeSensor({ mac_address: null as unknown as string }))).toBe(true);
+  });
+
+  it("still rejects a mirror sensor whose mac_address has leading whitespace", () => {
+    expect(isProductionSensor(makeSensor({ mac_address: "  mi-rr-or:12:34:56" }))).toBe(false);
   });
 });
 

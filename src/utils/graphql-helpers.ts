@@ -55,14 +55,23 @@ export function throwIfGraphQLErrors(result: { error?: unknown }): void {
 /**
  * Check if a sensor is a production device (not a test/placeholder).
  * Filters out mirror/virtual sensors (mi-rr-or*) and fake test sensors (fa-ke*).
+ *
+ * A blank or missing `mac_address` deliberately does NOT disqualify a sensor.
+ * Test devices in this org are identified by their MAC *prefix*, so an absent
+ * MAC is unknown provenance, not evidence of a test device: a provisioned but
+ * not yet MAC bound sensor, or a row whose resolver returned null, is a real
+ * device with real reporting rows. Sensors are addressed by `id` everywhere in
+ * this codebase, so a blank MAC never makes a row unqueryable either. This is
+ * the asymmetry with `isProductionHive` below, where the serial number IS the
+ * addressing key.
+ *
+ * Callers use this both to filter aggregate lists and to reject a single
+ * explicitly requested sensor (butlr_traffic_flow), and rejecting a caller's
+ * own request needs positive evidence, which only the prefixes provide.
  */
 export function isProductionSensor(sensor: Sensor): boolean {
-  return (
-    !!sensor.mac_address &&
-    sensor.mac_address.trim() !== "" &&
-    !sensor.mac_address.startsWith("mi-rr-or") &&
-    !sensor.mac_address.startsWith("fa-ke")
-  );
+  const mac = sensor.mac_address?.trim() ?? "";
+  return !mac.startsWith("mi-rr-or") && !mac.startsWith("fa-ke");
 }
 
 /**

@@ -7,8 +7,12 @@
  */
 
 import { apolloClient } from "../clients/graphql-client.js";
-import { GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
-import type { Sensor, Site, Floor, Building, Zone } from "../clients/types.js";
+import {
+  GET_ALL_SENSORS,
+  GET_FULL_TOPOLOGY,
+  GET_SENSORS_BY_IDS,
+} from "../clients/queries/topology.js";
+import type { Sensor, Site, Floor, Building, Room, Zone } from "../clients/types.js";
 import type { TimezoneMetadata } from "./timezone-helpers.js";
 import type { MeasurementRecommendation, BaseMeasurementData } from "../types/responses.js";
 import { detectAssetType } from "./asset-helpers.js";
@@ -17,35 +21,36 @@ import { getTimezoneForAsset, buildTimezoneMetadata } from "./timezone-helpers.j
 import { rethrowIfGraphQLError } from "./graphql-helpers.js";
 
 /**
- * Topology and sensor data fetched in parallel for occupancy tools.
+ * The spatial hierarchy on its own, flattened for lookup.
+ *
+ * Split out from TopologyContext because a caller that resolves ONE known
+ * sensor needs the hierarchy but not the org's whole sensor inventory.
  */
-export interface TopologyContext {
+export interface TopologyOnly {
   sites: Site[];
   buildings: Building[];
   floors: Floor[];
+}
+
+/**
+ * Topology and sensor data fetched in parallel for occupancy tools.
+ */
+export interface TopologyContext extends TopologyOnly {
   productionSensors: Sensor[];
 }
 
 /**
- * Fetch topology and production sensors in a single parallel call.
- * Shared by both current-occupancy and timeseries tools.
+ * Fetch and flatten the spatial hierarchy (sites, buildings, floors).
  */
-export async function fetchTopologyAndSensors(): Promise<TopologyContext> {
-  let topoResult, sensorsResult;
+export async function fetchTopology(): Promise<TopologyOnly> {
+  let topoResult;
 
   try {
-    [topoResult, sensorsResult] = await Promise.all([
-      apolloClient.query<{ sites: { data: Site[] } }>({
-        query: GET_FULL_TOPOLOGY,
-        fetchPolicy: "network-only",
-      }),
-      apolloClient.query<{ sensors: { data: Sensor[] } }>({
-        query: GET_ALL_SENSORS,
-        fetchPolicy: "network-only",
-      }),
-    ]);
+    topoResult = await apolloClient.query<{ sites: { data: Site[] } }>({
+      query: GET_FULL_TOPOLOGY,
+      fetchPolicy: "network-only",
+    });
     throwIfGraphQLErrors(topoResult);
-    throwIfGraphQLErrors(sensorsResult);
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
     throw error;
@@ -54,10 +59,69 @@ export async function fetchTopologyAndSensors(): Promise<TopologyContext> {
   const sites = topoResult.data?.sites?.data || [];
   const buildings = sites.flatMap((s) => s.buildings || []);
   const floors = buildings.flatMap((b) => b.floors || []);
-  const allSensors = sensorsResult.data?.sensors?.data || [];
-  const productionSensors = allSensors.filter(isProductionSensor);
 
-  return { sites, buildings, floors, productionSensors };
+  return { sites, buildings, floors };
+}
+
+/**
+ * Fetch the org's full sensor inventory, test/mirror devices removed.
+ */
+export async function fetchProductionSensors(): Promise<Sensor[]> {
+  let sensorsResult;
+
+  try {
+    sensorsResult = await apolloClient.query<{ sensors: { data: Sensor[] } }>({
+      query: GET_ALL_SENSORS,
+      fetchPolicy: "network-only",
+    });
+    throwIfGraphQLErrors(sensorsResult);
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
+    throw error;
+  }
+
+  const allSensors = sensorsResult.data?.sensors?.data || [];
+  return allSensors.filter(isProductionSensor);
+}
+
+/**
+ * Fetch specific sensors by ID.
+ *
+ * Unlike fetchProductionSensors this does NOT filter test devices: the caller
+ * asked for these exact IDs, so a mirror device has to come back so the caller
+ * can say so, rather than silently becoming "not found".
+ */
+export async function fetchSensorsByIds(ids: string[]): Promise<Sensor[]> {
+  if (ids.length === 0) return [];
+
+  let result;
+
+  try {
+    result = await apolloClient.query<{ sensors: { data: Sensor[] } }>({
+      query: GET_SENSORS_BY_IDS,
+      variables: { ids },
+      fetchPolicy: "network-only",
+    });
+    throwIfGraphQLErrors(result);
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
+    throw error;
+  }
+
+  return result.data?.sensors?.data || [];
+}
+
+/**
+ * Fetch topology and production sensors in a single parallel call.
+ * Shared by both current-occupancy and timeseries tools.
+ */
+export async function fetchTopologyAndSensors(): Promise<TopologyContext> {
+  const [topology, productionSensors] = await Promise.all([
+    fetchTopology(),
+    fetchProductionSensors(),
+  ]);
+
+  return { ...topology, productionSensors };
 }
 
 /**
@@ -154,6 +218,72 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
     timezoneWarning,
     presenceSensors,
     trafficSensors,
+  };
+}
+
+/**
+ * Resolved context for a single sensor: display name, timezone, and the
+ * breadcrumb path to it.
+ *
+ * Lives next to resolveAssetContext so there is ONE definition of how a
+ * sensor's timezone and path are derived. Sensors are not an asset type
+ * resolveAssetContext handles (it partitions an enclosing space's sensors by
+ * mode, which is not meaningful for a single device), but they resolve
+ * against the same topology by the same rules, and a second copy of those
+ * rules in a tool is how the two drifted apart before.
+ */
+export interface SensorContext {
+  name: string;
+  timezone: string;
+  tzMetadata: TimezoneMetadata;
+  timezoneFallback: boolean;
+  path: string;
+  room?: Room;
+  floor?: Floor;
+  building?: Building;
+}
+
+/**
+ * Resolve a single sensor's display name, timezone and breadcrumb path.
+ *
+ * Room first, floor second, for BOTH timezone and path. The room's own floor
+ * is authoritative: `sensor.floor_id` can be unset while `room_id` still
+ * resolves, and it can disagree with the room's actual floor. Keying the path
+ * off `floor_id` (while keying the timezone off `room_id`) drops every path
+ * segment in the first case and names the wrong floor in the second.
+ *
+ * Only snake_case linkage fields are read. Both queries that feed this
+ * (GET_ALL_SENSORS, GET_SENSORS_BY_IDS) select `floor_id`/`room_id` and not
+ * the camelCase resolvers, which are buggy for NULL values.
+ */
+export function resolveSensorContext(sensor: Sensor, ctx: TopologyOnly): SensorContext {
+  const roomId = sensor.room_id || undefined;
+  const floorId = sensor.floor_id || undefined;
+
+  const floorByRoom = roomId
+    ? ctx.floors.find((f) => f.rooms?.some((r) => r.id === roomId))
+    : undefined;
+  const room = floorByRoom?.rooms?.find((r) => r.id === roomId);
+  const floor = floorByRoom ?? (floorId ? ctx.floors.find((f) => f.id === floorId) : undefined);
+  const building = floor ? ctx.buildings.find((b) => b.id === floor.building_id) : undefined;
+
+  // A dangling room reference (deleted room) falls through to the floor, and
+  // an unassigned sensor falls through to the UTC fallback with isFallback set.
+  const resolved = room
+    ? getTimezoneForAsset(room.id, "room", ctx.floors, ctx.buildings, ctx.sites)
+    : getTimezoneForAsset(floor?.id ?? "", "floor", ctx.floors, ctx.buildings, ctx.sites);
+
+  const name = sensor.name || sensor.id;
+
+  return {
+    name,
+    timezone: resolved.timezone,
+    tzMetadata: buildTimezoneMetadata(resolved.timezone),
+    timezoneFallback: resolved.isFallback,
+    path: [building?.name, floor?.name, room?.name, name].filter(Boolean).join(" > "),
+    room,
+    floor,
+    building,
   };
 }
 

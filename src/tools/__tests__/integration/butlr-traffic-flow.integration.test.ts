@@ -65,6 +65,14 @@ const MOCK_TOPOLOGY = {
                   },
                 ],
               },
+              // A second, room-less floor, so a sensor whose floor_id
+              // disagrees with its room's actual floor can be expressed.
+              {
+                id: "floor_other",
+                name: "Other Floor",
+                building_id: "building_test",
+                rooms: [],
+              },
             ],
           },
         ],
@@ -540,15 +548,18 @@ describe("butlr_traffic_flow - Integration", () => {
   });
 
   describe("Sensor-level queries", () => {
-    const mockGraphQLTopologyAndSensors = (sensors: unknown[]) => {
+    // The sensor path resolves one sensor via `sensors(ids:)`, so the mock
+    // filters by the requested IDs the way the real resolver does.
+    const mockGraphQLTopologyAndSensors = (sensors: any[]) => {
       vi.mocked(apolloClient.query).mockImplementation((options: any) => {
         const queryString = options.query.loc?.source?.body || "";
         if (queryString.includes("GetFullTopology")) {
           return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
         }
-        if (queryString.includes("GetAllSensors")) {
+        if (queryString.includes("GetSensorsByIds")) {
+          const ids: string[] = options.variables?.ids || [];
           return Promise.resolve({
-            data: { sensors: { data: sensors } },
+            data: { sensors: { data: sensors.filter((s) => ids.includes(s.id)) } },
             loading: false,
             networkStatus: 7,
           } as any);
@@ -736,6 +747,313 @@ describe("butlr_traffic_flow - Integration", () => {
       await expect(
         executeTrafficFlow({ space_id_or_name: "sensor_missing", time_window: "1h" })
       ).rejects.toThrow("Sensor sensor_missing not found");
+    });
+
+    // The path builder and the timezone chain must key off the SAME thing.
+    // Keying the path off floor_id while the timezone keys off room_id lost
+    // every path segment for this shape, which is the population the timezone
+    // fallback was written for in the first place.
+    it("builds the full path from the sensor's room when floor_id is unset", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_no_floor",
+          name: "Door A",
+          mac_address: "aa:bb:cc:dd:ee:05",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "",
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_no_floor",
+        time_window: "1h",
+      });
+
+      expect(result.space.path).toBe("Test Building > Test Floor > Test Room > Door A");
+      expect(result.space.site_timezone).toBe("America/Los_Angeles");
+      expect(result.warning).toBeUndefined();
+    });
+
+    it("prefers the room's own floor when floor_id names a different one", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_stale_floor",
+          name: "Door B",
+          mac_address: "aa:bb:cc:dd:ee:06",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_other",
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_stale_floor",
+        time_window: "1h",
+      });
+
+      // Not "Test Building > Other Floor > Door B": the room resolves, so its
+      // floor wins and the room segment survives.
+      expect(result.space.path).toBe("Test Building > Test Floor > Test Room > Door B");
+    });
+
+    // A missing MAC is unknown provenance, not proof of a test device.
+    it("accepts a traffic sensor with no MAC recorded", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_no_mac",
+          name: "New Door",
+          mac_address: null,
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [{ time: "2026-08-25T18:29:00Z", sensor_id: "sensor_no_mac", field: "in", value: 4 }],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_no_mac",
+        time_window: "1h",
+      });
+
+      expect(result.space.name).toBe("New Door");
+      expect(result.traffic.total_entries).toBe(4);
+    });
+
+    it("warns instead of reporting a bare zero for an UNINSTALLED sensor", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_uninstalled",
+          name: "Dock Door",
+          mac_address: "aa:bb:cc:dd:ee:07",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+          installation_status: "UNINSTALLED",
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_uninstalled",
+        time_window: "1h",
+      });
+
+      expect(result.traffic.total_traffic).toBe(0);
+      expect(result.warning).toContain("UNINSTALLED");
+    });
+
+    it("does not name a dangling room when rejecting a presence sensor", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_presence_dangling",
+          name: "Desk 13",
+          mac_address: "aa:bb:cc:dd:ee:08",
+          mode: "presence",
+          room_id: "room_deleted_long_ago",
+          floor_id: "floor_test",
+        },
+      ]);
+
+      // Naming a room that no longer resolves sends the caller to a second
+      // dead end, so the message falls back to the inspection tools instead.
+      await expect(
+        executeTrafficFlow({ space_id_or_name: "sensor_presence_dangling", time_window: "1h" })
+      ).rejects.toThrow(/butlr_get_asset_details/);
+      await expect(
+        executeTrafficFlow({ space_id_or_name: "sensor_presence_dangling", time_window: "1h" })
+      ).rejects.not.toThrow(/room_deleted_long_ago/);
+    });
+
+    it("still names the room when rejecting a presence sensor whose room resolves", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_presence_ok",
+          name: "Desk 14",
+          mac_address: "aa:bb:cc:dd:ee:09",
+          mode: "presence",
+          room_id: "room_meeting",
+          floor_id: "floor_test",
+        },
+      ]);
+
+      await expect(
+        executeTrafficFlow({ space_id_or_name: "sensor_presence_ok", time_window: "1h" })
+      ).rejects.toThrow(/room_meeting/);
+    });
+
+    // The unassigned-sensor path raises timezoneFallback on every window, so
+    // the warning must not talk about midnight when no midnight was computed.
+    it("omits the midnight wording from the UTC fallback warning on a 1h window", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_orphan",
+          name: "Dock Door",
+          mac_address: "aa:bb:cc:dd:ee:03",
+          mode: "traffic",
+          room_id: "",
+          floor_id: "",
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_orphan",
+        time_window: "1h",
+      });
+
+      expect(result.warning).toBeDefined();
+      expect(result.warning).not.toContain("midnight");
+      expect(result.warning).not.toContain("'Today'");
+      expect(result.warning).toContain("bucket alignment");
+    });
+
+    it("keeps the midnight wording on the today window", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_orphan",
+          name: "Dock Door",
+          mac_address: "aa:bb:cc:dd:ee:03",
+          mode: "traffic",
+          room_id: "",
+          floor_id: "",
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_orphan",
+        time_window: "today",
+      });
+
+      expect(result.warning).toContain("midnight");
+    });
+
+    it("routes a sensor match from a name search into the sensor path", async () => {
+      vi.mocked(searchAssets.executeSearchAssets).mockResolvedValue({
+        matches: [{ id: "sensor_direct", name: "N. Elevator", type: "sensor" }],
+      } as any);
+
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_direct",
+          name: "N. Elevator",
+          mac_address: "aa:bb:cc:dd:ee:01",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+        },
+      ]);
+
+      const assetsSpy = vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "assets");
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "north elevator door",
+        time_window: "1h",
+      });
+
+      // Sensors are in the searched types, so a door does not have to be
+      // modeled as a room to be findable by name.
+      expect(vi.mocked(searchAssets.executeSearchAssets)).toHaveBeenCalledWith(
+        expect.objectContaining({ asset_types: ["room", "sensor"] })
+      );
+      expect(assetsSpy).toHaveBeenCalledWith("sensor", ["sensor_direct"]);
+      expect(result.space.type).toBe("sensor");
+    });
+  });
+
+  describe("Room path device filtering", () => {
+    // The mirror rejection on the sensor path has to hold through the room
+    // path too, or the same tool answers two ways about the same device, and
+    // disagrees with the occupancy tools about what the room contains.
+    it("excludes mirror devices from the room's traffic sensor count", async () => {
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetRoomSensors")) {
+          return Promise.resolve({
+            data: {
+              room: {
+                id: "room_lobby",
+                name: "Main Lobby",
+                floorID: "floor_test",
+                sensors: [
+                  { id: "sensor_real", mode: "traffic" },
+                  { id: "sensor_mirror", mode: "traffic" },
+                ],
+                floor: {
+                  id: "floor_test",
+                  name: "Test Floor",
+                  building: { id: "building_test", name: "Test Building" },
+                },
+              },
+            },
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
+        }
+        if (queryString.includes("GetAllSensors")) {
+          return Promise.resolve({
+            data: {
+              sensors: {
+                data: [
+                  {
+                    id: "sensor_real",
+                    mode: "traffic",
+                    room_id: "room_lobby",
+                    mac_address: "aa:bb:cc:dd:ee:10",
+                  },
+                  {
+                    id: "sensor_mirror",
+                    mode: "traffic",
+                    room_id: "room_lobby",
+                    mac_address: "mi-rr-or-00-00-01",
+                  },
+                ],
+              },
+            },
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        return Promise.reject(new Error(`Unexpected query: ${queryString}`));
+      });
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_lobby",
+        time_window: "1h",
+      });
+
+      expect(result.traffic.sensor_count).toBe(1);
     });
   });
 

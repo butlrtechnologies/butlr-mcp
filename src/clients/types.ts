@@ -142,7 +142,12 @@ export interface Sensor {
   id: string;
   name: string;
   mac_address: string;
-  mode: "presence" | "traffic";
+  // Optional because the API can return null for an unconfigured sensor. The
+  // non-optional union was a lie the compiler believed: it narrowed
+  // `mode !== "traffic"` to `"presence"` and marked the tools' missing-mode
+  // guards unreachable, which is how a null mode would have rendered as
+  // "a null-mode sensor" with no guard left to catch it.
+  mode?: "presence" | "traffic";
   model: string;
   // Both field name formats supported (snake_case is preferred)
   floorID?: string; // camelCase (buggy resolver)
