@@ -72,6 +72,8 @@ export interface ReportingRequest {
     tags?: { eq: string[] };
     clients?: { eq: string[] }; // Sites/orgs
     buildings?: { eq: string[] };
+    sensors?: { eq: string[] };
+    hives?: { eq: string[] };
     value?: {
       gte?: number;
       lte?: number;

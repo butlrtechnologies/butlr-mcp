@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { rethrowIfGraphQLError, isProductionSensor, isProductionHive } from "../graphql-helpers.js";
+import {
+  rethrowIfGraphQLError,
+  isProductionSensor,
+  isKnownTestSensor,
+  isProductionHive,
+} from "../graphql-helpers.js";
 import type { Sensor, Hive } from "../../clients/types.js";
 
 // ---------------------------------------------------------------------------
@@ -109,12 +114,49 @@ describe("isProductionSensor", () => {
     expect(isProductionSensor(makeSensor({ mac_address: "fa-ke:ab:cd:ef" }))).toBe(false);
   });
 
+  // MAC-less placeholder rows stay out of aggregate views: they inflate every
+  // headline total they land in, and butlr_hardware_snapshot reports them
+  // under test_devices_excluded.sensors.placeholder.
   it("returns false for a sensor with an empty mac_address", () => {
     expect(isProductionSensor(makeSensor({ mac_address: "" }))).toBe(false);
   });
 
   it("returns false for a sensor with whitespace-only mac_address", () => {
     expect(isProductionSensor(makeSensor({ mac_address: "   " }))).toBe(false);
+  });
+
+  it("rejects a mirror sensor whose mac_address has leading whitespace", () => {
+    expect(isProductionSensor(makeSensor({ mac_address: "  mi-rr-or:12:34:56" }))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isKnownTestSensor
+// ---------------------------------------------------------------------------
+
+describe("isKnownTestSensor", () => {
+  it("returns true for a mirror sensor", () => {
+    expect(isKnownTestSensor(makeSensor({ mac_address: "mi-rr-or:12:34:56" }))).toBe(true);
+  });
+
+  it("returns true for a fake sensor", () => {
+    expect(isKnownTestSensor(makeSensor({ mac_address: "fa-ke:ab:cd:ef" }))).toBe(true);
+  });
+
+  it("returns true for a mirror sensor with leading whitespace", () => {
+    expect(isKnownTestSensor(makeSensor({ mac_address: "  mi-rr-or:12:34:56" }))).toBe(true);
+  });
+
+  // The whole point of the split: a missing MAC is unknown provenance, so a
+  // caller asking for this exact sensor by ID must not be told it is fake.
+  it("returns false for a sensor with no mac_address recorded", () => {
+    expect(isKnownTestSensor(makeSensor({ mac_address: "" }))).toBe(false);
+    expect(isKnownTestSensor(makeSensor({ mac_address: "   " }))).toBe(false);
+    expect(isKnownTestSensor(makeSensor({ mac_address: null as unknown as string }))).toBe(false);
+  });
+
+  it("returns false for a sensor with a real mac_address", () => {
+    expect(isKnownTestSensor(makeSensor({ mac_address: "aa:bb:cc:dd:ee:ff" }))).toBe(false);
   });
 });
 

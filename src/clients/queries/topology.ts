@@ -177,6 +177,56 @@ export const GET_ALL_SENSORS = gql`
 `;
 
 /**
+ * Get specific sensors by ID (batch).
+ *
+ * The `sensors` root field accepts an `ids` argument, so a caller that needs
+ * one known sensor does not have to download the org's whole inventory and
+ * `.find()` in it. Selects only what an ID-addressed lookup needs: identity,
+ * mode, parent linkage, and installation status. Use GET_ALL_SENSORS when the
+ * caller genuinely needs the full list (e.g. aggregating a room's sensors).
+ *
+ * Uses snake_case fields (floor_id, room_id) for the same reason as
+ * GET_ALL_SENSORS: the camelCase resolvers are buggy for NULL values.
+ */
+export const GET_SENSORS_BY_IDS = gql`
+  query GetSensorsByIds($ids: [String!]) {
+    sensors(ids: $ids) {
+      data {
+        id
+        name
+        mac_address
+        mode
+        floor_id
+        room_id
+        hive_serial
+        is_entrance
+        is_online
+        installation_status
+      }
+    }
+  }
+`;
+
+export const GET_SENSORS_BY_ROOM_IDS = gql`
+  query GetSensorsByRoomIds($roomIds: [String!]) {
+    sensors(room_ids: $roomIds) {
+      data {
+        id
+        name
+        mac_address
+        mode
+        floor_id
+        room_id
+        hive_serial
+        is_entrance
+        is_online
+        installation_status
+      }
+    }
+  }
+`;
+
+/**
  * Get all hives for the organization
  * Uses snake_case fields (floor_id, room_id) for consistency
  */

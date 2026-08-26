@@ -150,7 +150,7 @@ Pass the required environment variables (`BUTLR_CLIENT_ID`, `BUTLR_CLIENT_SECRET
 | `butlr_hardware_snapshot` | Device health check: online/offline status and battery levels across your portfolio | "Which sensors need battery replacement?" |
 | `butlr_available_rooms` | Find currently unoccupied rooms, filterable by capacity and tags | "Are there any free conference rooms right now?" |
 | `butlr_space_busyness` | Current occupancy with qualitative labels (quiet/moderate/busy) and trend comparison | "How busy is the cafe right now?" |
-| `butlr_traffic_flow` | Entry/exit counts with hourly breakdown for traffic-mode sensors | "How many people entered the lobby today?" |
+| `butlr_traffic_flow` | Entry/exit counts with hourly breakdown for a room or a single traffic-mode sensor (`sensor_...`), so a door does not have to be modeled as a room | "How many people came through the north elevator door today?" |
 | `butlr_list_topology` | Display org hierarchy tree with flexible depth control | "Show me all floors in Building 2" |
 | `butlr_fetch_entity_details` | Retrieve specific fields for entities by ID (minimal token usage) | "What's the timezone for this site?" |
 | `butlr_get_occupancy_timeseries` | Historical occupancy data with configurable time ranges | "Show occupancy trends for Floor 3 this week" |

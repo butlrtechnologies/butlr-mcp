@@ -142,7 +142,12 @@ export interface Sensor {
   id: string;
   name: string;
   mac_address: string;
-  mode: "presence" | "traffic";
+  // Defensively optional. The schema declares `mode: String!`, so null is
+  // not a reachable wire value — but an empty string (or a future mode) is,
+  // and the non-optional two-value union made the compiler narrow
+  // `mode !== "traffic"` to `"presence"`, marking the tools' missing-mode
+  // guards unreachable.
+  mode?: "presence" | "traffic";
   model: string;
   // Both field name formats supported (snake_case is preferred)
   floorID?: string; // camelCase (buggy resolver)

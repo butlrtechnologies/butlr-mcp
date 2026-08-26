@@ -1,8 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { z } from "zod";
-import { GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
-import type { Site, SitesResponse } from "../clients/types.js";
+import { GET_ALL_HIVES, GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
+import type { Hive, Sensor, Site, SitesResponse } from "../clients/types.js";
 import {
   getCachedTopology,
   setCachedTopology,
@@ -11,7 +11,13 @@ import {
 import { flattenTopology, type FlattenedAsset } from "../utils/asset-flattener.js";
 import { searchAssets, type SearchableAsset } from "../utils/fuzzy-match.js";
 import { buildAssetPath } from "../utils/path-builder.js";
-import { rethrowIfGraphQLError } from "../utils/graphql-helpers.js";
+import {
+  isProductionHive,
+  isProductionSensor,
+  rethrowIfGraphQLError,
+  throwIfGraphQLErrors,
+} from "../utils/graphql-helpers.js";
+import { mergeSensorsAndHivesIntoTopology } from "../utils/topology-merge.js";
 import { debug } from "../utils/debug.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 
@@ -110,6 +116,10 @@ export interface SearchResult {
   type: string;
   path: string; // Breadcrumb path
   match_score: number;
+  // Sensor mode (sensors only) — lets callers pick a viable candidate from
+  // the ranked list without resolving each one (e.g. traffic tools skipping
+  // presence sensors)
+  mode?: "presence" | "traffic";
   // Parent context
   site_id?: string;
   building_id?: string;
@@ -130,17 +140,20 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
       ` (max: ${maxResults})`
   );
 
-  // Use a generic cache key for full topology (we'll search across it).
-  // `devicesMerged: false` because this tool intentionally caches the raw
-  // `sites` tree without running mergeSensorsAndHivesIntoTopology — flattening
-  // for fuzzy search doesn't need the per-floor sensors/hives arrays. The
-  // distinct cache key prevents `butlr_list_topology` from reading this
-  // device-incomplete shape and silently dropping device-level matches.
+  // `devicesMerged: true`: sensors and hives are merged onto their floors
+  // before flattening, because `flattenTopology` reads devices from
+  // `floor.sensors`/`floor.hives` and `GET_FULL_TOPOLOGY` selects neither.
+  // Without the merge this tool's corpus holds zero sensors and zero hives,
+  // while `VALID_ASSET_TYPES` advertises both and `butlr_hardware_snapshot`
+  // tells callers to find sensors here first.
+  //
+  // This is the same key `butlr_list_topology` writes, deliberately: both now
+  // hold the merged shape, so either can prime the other.
   const cacheKey = generateTopologyCacheKey(
     process.env.BUTLR_ORG_ID || "default",
     true, // include devices for comprehensive search
     true, // include zones
-    false, // devicesMerged: search_assets does not merge sensors/hives
+    true, // devicesMerged: devices are nested onto their floors before flattening
     undefined
   );
 
@@ -156,10 +169,20 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
     debug("search-assets", "Fetching fresh topology for search");
 
     try {
-      const result = await apolloClient.query<{ sites: SitesResponse }>({
-        query: GET_FULL_TOPOLOGY,
-        fetchPolicy: "network-only",
-      });
+      const [result, sensorsResult, hivesResult] = await Promise.all([
+        apolloClient.query<{ sites: SitesResponse }>({
+          query: GET_FULL_TOPOLOGY,
+          fetchPolicy: "network-only",
+        }),
+        apolloClient.query<{ sensors: { data: Sensor[] } }>({
+          query: GET_ALL_SENSORS,
+          fetchPolicy: "network-only",
+        }),
+        apolloClient.query<{ hives: { data: Hive[] } }>({
+          query: GET_ALL_HIVES,
+          fetchPolicy: "network-only",
+        }),
+      ]);
 
       // Apollo can return both data and errors - only fail if we have no data
       if (!result.data || !result.data.sites || !result.data.sites.data) {
@@ -170,13 +193,53 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
         throw new Error("Invalid response structure from API");
       }
 
-      // Track whether the topology data is partial (errors alongside data)
-      const partialData = !!result.error;
+      // A failed device fetch must surface as an error, not as
+      // `total_matches: 0` — and must never be cached under the key
+      // butlr_list_topology trusts.
+      throwIfGraphQLErrors(sensorsResult);
+      throwIfGraphQLErrors(hivesResult);
+
+      // Track whether the topology data is partial (errors alongside data).
+      // A device query that errored counts too: caching a tree whose floors
+      // carry empty sensor arrays would make every later cache hit report
+      // "no sensors in this org" as if it were the answer.
+      const partialData = !!result.error || !!sensorsResult.error || !!hivesResult.error;
       if (partialData) {
         debug("search-assets", "Warning: GraphQL errors present, data may be partial");
       }
 
       sites = result.data.sites.data;
+
+      // Same shape contract as butlr_list_topology, which reads the cache
+      // entry this tool writes: only an explicit array survives. `|| []`
+      // here would launder a serialisation regression into a device-empty
+      // tree, cached where that tool's own contract check never runs.
+      const rawSensors = sensorsResult.data?.sensors?.data;
+      if (!Array.isArray(rawSensors)) {
+        throw new Error(
+          "Unexpected response shape from sensors query (expected array, got " +
+            `${rawSensors === null ? "null" : typeof rawSensors}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
+      }
+      const rawHives = hivesResult.data?.hives?.data;
+      if (!Array.isArray(rawHives)) {
+        throw new Error(
+          "Unexpected response shape from hives query (expected array, got " +
+            `${rawHives === null ? "null" : typeof rawHives}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
+      }
+
+      // Test/mirror devices are excluded from the corpus, matching
+      // butlr_list_topology. A search hit on a mirror sensor would hand the
+      // caller an ID that every data tool then refuses.
+      const allSensors = rawSensors.filter(isProductionSensor);
+      const allHives = rawHives.filter(isProductionHive);
+      sites = mergeSensorsAndHivesIntoTopology(sites, allSensors, allHives);
+
+      debug(
+        "search-assets",
+        `Merged ${allSensors.length} sensors and ${allHives.length} hives into topology`
+      );
 
       // Only cache complete topology data — partial results should be re-fetched
       if (!partialData) {
@@ -228,6 +291,7 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
     type: match.asset.type,
     path: buildAssetPath(match.asset),
     match_score: match.score,
+    ...(match.asset.type === "sensor" && match.asset.mode ? { mode: match.asset.mode } : {}),
     site_id: match.asset.site_id as string | undefined,
     building_id: match.asset.building_id as string | undefined,
     floor_id: match.asset.floor_id as string | undefined,

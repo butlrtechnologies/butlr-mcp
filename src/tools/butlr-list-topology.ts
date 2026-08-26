@@ -25,6 +25,7 @@ import {
   generateTopologyCacheKey,
 } from "../cache/topology-cache.js";
 import { formatTopologyTree } from "../utils/tree-formatter.js";
+import { mergeSensorsAndHivesIntoTopology } from "../utils/topology-merge.js";
 import {
   isProductionSensor,
   isProductionHive,
@@ -409,9 +410,10 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
       // When asset_ids was also supplied, opportunistically validate it
       // against a warm topology cache so the user sees both diagnostics in
       // one round-trip. The lookup reads only from the merged-devices cache
-      // (the key `butlr_list_topology` writes) so it is authoritative for
-      // device ids; `butlr_search_assets` writes a separate device-incomplete
-      // shape under a different key. Cache miss → emit `asset_ids_unverified`
+      // key; both writers of that key (`butlr_list_topology` and
+      // `butlr_search_assets`) merge the same production-filtered devices
+      // before caching, so a hit is authoritative for device ids regardless
+      // of which tool primed it. Cache miss → emit `asset_ids_unverified`
       // so the caller knows the asset typo (if any) wasn't checked. Paying
       // for a full topology fetch here would dwarf the actual short-circuit.
       //
@@ -496,8 +498,8 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
   //
   // `devicesMerged: true` because this read path requires every floor to
   // carry its `sensors`/`hives` arrays (post-mergeSensorsAndHivesIntoTopology).
-  // `butlr_search_assets` writes a separate device-incomplete shape under a
-  // distinct key — the two consumers can never collide.
+  // `butlr_search_assets` writes the same merged shape under the same key,
+  // so either tool can prime the cache for the other.
   const cacheKey = generateTopologyCacheKey(
     process.env.BUTLR_ORG_ID || "default",
     true, // include devices
@@ -973,62 +975,6 @@ function buildTopologyResponse(args: {
     response.unknown_tags = args.unknownTagNames;
   }
   return response;
-}
-
-/**
- * Merge sensors and hives into topology structure.
- * Groups by floor_id and nests under appropriate floors.
- *
- * IN-PLACE MUTATION: assigns `floor.sensors` and `floor.hives` directly on
- * the input site tree (returned for chaining; no new array is allocated).
- * `setCachedTopology` reads from the same `sites` reference that this
- * function mutates — any caller that captures the pre-merge `sites` (via
- * Apollo cache-restore, structural clone, or fork-then-await) would
- * observe the un-merged shape and could write a device-incomplete tree
- * to the cache. If you change this to immutable assignment, audit the
- * cache write site to confirm it sees the merged result.
- */
-function mergeSensorsAndHivesIntoTopology(
-  sites: Site[],
-  allSensors: Sensor[],
-  allHives: Hive[]
-): Site[] {
-  // Group sensors by floor_id
-  const sensorsByFloor: Record<string, Sensor[]> = {};
-  for (const sensor of allSensors) {
-    const floorId = sensor.floor_id || sensor.floorID;
-    if (floorId) {
-      if (!sensorsByFloor[floorId]) {
-        sensorsByFloor[floorId] = [];
-      }
-      sensorsByFloor[floorId].push(sensor);
-    }
-  }
-
-  // Group hives by floor_id
-  const hivesByFloor: Record<string, Hive[]> = {};
-  for (const hive of allHives) {
-    const floorId = hive.floor_id || hive.floorID;
-    if (floorId) {
-      if (!hivesByFloor[floorId]) {
-        hivesByFloor[floorId] = [];
-      }
-      hivesByFloor[floorId].push(hive);
-    }
-  }
-
-  // Merge into topology
-  for (const site of sites) {
-    for (const building of site.buildings || []) {
-      for (const floor of building.floors || []) {
-        // Add sensors and hives to this floor
-        floor.sensors = sensorsByFloor[floor.id] || [];
-        floor.hives = hivesByFloor[floor.id] || [];
-      }
-    }
-  }
-
-  return sites;
 }
 
 /**

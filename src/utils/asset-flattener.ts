@@ -133,12 +133,19 @@ export function flattenTopology(sites: Site[]): FlattenedAsset[] {
             building_name: building.name,
             floor_id: floor.id,
             floor_name: floor.name,
-            room_id: zone.roomID,
+            room_id: zone.room_id || zone.roomID,
+            room_name: (floor.rooms || []).find((r) => r.id === (zone.room_id || zone.roomID))
+              ?.name,
             customID: zone.customID,
             capacity: zone.capacity,
             coordinates: zone.coordinates,
           });
         }
+
+        // Room names for device breadcrumbs. `buildAssetPath` renders a
+        // `room_name` segment for sensors, hives and zones, and the flat
+        // device lists carry only `room_id`.
+        const roomNamesById = new Map((floor.rooms || []).map((r) => [r.id, r.name]));
 
         // Add sensors
         for (const sensor of floor.sensors || []) {
@@ -152,7 +159,12 @@ export function flattenTopology(sites: Site[]): FlattenedAsset[] {
             building_name: building.name,
             floor_id: floor.id,
             floor_name: floor.name,
-            room_id: sensor.roomID,
+            // snake_case first: GET_ALL_SENSORS selects `room_id`, and the
+            // camelCase resolver is buggy for NULL values. Reading only
+            // `roomID` here dropped the room segment from every flattened
+            // sensor's breadcrumb path.
+            room_id: sensor.room_id || sensor.roomID,
+            room_name: roomNamesById.get(sensor.room_id || sensor.roomID || ""),
             mac_address: sensor.mac_address,
             mode: sensor.mode,
             model: sensor.model,
@@ -173,7 +185,8 @@ export function flattenTopology(sites: Site[]): FlattenedAsset[] {
             building_name: building.name,
             floor_id: floor.id,
             floor_name: floor.name,
-            room_id: hive.roomID,
+            room_id: hive.room_id || hive.roomID,
+            room_name: roomNamesById.get(hive.room_id || hive.roomID || ""),
             serialNumber: hive.serialNumber,
             is_online: hive.isOnline || hive.is_online,
             hiveVersion: hive.hiveVersion,

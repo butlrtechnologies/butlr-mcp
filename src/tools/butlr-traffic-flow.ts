@@ -2,9 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
-import type { Room, Site, Sensor } from "../clients/types.js";
+import type { Room, Sensor } from "../clients/types.js";
 import { ReportingRequestBuilder } from "../clients/reporting-client.js";
-import { GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
 import { executeSearchAssets } from "./butlr-search-assets.js";
 import {
   getTimezoneForAsset,
@@ -14,7 +13,18 @@ import {
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
 import { createValidationError, withToolErrorHandling } from "../errors/mcp-errors.js";
 import { resolveTimeToIso } from "../utils/time-resolver.js";
-import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
+import {
+  rethrowIfGraphQLError,
+  throwIfGraphQLErrors,
+  isKnownTestSensor,
+} from "../utils/graphql-helpers.js";
+import {
+  fetchTopology,
+  fetchSensorsByIds,
+  fetchSensorsByRoomIds,
+  resolveSensorContext,
+} from "../utils/occupancy-helpers.js";
+import { detectAssetType } from "../utils/asset-helpers.js";
 import { debug } from "../utils/debug.js";
 import type { TrafficFlowResponse } from "../types/responses.js";
 
@@ -38,7 +48,9 @@ const trafficFlowInputShape = {
     .min(1, "space_id_or_name cannot be empty")
     .max(200)
     .trim()
-    .describe("Space ID or search term"),
+    .describe(
+      "Room ID (room_...), sensor ID (sensor_...) for per-access-point counts, or a name search term (matches rooms and traffic sensors)"
+    ),
 
   time_window: z
     .enum(["20m", "1h", "today", "custom"])
@@ -76,6 +88,7 @@ export const TrafficFlowArgsSchema = z
 
 const TRAFFIC_FLOW_DESCRIPTION =
   "Get entry and exit counts for spaces equipped with traffic-mode sensors (typically lobbies, building entrances, elevator banks). Returns total movements, net flow (entries - exits), and hourly breakdown in the space's local timezone. Designed for space activation analysis, security/compliance, and amenity demand forecasting.\n\n" +
+  "Accepts a room ID (counts aggregate across the room's traffic sensors), a single sensor ID (sensor_...) for per-access-point counts, or a name to search. Sensors do not need to be assigned to a room to be queried directly, and a name search matches sensors as well as rooms, so an access point does not have to be modeled as a room. (Name search covers devices assigned to a floor; a floor-less or not-yet-MAC-bound sensor is still queryable by its sensor_... ID.)\n\n" +
   "Primary Users:\n" +
   "- Facilities Manager: Monitor building entry/exit patterns, optimize security staffing, validate badge system accuracy\n" +
   "- Workplace Manager: Understand amenity traffic (café, gym, event spaces), measure activation of new spaces\n" +
@@ -89,7 +102,8 @@ const TRAFFIC_FLOW_DESCRIPTION =
   '5. "Show me lobby traffic for the last 20 minutes"\n' +
   '6. "What\'s the net flow (entries - exits) for Floor 2 today?"\n' +
   '7. "How many people entered the event space during lunch hour (12-1pm)?"\n' +
-  '8. "Compare today\'s building entrance traffic to typical Monday"\n\n' +
+  '8. "Compare today\'s building entrance traffic to typical Monday"\n' +
+  '9. "How many people came through the north elevator door today?" (a single sensor, by name or by sensor_... ID)\n\n' +
   "When to Use:\n" +
   "- Entry/exit counts for lobbies, building entrances, elevator banks, or amenities\n" +
   "- Understand peak traffic hours for security, cleaning, or HVAC planning\n" +
@@ -128,83 +142,182 @@ const GET_ROOM_SENSORS = gql`
 `;
 
 /**
+ * Fetch a room and its floor/building context. Kept separate from the shared
+ * topology fetch so it can run in parallel with it.
+ */
+async function fetchRoom(roomId: string) {
+  try {
+    const result = await apolloClient.query<{ room: Room }>({
+      query: GET_ROOM_SENSORS,
+      variables: { roomId },
+      fetchPolicy: "network-only",
+    });
+    throwIfGraphQLErrors(result);
+    return result;
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
+    throw error;
+  }
+}
+
+/**
  * Execute traffic flow tool
  */
 export async function executeTrafficFlow(args: TrafficFlowArgs) {
   let spaceId = args.space_id_or_name;
 
-  // If not an ID, search for the space
-  if (!spaceId.match(/^room_/)) {
+  // One prefix detector for both branches. `asset-helpers.ts` is the single
+  // place that encodes ID prefixes, so re-testing the string with a local
+  // regex here would be a second thing to keep in sync with it.
+  let assetType = detectAssetType(spaceId);
+
+  // If it is neither a room nor a sensor ID, treat it as a search term.
+  // Direct sensor queries skip room resolution entirely: the reporting API
+  // serves sensor-level traffic via the sensors filter, so a sensor does not
+  // need a room wrapper to be queryable.
+  if (assetType !== "sensor" && assetType !== "room") {
     debug("traffic-flow", `Searching for space: "${args.space_id_or_name}"`);
 
+    // Both types, so a natural-language query can reach the sensor path too.
+    // The customer ask behind sensor support was to stop modeling each door as
+    // a room; searching rooms only would leave the capability reachable solely
+    // by callers who already know the sensor ID.
     const searchResults = await executeSearchAssets({
       query: args.space_id_or_name,
-      asset_types: ["room"], // Traffic is room-level
+      asset_types: ["room", "sensor"],
       max_results: 5,
     });
 
     if (searchResults.matches.length === 0) {
       throw new Error(
-        `No rooms found matching "${args.space_id_or_name}". Try a different search term.`
+        `No rooms or sensors found matching "${args.space_id_or_name}". Try a different search term, or pass a room ID (room_...) or sensor ID (sensor_...) directly. butlr_search_assets finds both by name or MAC; butlr_hardware_snapshot lists sensors with their health.`
       );
     }
 
-    spaceId = searchResults.matches[0].id;
+    // Take the highest-ranked candidate that can actually serve traffic: any
+    // room (validated downstream), or a traffic-mode sensor. Taking
+    // matches[0] unconditionally let a presence sensor whose name outranks
+    // the intended room dead-end the whole query with the right room sitting
+    // at index 1.
+    const viable = searchResults.matches.find(
+      (m) => m.type === "room" || (m.type === "sensor" && m.mode === "traffic")
+    );
+    if (!viable) {
+      throw new Error(
+        `"${args.space_id_or_name}" matched only presence-mode sensors, which have no entry/exit counts. Try butlr_get_current_occupancy for occupancy data, or search for a room or traffic-mode sensor.`
+      );
+    }
 
-    debug("traffic-flow", `Using best match: ${searchResults.matches[0].name} (${spaceId})`);
+    spaceId = viable.id;
+    assetType = detectAssetType(spaceId);
+
+    debug("traffic-flow", `Using best viable match: ${viable.name} (${spaceId}, ${assetType})`);
   }
 
-  // Query room details, topology for timezone, and all sensors
-  let room: Room | null = null;
+  const isSensorQuery = assetType === "sensor";
+
+  // Query asset details, topology for timezone, and sensors
+  let displayName = "";
   let roomPath = "";
   let timezone: string;
   let tzMetadata: TimezoneMetadata;
   let timezoneFallback = false;
   let trafficSensors: Sensor[] = [];
+  let installationWarning: string | undefined;
 
-  try {
-    const [roomResult, topoResult, sensorsResult] = await Promise.all([
-      apolloClient.query<{ room: Room }>({
-        query: GET_ROOM_SENSORS,
-        variables: { roomId: spaceId },
-        fetchPolicy: "network-only",
-      }),
-      apolloClient.query<{ sites: { data: Site[] } }>({
-        query: GET_FULL_TOPOLOGY,
-        fetchPolicy: "network-only",
-      }),
-      apolloClient.query<{ sensors: { data: Sensor[] } }>({
-        query: GET_ALL_SENSORS,
-        fetchPolicy: "network-only",
-      }),
+  if (isSensorQuery) {
+    // One sensor by ID, not the org's whole inventory: the `sensors` root
+    // field accepts an `ids` argument, and nothing on this branch needs the
+    // full list. A capped or paged `sensors` field would otherwise turn a real
+    // sensor past the cap into a bogus "not found".
+    const [topology, sensors] = await Promise.all([fetchTopology(), fetchSensorsByIds([spaceId])]);
+
+    const sensor = sensors.find((s) => s.id === spaceId);
+    if (!sensor) {
+      throw new Error(`Sensor ${spaceId} not found`);
+    }
+
+    // Resolved up front so the rejections below can consult real topology
+    // rather than pointing the caller at an ID that may not resolve.
+    const sensorContext = resolveSensorContext(sensor, topology);
+
+    // Only a KNOWN test device is refused. isProductionSensor is stricter (it
+    // also drops MAC-less placeholder rows) and is the right filter for the
+    // room path's aggregate below, but applying it to a caller's explicit
+    // request would tell the owner of a real, not yet MAC bound sensor that
+    // their device is fake and leave them no way to query it.
+    if (isKnownTestSensor(sensor)) {
+      throw new Error(
+        `Sensor "${sensor.name}" (${spaceId}) is a test/mirror device, not a production sensor — it has no real traffic data.`
+      );
+    }
+    if (sensor.mode !== "traffic") {
+      // Only name the room when it actually resolves. A dangling room_id (the
+      // room was deleted) would otherwise send the caller to a second dead
+      // end: butlr_get_current_occupancy accepts the room_ prefix, finds no
+      // room, and answers "no sensors configured".
+      const suggestion = sensorContext.room
+        ? `Try butlr_get_current_occupancy with its room (${sensorContext.room.id}) instead.`
+        : `Try butlr_get_asset_details or butlr_hardware_snapshot to inspect it.`;
+      throw new Error(
+        `Sensor "${sensor.name}" is ${
+          sensor.mode ? `a ${sensor.mode}-mode sensor` : "not a traffic-mode sensor"
+        }, so it has no entry/exit counts. ${suggestion}`
+      );
+    }
+
+    // An uninstalled sensor reports nothing, which otherwise reads as a
+    // confident zero. That is likelier here than on the room path: the caller
+    // picked one specific device rather than a room aggregating several.
+    if (sensor.installation_status === "UNINSTALLED") {
+      installationWarning = `Sensor "${sensor.name}" is marked UNINSTALLED in the platform. An uninstalled sensor reports no traffic, so a zero count is expected; any rows returned predate its removal. Check butlr_hardware_snapshot for its current status.`;
+    }
+
+    trafficSensors = [sensor];
+    displayName = sensorContext.name;
+    roomPath = sensorContext.path;
+    timezone = sensorContext.timezone;
+    tzMetadata = sensorContext.tzMetadata;
+    timezoneFallback = sensorContext.timezoneFallback;
+
+    debug("traffic-flow", `Direct sensor query: ${displayName} (${spaceId})`);
+  } else {
+    // The room's own sensor rows via `sensors(room_ids:)` rather than the
+    // org-wide inventory. The rows arrive unfiltered and only KNOWN test
+    // devices (mirror/fake prefixes) are dropped: this list drives the
+    // refusal gate and sensor_count, never the totals (the reporting API
+    // aggregates by room_id server-side), so a provisioned-but-MAC-less
+    // sensor must not disqualify its room the way the stricter
+    // isProductionSensor aggregate filter would.
+    const [topology, roomResult, roomSensorRows] = await Promise.all([
+      fetchTopology(),
+      fetchRoom(spaceId),
+      fetchSensorsByRoomIds([spaceId]),
     ]);
-    throwIfGraphQLErrors(roomResult);
-    throwIfGraphQLErrors(topoResult);
-    throwIfGraphQLErrors(sensorsResult);
 
-    if (!roomResult.data?.room) {
+    if (!roomResult?.data?.room) {
       throw new Error(`Room ${spaceId} not found`);
     }
 
-    room = roomResult.data.room;
+    const room = roomResult.data.room;
+    displayName = room.name;
     const floor = room.floor;
     const building = floor?.building;
     roomPath = building ? `${building.name} > ${floor.name} > ${room.name}` : room.name;
 
-    // Get timezone for this room
-    const sites = topoResult.data?.sites?.data || [];
-    const buildings = sites.flatMap((s) => s.buildings || []);
-    const floors = buildings.flatMap((b) => b.floors || []);
-
-    const resolved = getTimezoneForAsset(spaceId, "room", floors, buildings, sites);
+    const resolved = getTimezoneForAsset(
+      spaceId,
+      "room",
+      topology.floors,
+      topology.buildings,
+      topology.sites
+    );
 
     timezone = resolved.timezone;
     timezoneFallback = resolved.isFallback;
     tzMetadata = buildTimezoneMetadata(timezone);
 
-    // Analyze traffic sensors for this room
-    const allSensors = sensorsResult.data?.sensors?.data || [];
-    const roomSensors = allSensors.filter((s) => (s.room_id || s.roomID) === spaceId);
+    const roomSensors = roomSensorRows.filter((s) => !isKnownTestSensor(s));
     // Room-level traffic counts every traffic-mode sensor bound to the room.
     // See `resolveAssetContext` in occupancy-helpers.ts for the canonical
     // rationale: `is_entrance` is a semantic flag, not a routing one, and the
@@ -218,9 +331,6 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     }
 
     debug("traffic-flow", `Found ${trafficSensors.length} traffic sensors for room`);
-  } catch (error: unknown) {
-    rethrowIfGraphQLError(error);
-    throw error;
   }
 
   // Calculate time range
@@ -303,9 +413,11 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   // sit on a non-UTC-aligned local grid, e.g. :30-offset timezones).
   let trafficData: Array<TrafficDataPoint & { fine: boolean }> = [];
 
+  const queryAssetType = isSensorQuery ? "sensor" : "room";
+
   try {
     const response = await new ReportingRequestBuilder()
-      .assets("room", [spaceId])
+      .assets(queryAssetType, [spaceId])
       .measurements(["traffic"])
       .timeRange(start, stop)
       .window(windowEvery, "sum", timezone) // Sum traffic per bucket, aligned to local timezone
@@ -344,7 +456,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       if (tailStartMs < stopDate.getTime() && Date.now() - stopDate.getTime() < recentStopMs) {
         try {
           const tailResponse = await new ReportingRequestBuilder()
-            .assets("room", [spaceId])
+            .assets(queryAssetType, [spaceId])
             .measurements(["traffic"])
             .timeRange(new Date(tailStartMs).toISOString(), stop)
             .window("1m", "sum", timezone)
@@ -365,7 +477,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     rethrowIfGraphQLError(error);
     debug("traffic-flow", "Failed to get traffic data:", error);
     const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to get traffic data for ${room.name}. ${msg}`);
+    throw new Error(`Failed to get traffic data for ${displayName}. ${msg}`);
   }
 
   // Parse traffic data: group by time, then by sensor, then aggregate
@@ -478,14 +590,36 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
   // Build enhanced summary
   const netFlowStr = netFlow >= 0 ? `+${netFlow}` : `${netFlow}`;
-  const summary = `${room.name}: ${totalTraffic.toLocaleString()} movements ${periodDescription} (${totalEntries.toLocaleString()} entries, ${totalExits.toLocaleString()} exits, net flow: ${netFlowStr})`;
+  const summary = `${displayName}: ${totalTraffic.toLocaleString()} movements ${periodDescription} (${totalEntries.toLocaleString()} entries, ${totalExits.toLocaleString()} exits, net flow: ${netFlowStr})`;
+
+  // Compose the response warning. Two independent conditions can raise one and
+  // both matter, so they are joined rather than one silently shadowing the other.
+  const warnings: string[] = [];
+  if (installationWarning) {
+    warnings.push(installationWarning);
+  }
+  if (usedUtcFallback) {
+    // Window-aware copy. The midnight sentence is only true on the `today`
+    // branch. The unassigned-sensor path sets timezoneFallback for every
+    // room-less, floor-less sensor, so on a 20m/1h/custom window the old text
+    // fired routinely and sent the reader chasing a day-alignment problem that
+    // no part of the query involved.
+    // `timezone` holds whatever the fallback actually resolved to — UTC, or
+    // BUTLR_TIMEZONE when configured — so the copy names it rather than
+    // asserting UTC for a query that may have used something else.
+    warnings.push(
+      timeWindow === "today"
+        ? `Could not determine local timezone for this space; timestamps use midnight in the fallback timezone (${timezone}). 'Today' may not align with the site's actual local day.`
+        : `Could not determine local timezone for this space; hourly bucket alignment falls back to ${timezone}, so buckets may not line up with the site's local hours. The queried range itself is unaffected.`
+    );
+  }
 
   // Build response with timezone metadata and in/out breakdown
   const response: TrafficFlowResponse = {
     space: {
-      id: room.id,
-      name: room.name,
-      type: "room",
+      id: spaceId,
+      name: displayName,
+      type: isSensorQuery ? "sensor" : "room",
       path: roomPath,
       sensor_mode: "traffic",
       ...tzMetadata,
@@ -522,10 +656,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       freshness_note:
         "Traffic data becomes available roughly 5-10 minutes after events occur. Counts for the most recent ~10 minutes may still be incomplete; re-query later for final numbers.",
     }),
-    ...(usedUtcFallback && {
-      warning:
-        "Could not determine local timezone for this space; timestamps use UTC midnight as fallback. 'Today' may not align with the site's actual local day.",
-    }),
+    ...(warnings.length > 0 && { warning: warnings.join(" ") }),
   };
 
   return response;
