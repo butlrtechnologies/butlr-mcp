@@ -111,6 +111,18 @@ const MOCK_SENSORS = {
   },
 };
 
+// Mirrors the server-side `sensors(room_ids:)` filter over an inventory —
+// the room branch fetches its sensors via GetSensorsByRoomIds rather than
+// the org-wide GetAllSensors.
+const sensorsByRoomIds = (options: any, inventory: any[] = MOCK_SENSORS.sensors.data) => {
+  const roomIds: string[] = options.variables?.roomIds || [];
+  return {
+    data: { sensors: { data: inventory.filter((s: any) => roomIds.includes(s.room_id)) } },
+    loading: false,
+    networkStatus: 7,
+  } as any;
+};
+
 describe("butlr_traffic_flow - Integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -153,6 +165,9 @@ describe("butlr_traffic_flow - Integration", () => {
         }
 
         // Return sensors data
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(sensorsByRoomIds(options));
+        }
         if (queryString.includes("GetAllSensors")) {
           return Promise.resolve({
             data: MOCK_SENSORS,
@@ -218,6 +233,9 @@ describe("butlr_traffic_flow - Integration", () => {
           } as any);
         }
 
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(sensorsByRoomIds(options));
+        }
         if (queryString.includes("GetAllSensors")) {
           return Promise.resolve({
             data: MOCK_SENSORS,
@@ -271,6 +289,9 @@ describe("butlr_traffic_flow - Integration", () => {
           } as any);
         }
 
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(sensorsByRoomIds(options));
+        }
         if (queryString.includes("GetAllSensors")) {
           return Promise.resolve({
             data: MOCK_SENSORS,
@@ -359,6 +380,9 @@ describe("butlr_traffic_flow - Integration", () => {
           } as any);
         }
 
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(sensorsByRoomIds(options));
+        }
         if (queryString.includes("GetAllSensors")) {
           return Promise.resolve({
             data: MOCK_SENSORS,
@@ -423,6 +447,9 @@ describe("butlr_traffic_flow - Integration", () => {
           } as any);
         }
 
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(sensorsByRoomIds(options));
+        }
         if (queryString.includes("GetAllSensors")) {
           return Promise.resolve({
             data: MOCK_SENSORS,
@@ -493,34 +520,28 @@ describe("butlr_traffic_flow - Integration", () => {
             networkStatus: 7,
           } as any);
         }
-        if (queryString.includes("GetAllSensors")) {
-          return Promise.resolve({
-            data: {
-              sensors: {
-                data: [
-                  // Every sensor is is_entrance=true — pre-fix the room-level
-                  // traffic filter excluded these and the tool threw "does not
-                  // have traffic-mode sensors".
-                  {
-                    id: "sensor_entrance_1",
-                    mac_address: "aa:bb:cc:dd:ee:b1",
-                    mode: "traffic",
-                    room_id: "room_cafe",
-                    is_entrance: true,
-                  },
-                  {
-                    id: "sensor_entrance_2",
-                    mac_address: "aa:bb:cc:dd:ee:b2",
-                    mode: "traffic",
-                    room_id: "room_cafe",
-                    is_entrance: true,
-                  },
-                ],
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          // Every sensor is is_entrance=true — pre-fix the room-level
+          // traffic filter excluded these and the tool threw "does not
+          // have traffic-mode sensors".
+          return Promise.resolve(
+            sensorsByRoomIds(options, [
+              {
+                id: "sensor_entrance_1",
+                mac_address: "aa:bb:cc:dd:ee:b1",
+                mode: "traffic",
+                room_id: "room_cafe",
+                is_entrance: true,
               },
-            },
-            loading: false,
-            networkStatus: 7,
-          } as any);
+              {
+                id: "sensor_entrance_2",
+                mac_address: "aa:bb:cc:dd:ee:b2",
+                mode: "traffic",
+                room_id: "room_cafe",
+                is_entrance: true,
+              },
+            ])
+          );
         }
         return Promise.reject(new Error("Unknown query"));
       });
@@ -973,7 +994,7 @@ describe("butlr_traffic_flow - Integration", () => {
 
     it("routes a sensor match from a name search into the sensor path", async () => {
       vi.mocked(searchAssets.executeSearchAssets).mockResolvedValue({
-        matches: [{ id: "sensor_direct", name: "N. Elevator", type: "sensor" }],
+        matches: [{ id: "sensor_direct", name: "N. Elevator", type: "sensor", mode: "traffic" }],
       } as any);
 
       mockGraphQLTopologyAndSensors([
@@ -1005,9 +1026,110 @@ describe("butlr_traffic_flow - Integration", () => {
       expect(assetsSpy).toHaveBeenCalledWith("sensor", ["sensor_direct"]);
       expect(result.space.type).toBe("sensor");
     });
+
+    it("skips a higher-ranked presence sensor for the first candidate that can serve traffic", async () => {
+      // A presence sensor whose name starts with the query outranks the
+      // traffic sensor the caller meant. Taking matches[0] unconditionally
+      // dead-ended here with the viable candidate at index 1.
+      vi.mocked(searchAssets.executeSearchAssets).mockResolvedValue({
+        matches: [
+          { id: "sensor_presence_hit", name: "Door Desk", type: "sensor", mode: "presence" },
+          { id: "sensor_direct", name: "N. Elevator Door", type: "sensor", mode: "traffic" },
+        ],
+      } as any);
+
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_direct",
+          name: "N. Elevator Door",
+          mac_address: "aa:bb:cc:dd:ee:01",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+        },
+      ]);
+
+      const assetsSpy = vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "assets");
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "door",
+        time_window: "1h",
+      });
+
+      expect(assetsSpy).toHaveBeenCalledWith("sensor", ["sensor_direct"]);
+      expect(result.space.type).toBe("sensor");
+    });
+
+    it("errors helpfully when a name search matches only presence sensors", async () => {
+      vi.mocked(searchAssets.executeSearchAssets).mockResolvedValue({
+        matches: [
+          { id: "sensor_presence_hit", name: "Door Desk", type: "sensor", mode: "presence" },
+        ],
+      } as any);
+
+      await expect(
+        executeTrafficFlow({ space_id_or_name: "door", time_window: "1h" })
+      ).rejects.toThrow("matched only presence-mode sensors");
+    });
   });
 
   describe("Room path device filtering", () => {
+    // Finding 1, round 3: the room gate must drop only KNOWN test devices.
+    // isProductionSensor also drops MAC-less placeholder rows, and that list
+    // drives the refusal gate — the totals come from the reporting API's own
+    // room aggregation — so a provisioned-but-not-yet-MAC-bound sensor was
+    // refusing its whole room.
+    it("does not refuse a room whose traffic sensor has no MAC recorded", async () => {
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetRoomSensors")) {
+          return Promise.resolve({
+            data: {
+              room: {
+                id: "room_lobby",
+                name: "Main Lobby",
+                floorID: "floor_test",
+                sensors: [{ id: "sensor_nomac", mode: "traffic" }],
+                floor: {
+                  id: "floor_test",
+                  name: "Test Floor",
+                  building: { id: "building_test", name: "Test Building" },
+                },
+              },
+            },
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
+        }
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(
+            sensorsByRoomIds(options, [
+              { id: "sensor_nomac", mode: "traffic", room_id: "room_lobby", mac_address: "" },
+            ])
+          );
+        }
+        return Promise.reject(new Error("Unknown query"));
+      });
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [{ field: "in", sensor_id: "sensor_nomac", time: "2025-10-14T10:00:00Z", value: 4 }],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_lobby",
+        time_window: "1h",
+      });
+
+      expect(result.traffic.sensor_count).toBe(1);
+      expect(result.traffic.total_entries).toBe(4);
+    });
+
     // The mirror rejection on the sensor path has to hold through the room
     // path too, or the same tool answers two ways about the same device, and
     // disagrees with the occupancy tools about what the room contains.
@@ -1039,29 +1161,23 @@ describe("butlr_traffic_flow - Integration", () => {
         if (queryString.includes("GetFullTopology")) {
           return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
         }
-        if (queryString.includes("GetAllSensors")) {
-          return Promise.resolve({
-            data: {
-              sensors: {
-                data: [
-                  {
-                    id: "sensor_real",
-                    mode: "traffic",
-                    room_id: "room_lobby",
-                    mac_address: "aa:bb:cc:dd:ee:10",
-                  },
-                  {
-                    id: "sensor_mirror",
-                    mode: "traffic",
-                    room_id: "room_lobby",
-                    mac_address: "mi-rr-or-00-00-01",
-                  },
-                ],
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(
+            sensorsByRoomIds(options, [
+              {
+                id: "sensor_real",
+                mode: "traffic",
+                room_id: "room_lobby",
+                mac_address: "aa:bb:cc:dd:ee:10",
               },
-            },
-            loading: false,
-            networkStatus: 7,
-          } as any);
+              {
+                id: "sensor_mirror",
+                mode: "traffic",
+                room_id: "room_lobby",
+                mac_address: "mi-rr-or-00-00-01",
+              },
+            ])
+          );
         }
         return Promise.reject(new Error(`Unexpected query: ${queryString}`));
       });
@@ -1119,6 +1235,9 @@ describe("butlr_traffic_flow - Integration", () => {
         }
         if (queryString.includes("GetFullTopology")) {
           return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
+        }
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(sensorsByRoomIds(options));
         }
         if (queryString.includes("GetAllSensors")) {
           return Promise.resolve({ data: MOCK_SENSORS, loading: false, networkStatus: 7 } as any);

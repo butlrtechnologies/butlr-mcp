@@ -20,8 +20,8 @@ import {
 } from "../utils/graphql-helpers.js";
 import {
   fetchTopology,
-  fetchTopologyAndSensors,
   fetchSensorsByIds,
+  fetchSensorsByRoomIds,
   resolveSensorContext,
 } from "../utils/occupancy-helpers.js";
 import { detectAssetType } from "../utils/asset-helpers.js";
@@ -49,7 +49,7 @@ const trafficFlowInputShape = {
     .max(200)
     .trim()
     .describe(
-      "Room ID (room_...), sensor ID (sensor_...) for per-access-point counts, or a room search term"
+      "Room ID (room_...), sensor ID (sensor_...) for per-access-point counts, or a name search term (matches rooms and traffic sensors)"
     ),
 
   time_window: z
@@ -88,7 +88,7 @@ export const TrafficFlowArgsSchema = z
 
 const TRAFFIC_FLOW_DESCRIPTION =
   "Get entry and exit counts for spaces equipped with traffic-mode sensors (typically lobbies, building entrances, elevator banks). Returns total movements, net flow (entries - exits), and hourly breakdown in the space's local timezone. Designed for space activation analysis, security/compliance, and amenity demand forecasting.\n\n" +
-  "Accepts a room ID (counts aggregate across the room's traffic sensors), a single sensor ID (sensor_...) for per-access-point counts, or a name to search. Sensors do not need to be assigned to a room to be queried directly, and a name search matches sensors as well as rooms, so an access point does not have to be modeled as a room.\n\n" +
+  "Accepts a room ID (counts aggregate across the room's traffic sensors), a single sensor ID (sensor_...) for per-access-point counts, or a name to search. Sensors do not need to be assigned to a room to be queried directly, and a name search matches sensors as well as rooms, so an access point does not have to be modeled as a room. (Name search covers devices assigned to a floor; a floor-less or not-yet-MAC-bound sensor is still queryable by its sensor_... ID.)\n\n" +
   "Primary Users:\n" +
   "- Facilities Manager: Monitor building entry/exit patterns, optimize security staffing, validate badge system accuracy\n" +
   "- Workplace Manager: Understand amenity traffic (café, gym, event spaces), measure activation of new spaces\n" +
@@ -194,13 +194,24 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       );
     }
 
-    spaceId = searchResults.matches[0].id;
+    // Take the highest-ranked candidate that can actually serve traffic: any
+    // room (validated downstream), or a traffic-mode sensor. Taking
+    // matches[0] unconditionally let a presence sensor whose name outranks
+    // the intended room dead-end the whole query with the right room sitting
+    // at index 1.
+    const viable = searchResults.matches.find(
+      (m) => m.type === "room" || (m.type === "sensor" && m.mode === "traffic")
+    );
+    if (!viable) {
+      throw new Error(
+        `"${args.space_id_or_name}" matched only presence-mode sensors, which have no entry/exit counts. Try butlr_get_current_occupancy for occupancy data, or search for a room or traffic-mode sensor.`
+      );
+    }
+
+    spaceId = viable.id;
     assetType = detectAssetType(spaceId);
 
-    debug(
-      "traffic-flow",
-      `Using best match: ${searchResults.matches[0].name} (${spaceId}, ${assetType})`
-    );
+    debug("traffic-flow", `Using best viable match: ${viable.name} (${spaceId}, ${assetType})`);
   }
 
   const isSensorQuery = assetType === "sensor";
@@ -271,13 +282,17 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
 
     debug("traffic-flow", `Direct sensor query: ${displayName} (${spaceId})`);
   } else {
-    // fetchTopologyAndSensors is the shared fetch the occupancy tools use, and
-    // it filters test/mirror devices at the source. Re-implementing it here is
-    // what let this tool count a mirror sensor through its room while
-    // rejecting that same sensor by ID.
-    const [topology, roomResult] = await Promise.all([
-      fetchTopologyAndSensors(),
+    // The room's own sensor rows via `sensors(room_ids:)` rather than the
+    // org-wide inventory. The rows arrive unfiltered and only KNOWN test
+    // devices (mirror/fake prefixes) are dropped: this list drives the
+    // refusal gate and sensor_count, never the totals (the reporting API
+    // aggregates by room_id server-side), so a provisioned-but-MAC-less
+    // sensor must not disqualify its room the way the stricter
+    // isProductionSensor aggregate filter would.
+    const [topology, roomResult, roomSensorRows] = await Promise.all([
+      fetchTopology(),
       fetchRoom(spaceId),
+      fetchSensorsByRoomIds([spaceId]),
     ]);
 
     if (!roomResult?.data?.room) {
@@ -302,10 +317,7 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     timezoneFallback = resolved.isFallback;
     tzMetadata = buildTimezoneMetadata(timezone);
 
-    // Analyze traffic sensors for this room. Only snake_case linkage is read:
-    // GET_ALL_SENSORS selects `room_id` and not the camelCase resolver, which
-    // is buggy for NULL values.
-    const roomSensors = topology.productionSensors.filter((s) => s.room_id === spaceId);
+    const roomSensors = roomSensorRows.filter((s) => !isKnownTestSensor(s));
     // Room-level traffic counts every traffic-mode sensor bound to the room.
     // See `resolveAssetContext` in occupancy-helpers.ts for the canonical
     // rationale: `is_entrance` is a semantic flag, not a routing one, and the
@@ -592,10 +604,13 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     // room-less, floor-less sensor, so on a 20m/1h/custom window the old text
     // fired routinely and sent the reader chasing a day-alignment problem that
     // no part of the query involved.
+    // `timezone` holds whatever the fallback actually resolved to — UTC, or
+    // BUTLR_TIMEZONE when configured — so the copy names it rather than
+    // asserting UTC for a query that may have used something else.
     warnings.push(
       timeWindow === "today"
-        ? "Could not determine local timezone for this space; timestamps use UTC midnight as fallback. 'Today' may not align with the site's actual local day."
-        : "Could not determine local timezone for this space; hourly bucket alignment falls back to UTC, so buckets may not line up with the site's local hours. The queried range itself is unaffected."
+        ? `Could not determine local timezone for this space; timestamps use midnight in the fallback timezone (${timezone}). 'Today' may not align with the site's actual local day.`
+        : `Could not determine local timezone for this space; hourly bucket alignment falls back to ${timezone}, so buckets may not line up with the site's local hours. The queried range itself is unaffected.`
     );
   }
 

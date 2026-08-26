@@ -11,6 +11,7 @@ import {
   GET_ALL_SENSORS,
   GET_FULL_TOPOLOGY,
   GET_SENSORS_BY_IDS,
+  GET_SENSORS_BY_ROOM_IDS,
 } from "../clients/queries/topology.js";
 import type { Sensor, Site, Floor, Building, Room, Zone } from "../clients/types.js";
 import type { TimezoneMetadata } from "./timezone-helpers.js";
@@ -100,6 +101,35 @@ export async function fetchSensorsByIds(ids: string[]): Promise<Sensor[]> {
     result = await apolloClient.query<{ sensors: { data: Sensor[] } }>({
       query: GET_SENSORS_BY_IDS,
       variables: { ids },
+      fetchPolicy: "network-only",
+    });
+    throwIfGraphQLErrors(result);
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
+    throw error;
+  }
+
+  return result.data?.sensors?.data || [];
+}
+
+/**
+ * Fetch the sensors bound to specific rooms via `sensors(room_ids:)`.
+ *
+ * Like fetchSensorsByIds this does NOT filter test devices: the caller scoped
+ * the query to rooms it already knows about, and the row set has to be
+ * complete so the caller can apply whatever gate fits its use (e.g.
+ * isKnownTestSensor for a refusal gate that must not drop MAC-less
+ * placeholder rows).
+ */
+export async function fetchSensorsByRoomIds(roomIds: string[]): Promise<Sensor[]> {
+  if (roomIds.length === 0) return [];
+
+  let result;
+
+  try {
+    result = await apolloClient.query<{ sensors: { data: Sensor[] } }>({
+      query: GET_SENSORS_BY_ROOM_IDS,
+      variables: { roomIds },
       fetchPolicy: "network-only",
     });
     throwIfGraphQLErrors(result);

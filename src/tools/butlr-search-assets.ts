@@ -15,6 +15,7 @@ import {
   isProductionHive,
   isProductionSensor,
   rethrowIfGraphQLError,
+  throwIfGraphQLErrors,
 } from "../utils/graphql-helpers.js";
 import { mergeSensorsAndHivesIntoTopology } from "../utils/topology-merge.js";
 import { debug } from "../utils/debug.js";
@@ -115,6 +116,10 @@ export interface SearchResult {
   type: string;
   path: string; // Breadcrumb path
   match_score: number;
+  // Sensor mode (sensors only) — lets callers pick a viable candidate from
+  // the ranked list without resolving each one (e.g. traffic tools skipping
+  // presence sensors)
+  mode?: "presence" | "traffic";
   // Parent context
   site_id?: string;
   building_id?: string;
@@ -188,6 +193,12 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
         throw new Error("Invalid response structure from API");
       }
 
+      // A failed device fetch must surface as an error, not as
+      // `total_matches: 0` — and must never be cached under the key
+      // butlr_list_topology trusts.
+      throwIfGraphQLErrors(sensorsResult);
+      throwIfGraphQLErrors(hivesResult);
+
       // Track whether the topology data is partial (errors alongside data).
       // A device query that errored counts too: caching a tree whose floors
       // carry empty sensor arrays would make every later cache hit report
@@ -199,11 +210,30 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
 
       sites = result.data.sites.data;
 
+      // Same shape contract as butlr_list_topology, which reads the cache
+      // entry this tool writes: only an explicit array survives. `|| []`
+      // here would launder a serialisation regression into a device-empty
+      // tree, cached where that tool's own contract check never runs.
+      const rawSensors = sensorsResult.data?.sensors?.data;
+      if (!Array.isArray(rawSensors)) {
+        throw new Error(
+          "Unexpected response shape from sensors query (expected array, got " +
+            `${rawSensors === null ? "null" : typeof rawSensors}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
+      }
+      const rawHives = hivesResult.data?.hives?.data;
+      if (!Array.isArray(rawHives)) {
+        throw new Error(
+          "Unexpected response shape from hives query (expected array, got " +
+            `${rawHives === null ? "null" : typeof rawHives}). Please retry; if persistent, the upstream API contract may have changed.`
+        );
+      }
+
       // Test/mirror devices are excluded from the corpus, matching
       // butlr_list_topology. A search hit on a mirror sensor would hand the
       // caller an ID that every data tool then refuses.
-      const allSensors = (sensorsResult.data?.sensors?.data || []).filter(isProductionSensor);
-      const allHives = (hivesResult.data?.hives?.data || []).filter(isProductionHive);
+      const allSensors = rawSensors.filter(isProductionSensor);
+      const allHives = rawHives.filter(isProductionHive);
       sites = mergeSensorsAndHivesIntoTopology(sites, allSensors, allHives);
 
       debug(
@@ -261,6 +291,7 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
     type: match.asset.type,
     path: buildAssetPath(match.asset),
     match_score: match.score,
+    ...(match.asset.type === "sensor" && match.asset.mode ? { mode: match.asset.mode } : {}),
     site_id: match.asset.site_id as string | undefined,
     building_id: match.asset.building_id as string | undefined,
     floor_id: match.asset.floor_id as string | undefined,

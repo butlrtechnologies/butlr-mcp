@@ -410,9 +410,10 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
       // When asset_ids was also supplied, opportunistically validate it
       // against a warm topology cache so the user sees both diagnostics in
       // one round-trip. The lookup reads only from the merged-devices cache
-      // (the key `butlr_list_topology` writes) so it is authoritative for
-      // device ids; `butlr_search_assets` writes a separate device-incomplete
-      // shape under a different key. Cache miss → emit `asset_ids_unverified`
+      // key; both writers of that key (`butlr_list_topology` and
+      // `butlr_search_assets`) merge the same production-filtered devices
+      // before caching, so a hit is authoritative for device ids regardless
+      // of which tool primed it. Cache miss → emit `asset_ids_unverified`
       // so the caller knows the asset typo (if any) wasn't checked. Paying
       // for a full topology fetch here would dwarf the actual short-circuit.
       //
@@ -497,8 +498,8 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
   //
   // `devicesMerged: true` because this read path requires every floor to
   // carry its `sensors`/`hives` arrays (post-mergeSensorsAndHivesIntoTopology).
-  // `butlr_search_assets` writes a separate device-incomplete shape under a
-  // distinct key — the two consumers can never collide.
+  // `butlr_search_assets` writes the same merged shape under the same key,
+  // so either tool can prime the cache for the other.
   const cacheKey = generateTopologyCacheKey(
     process.env.BUTLR_ORG_ID || "default",
     true, // include devices

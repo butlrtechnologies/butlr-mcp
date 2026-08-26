@@ -207,6 +207,25 @@ export const GET_SENSORS_BY_IDS = gql`
   }
 `;
 
+export const GET_SENSORS_BY_ROOM_IDS = gql`
+  query GetSensorsByRoomIds($roomIds: [String!]) {
+    sensors(room_ids: $roomIds) {
+      data {
+        id
+        name
+        mac_address
+        mode
+        floor_id
+        room_id
+        hive_serial
+        is_entrance
+        is_online
+        installation_status
+      }
+    }
+  }
+`;
+
 /**
  * Get all hives for the organization
  * Uses snake_case fields (floor_id, room_id) for consistency

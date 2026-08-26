@@ -73,11 +73,18 @@ const MOCK_HIVES = [
   },
 ];
 
+// The topology is cloned per call: mergeSensorsAndHivesIntoTopology assigns
+// floor.sensors/floor.hives onto the tree it is given, so a shared
+// module-scoped fixture would leak one test's merge into the next.
 const mockGraphQL = () => {
   vi.mocked(apolloClient.query).mockImplementation((options: any) => {
     const queryString = options.query.loc?.source?.body || "";
     if (queryString.includes("GetFullTopology")) {
-      return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
+      return Promise.resolve({
+        data: structuredClone(MOCK_TOPOLOGY),
+        loading: false,
+        networkStatus: 7,
+      } as any);
     }
     if (queryString.includes("GetAllSensors")) {
       return Promise.resolve({
@@ -169,7 +176,11 @@ describe("butlr_search_assets - device coverage", () => {
     vi.mocked(apolloClient.query).mockImplementation((options: any) => {
       const queryString = options.query.loc?.source?.body || "";
       if (queryString.includes("GetFullTopology")) {
-        return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
+        return Promise.resolve({
+          data: structuredClone(MOCK_TOPOLOGY),
+          loading: false,
+          networkStatus: 7,
+        } as any);
       }
       if (queryString.includes("GetAllSensors")) {
         return Promise.resolve({
@@ -186,9 +197,54 @@ describe("butlr_search_assets - device coverage", () => {
       } as any);
     });
 
-    await executeSearchAssets({ query: "lobby", max_results: 5 });
+    // A failed device fetch surfaces as an error rather than as
+    // `total_matches: 0` — the silent-failure mode the repo guidelines warn
+    // against — and nothing gets cached.
+    await expect(executeSearchAssets({ query: "lobby", max_results: 5 })).rejects.toThrow(
+      "sensors unavailable"
+    );
 
     // A device-empty tree must not be served to later callers as the answer.
+    mockGraphQL();
+    const second = await executeSearchAssets({
+      query: "north elevator door",
+      asset_types: ["sensor"],
+      max_results: 5,
+    });
+    expect(second.matches.map((m) => m.id)).toContain("sensor_elevator");
+  });
+
+  it("rejects a device payload whose data is not an array instead of caching it", async () => {
+    vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+      const queryString = options.query.loc?.source?.body || "";
+      if (queryString.includes("GetFullTopology")) {
+        return Promise.resolve({
+          data: structuredClone(MOCK_TOPOLOGY),
+          loading: false,
+          networkStatus: 7,
+        } as any);
+      }
+      if (queryString.includes("GetAllSensors")) {
+        // No GraphQL error alongside it: exactly the shape that previously
+        // laundered into a device-empty tree under the shared cache key.
+        return Promise.resolve({
+          data: { sensors: { data: null } },
+          loading: false,
+          networkStatus: 7,
+        } as any);
+      }
+      return Promise.resolve({
+        data: { hives: { data: MOCK_HIVES } },
+        loading: false,
+        networkStatus: 7,
+      } as any);
+    });
+
+    await expect(executeSearchAssets({ query: "lobby", max_results: 5 })).rejects.toThrow(
+      "Unexpected response shape from sensors query"
+    );
+
+    // The shared merged-devices cache entry must not have been primed.
     mockGraphQL();
     const second = await executeSearchAssets({
       query: "north elevator door",

@@ -26,12 +26,12 @@ export const topologyCache = new LRUCache<string, CacheEntry>({
 /**
  * Generate cache key for topology queries.
  *
- * `devicesMerged` is part of the key because two consumers prime this cache
- * with different shapes: `butlr_list_topology` runs sensors/hives through
- * `mergeSensorsAndHivesIntoTopology` (so every floor carries `sensors` and
- * `hives` arrays); `butlr_search_assets` writes the raw `sites` tree
- * unmodified. A device-aware reader cannot trust an unmerged entry, so the
- * two shapes must live under separate keys.
+ * `devicesMerged` distinguishes entries whose floors carry merged
+ * `sensors`/`hives` arrays (post-mergeSensorsAndHivesIntoTopology) from raw
+ * `sites` trees. `butlr_list_topology` and `butlr_search_assets` both write
+ * the merged shape under `devicesMerged: true`, so either can prime the
+ * cache for the other; a device-aware reader must never take an unmerged
+ * entry, which is why the flag stays in the key.
  */
 export function generateTopologyCacheKey(
   orgId: string,
