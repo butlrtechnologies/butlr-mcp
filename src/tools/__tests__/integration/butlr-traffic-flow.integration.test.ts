@@ -874,16 +874,16 @@ describe("butlr_traffic_flow - Integration", () => {
       expect(result.traffic.total_entries).toBe(4);
     });
 
-    it("warns instead of reporting a bare zero for an UNINSTALLED sensor", async () => {
+    it("warns instead of reporting a bare zero for an offline sensor", async () => {
       mockGraphQLTopologyAndSensors([
         {
-          id: "sensor_uninstalled",
+          id: "sensor_offline",
           name: "Dock Door",
           mac_address: "aa:bb:cc:dd:ee:07",
           mode: "traffic",
           room_id: "room_test",
           floor_id: "floor_test",
-          installation_status: "UNINSTALLED",
+          is_online: false,
         },
       ]);
 
@@ -892,12 +892,50 @@ describe("butlr_traffic_flow - Integration", () => {
       } as any);
 
       const result = await executeTrafficFlow({
-        space_id_or_name: "sensor_uninstalled",
+        space_id_or_name: "sensor_offline",
         time_window: "1h",
       });
 
       expect(result.traffic.total_traffic).toBe(0);
-      expect(result.warning).toContain("UNINSTALLED");
+      expect(result.warning).toContain("offline");
+    });
+
+    it("does not warn for an online sensor whose installation_status is UNINSTALLED", async () => {
+      // installation_status is a provisioning-workflow checkbox that defaults
+      // to UNINSTALLED at sensor creation and is routinely never flipped —
+      // fleets stream for years carrying it. Warning on it flagged 4 of 5
+      // online sensors on a customer floor.
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_never_flipped",
+          name: "N. Elevator",
+          mac_address: "aa:bb:cc:dd:ee:08",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+          is_online: true,
+          installation_status: "UNINSTALLED",
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [
+          {
+            time: "2026-08-28T17:29:00Z",
+            sensor_id: "sensor_never_flipped",
+            field: "in",
+            value: 2,
+          },
+        ],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_never_flipped",
+        time_window: "1h",
+      });
+
+      expect(result.traffic.total_entries).toBe(2);
+      expect(result.warning).toBeUndefined();
     });
 
     it("does not name a dangling room when rejecting a presence sensor", async () => {

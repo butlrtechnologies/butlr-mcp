@@ -266,11 +266,17 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
       );
     }
 
-    // An uninstalled sensor reports nothing, which otherwise reads as a
+    // An offline sensor reports nothing, which otherwise reads as a
     // confident zero. That is likelier here than on the room path: the caller
     // picked one specific device rather than a room aggregating several.
-    if (sensor.installation_status === "UNINSTALLED") {
-      installationWarning = `Sensor "${sensor.name}" is marked UNINSTALLED in the platform. An uninstalled sensor reports no traffic, so a zero count is expected; any rows returned predate its removal. Check butlr_hardware_snapshot for its current status.`;
+    // `is_online` is the signal — NOT `installation_status`: that field is a
+    // provisioning-workflow checkbox set to UNINSTALLED at sensor creation and
+    // never consulted by the data pipeline; fleets routinely stream for years
+    // without it ever being flipped (customer-reported: 4 of 5 online Chicago
+    // sensors carried it; our own org has 53 online UNINSTALLED sensors and
+    // zero INSTALLED ones).
+    if (sensor.is_online === false) {
+      installationWarning = `Sensor "${sensor.name}" is currently offline. An offline sensor reports no traffic, so recent counts may read as zero; rows returned predate it going offline. Check butlr_hardware_snapshot for its health.`;
     }
 
     trafficSensors = [sensor];

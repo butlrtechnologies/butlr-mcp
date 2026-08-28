@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-28
+
+### Fixed
+- `butlr_traffic_flow`'s sensor-path warning now fires on `is_online: false` instead of `installation_status: "UNINSTALLED"`. The status field is a provisioning-workflow checkbox — the API sets it to `UNINSTALLED` at sensor creation and nothing in the data pipeline ever reads it — so fleets routinely stream for years carrying it (customer report: 4 of 5 online sensors on one floor flagged; a survey of a live org found 53 online `UNINSTALLED` sensors and zero `INSTALLED` ones). Online sensors with stale status no longer warn; genuinely offline sensors now do.
+
 ## [0.6.0] - 2026-08-25
 
 ### Added
