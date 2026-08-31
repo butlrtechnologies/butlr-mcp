@@ -657,6 +657,7 @@ describe("butlr_traffic_flow - Integration", () => {
           name: "Old Door",
           mac_address: "aa:bb:cc:dd:ee:02",
           mode: "traffic",
+          is_online: true,
           room_id: "room_deleted_long_ago",
           floor_id: "floor_test",
         },
@@ -803,6 +804,7 @@ describe("butlr_traffic_flow - Integration", () => {
           name: "Door A",
           mac_address: "aa:bb:cc:dd:ee:05",
           mode: "traffic",
+          is_online: true,
           room_id: "room_test",
           floor_id: "",
         },
@@ -872,6 +874,98 @@ describe("butlr_traffic_flow - Integration", () => {
 
       expect(result.space.name).toBe("New Door");
       expect(result.traffic.total_entries).toBe(4);
+    });
+
+    it("does not warn when an offline sensor's window returned real counts", async () => {
+      // The warning must only qualify a zero the outage can explain — a
+      // sensor that dropped minutes ago can still have thousands of real
+      // movements in the window.
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_just_dropped",
+          name: "Busy Door",
+          mac_address: "aa:bb:cc:dd:ee:20",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+          is_online: false,
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [
+          {
+            time: "2026-08-25T18:29:00Z",
+            sensor_id: "sensor_just_dropped",
+            field: "in",
+            value: 3842,
+          },
+        ],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_just_dropped",
+        time_window: "1h",
+      });
+
+      expect(result.traffic.total_entries).toBe(3842);
+      expect(result.warning).toBeUndefined();
+    });
+
+    it("does not warn on a closed historical window that predates the outage", async () => {
+      // Heartbeat (epoch seconds) after the window's stop: the sensor was
+      // alive through the whole queried range, so its zero is real data.
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_died_later",
+          name: "Old Door",
+          mac_address: "aa:bb:cc:dd:ee:21",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+          is_online: false,
+          last_heartbeat: Math.floor(new Date("2026-08-20T00:00:00Z").getTime() / 1000),
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_died_later",
+        time_window: "custom",
+        custom_start: "2026-07-01T00:00:00Z",
+        custom_stop: "2026-07-31T00:00:00Z",
+      });
+
+      expect(result.traffic.total_traffic).toBe(0);
+      expect(result.warning).toBeUndefined();
+    });
+
+    it("treats an absent is_online as offline, matching butlr_hardware_snapshot", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_no_liveness",
+          name: "Mystery Door",
+          mac_address: "aa:bb:cc:dd:ee:22",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+          // is_online deliberately absent
+        },
+      ]);
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "sensor_no_liveness",
+        time_window: "1h",
+      });
+
+      expect(result.warning).toContain("offline");
     });
 
     it("warns instead of reporting a bare zero for an offline sensor", async () => {
@@ -1166,6 +1260,73 @@ describe("butlr_traffic_flow - Integration", () => {
 
       expect(result.traffic.sensor_count).toBe(1);
       expect(result.traffic.total_entries).toBe(4);
+    });
+
+    it("warns when every traffic sensor in the room is offline and the count is zero", async () => {
+      // A hive outage takes a room's sensors down together — the most
+      // confident false zero of all. The room path gets the same
+      // outage-explains-the-zero gate as the sensor path.
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetRoomSensors")) {
+          return Promise.resolve({
+            data: {
+              room: {
+                id: "room_lobby",
+                name: "Main Lobby",
+                floorID: "floor_test",
+                sensors: [
+                  { id: "sensor_down_1", mode: "traffic" },
+                  { id: "sensor_down_2", mode: "traffic" },
+                ],
+                floor: {
+                  id: "floor_test",
+                  name: "Test Floor",
+                  building: { id: "building_test", name: "Test Building" },
+                },
+              },
+            },
+            loading: false,
+            networkStatus: 7,
+          } as any);
+        }
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: MOCK_TOPOLOGY, loading: false, networkStatus: 7 } as any);
+        }
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve(
+            sensorsByRoomIds(options, [
+              {
+                id: "sensor_down_1",
+                mode: "traffic",
+                room_id: "room_lobby",
+                mac_address: "aa:bb:cc:dd:ee:30",
+                is_online: false,
+              },
+              {
+                id: "sensor_down_2",
+                mode: "traffic",
+                room_id: "room_lobby",
+                mac_address: "aa:bb:cc:dd:ee:31",
+                is_online: false,
+              },
+            ])
+          );
+        }
+        return Promise.reject(new Error("Unknown query"));
+      });
+
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      } as any);
+
+      const result = await executeTrafficFlow({
+        space_id_or_name: "room_lobby",
+        time_window: "1h",
+      });
+
+      expect(result.traffic.total_traffic).toBe(0);
+      expect(result.warning).toContain("offline");
     });
 
     // The mirror rejection on the sensor path has to hold through the room

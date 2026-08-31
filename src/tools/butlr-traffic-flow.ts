@@ -223,7 +223,6 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   let tzMetadata: TimezoneMetadata;
   let timezoneFallback = false;
   let trafficSensors: Sensor[] = [];
-  let installationWarning: string | undefined;
 
   if (isSensorQuery) {
     // One sensor by ID, not the org's whole inventory: the `sensors` root
@@ -264,19 +263,6 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
           sensor.mode ? `a ${sensor.mode}-mode sensor` : "not a traffic-mode sensor"
         }, so it has no entry/exit counts. ${suggestion}`
       );
-    }
-
-    // An offline sensor reports nothing, which otherwise reads as a
-    // confident zero. That is likelier here than on the room path: the caller
-    // picked one specific device rather than a room aggregating several.
-    // `is_online` is the signal — NOT `installation_status`: that field is a
-    // provisioning-workflow checkbox set to UNINSTALLED at sensor creation and
-    // never consulted by the data pipeline; fleets routinely stream for years
-    // without it ever being flipped (customer-reported: 4 of 5 online Chicago
-    // sensors carried it; our own org has 53 online UNINSTALLED sensors and
-    // zero INSTALLED ones).
-    if (sensor.is_online === false) {
-      installationWarning = `Sensor "${sensor.name}" is currently offline. An offline sensor reports no traffic, so recent counts may read as zero; rows returned predate it going offline. Check butlr_hardware_snapshot for its health.`;
     }
 
     trafficSensors = [sensor];
@@ -601,8 +587,31 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   // Compose the response warning. Two independent conditions can raise one and
   // both matter, so they are joined rather than one silently shadowing the other.
   const warnings: string[] = [];
-  if (installationWarning) {
-    warnings.push(installationWarning);
+  // Offline warning — computed here, after the totals, because it must only
+  // qualify a zero the outage can actually explain. `is_online` is the
+  // liveness signal (NOT `installation_status`, a provisioning-workflow
+  // checkbox that nothing in the data pipeline reads and fleets routinely
+  // never flip). Truthiness matches butlr_hardware_snapshot: null/absent
+  // counts as offline. A last heartbeat at/after the window's stop means the
+  // outage began after the queried range, so the zero is real data — no
+  // warning. Sensors that dropped and reconnected inside the window can't be
+  // detected from a point-in-time heartbeat; that gap is documented, not
+  // guessed at.
+  const allSensorsOffline = trafficSensors.length > 0 && trafficSensors.every((s) => !s.is_online);
+  if (allSensorsOffline && totalTraffic === 0) {
+    const stopMs = new Date(stop).getTime();
+    const latestHeartbeatMs =
+      Math.max(0, ...trafficSensors.map((s) => s.last_heartbeat || 0)) * 1000;
+    const outageBeganAfterWindow = latestHeartbeatMs >= stopMs;
+    if (!outageBeganAfterWindow) {
+      const lastSeen =
+        latestHeartbeatMs > 0 ? ` (last seen ${new Date(latestHeartbeatMs).toISOString()})` : "";
+      warnings.push(
+        isSensorQuery
+          ? `Sensor "${displayName}" is currently offline${lastSeen}. The zero count for this window may reflect the outage rather than actual traffic. Check butlr_get_asset_details for its current status.`
+          : `All ${trafficSensors.length} traffic sensor(s) in this room are currently offline${lastSeen}. The zero count for this window may reflect the outage rather than actual traffic. Check butlr_get_asset_details for their status.`
+      );
+    }
   }
   if (usedUtcFallback) {
     // Window-aware copy. The midnight sentence is only true on the `today`

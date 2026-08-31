@@ -9,7 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [0.6.1] - 2026-08-28
 
 ### Fixed
-- `butlr_traffic_flow`'s sensor-path warning now fires on `is_online: false` instead of `installation_status: "UNINSTALLED"`. The status field is a provisioning-workflow checkbox — the API sets it to `UNINSTALLED` at sensor creation and nothing in the data pipeline ever reads it — so fleets routinely stream for years carrying it (customer report: 4 of 5 online sensors on one floor flagged; a survey of a live org found 53 online `UNINSTALLED` sensors and zero `INSTALLED` ones). Online sensors with stale status no longer warn; genuinely offline sensors now do.
+- `butlr_traffic_flow` no longer warns on `installation_status: "UNINSTALLED"`. That field is a provisioning-workflow checkbox — the API sets it to `UNINSTALLED` at sensor creation and nothing in the data pipeline ever reads it — so fleets routinely stream with it never flipped, and the warning fired on healthy, online sensors.
+- The replacement offline warning is gated on what it can actually explain: it fires only when every queried traffic sensor is offline (`is_online` by truthiness, matching `butlr_hardware_snapshot` — null/absent counts as offline), the window's total is zero, and the sensor's last heartbeat does not postdate the window (a heartbeat at/after `stop` means the outage began after the queried range, so a zero is real data). The copy names the last-seen time when known and points at `butlr_get_asset_details`, which can see room-less/MAC-less sensors that `butlr_hardware_snapshot` structurally cannot. The room path gets the same warning when all of a room's traffic sensors are offline — a hive outage takes them down together, which is the most confident false zero of all.
+- Known limit, documented rather than guessed at: a sensor that was down during the window but reconnected before the query reports online, and a point-in-time heartbeat cannot reveal the historical gap — such windows still return an unqualified count.
+- `GET_SENSORS_BY_IDS`/`GET_SENSORS_BY_ROOM_IDS` select `last_heartbeat` (used by the gate above) and drop `installation_status`, which nothing read anymore. `Sensor.is_online` is defensively optional in the client types, same rationale as `mode`.
 
 ## [0.6.0] - 2026-08-25
 
