@@ -182,7 +182,8 @@ export const GET_ALL_SENSORS = gql`
  * The `sensors` root field accepts an `ids` argument, so a caller that needs
  * one known sensor does not have to download the org's whole inventory and
  * `.find()` in it. Selects only what an ID-addressed lookup needs: identity,
- * mode, parent linkage, and installation status. Use GET_ALL_SENSORS when the
+ * mode, parent linkage, and liveness (is_online + last_heartbeat, which the
+ * offline-warning gate compares against the query window). Use GET_ALL_SENSORS when the
  * caller genuinely needs the full list (e.g. aggregating a room's sensors).
  *
  * Uses snake_case fields (floor_id, room_id) for the same reason as
@@ -201,7 +202,7 @@ export const GET_SENSORS_BY_IDS = gql`
         hive_serial
         is_entrance
         is_online
-        installation_status
+        last_heartbeat
       }
     }
   }
@@ -220,7 +221,7 @@ export const GET_SENSORS_BY_ROOM_IDS = gql`
         hive_serial
         is_entrance
         is_online
-        installation_status
+        last_heartbeat
       }
     }
   }

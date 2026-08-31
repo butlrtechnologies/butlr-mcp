@@ -157,7 +157,11 @@ export interface Sensor {
   hiveID?: string; // camelCase
   hive_id?: string; // snake_case
   hive_serial: string;
-  is_online: boolean;
+  // Defensively optional, same rationale as `mode` above: nothing upstream
+  // guarantees the resolver never returns null for a device that has never
+  // reported, and a non-optional boolean would let `=== false` checks
+  // silently skip null/absent rows the offline handling should catch.
+  is_online?: boolean;
   is_streaming?: boolean;
   height: number;
   center: number[];
