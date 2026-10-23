@@ -11,8 +11,8 @@ import {
   getTrafficCoverageNote,
   buildRecommendation,
   buildSpaceLifecycle,
-  isSensorlessSpace,
-  probeSensorlessHistory,
+  needsHistoryProbe,
+  probeHistory,
   sensorlessCoverageNote,
   sensorlessRecommendationReason,
   type HistoryProbe,
@@ -31,8 +31,9 @@ const GET_OCCUPANCY_TIMESERIES_DESCRIPTION =
   "Get occupancy timeseries data for floors, rooms, or zones. Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete occupancy picture without guessing measurement types.\n\n" +
-  "Sensorless, archived and replaced spaces: a room or zone with no sensors (archived or not; see `archived_at`) still returns the history it recorded; " +
-  "`history_end` is the last full day of that history (the day before its final, partial recorded day), which can be well before the archive date. " +
+  "Archived, sensorless and replaced spaces: an archived room or zone (`archived_at`), one whose sensors were removed, or a room with no sensors still returns the history it recorded. " +
+  "For those, `history_end` is the last full day of recorded history: the day before its sensors were removed, else the day before it was archived, else derived from the data. " +
+  "A zone that is not archived is treated like any other zone, even with no attributed sensors (zone occupancy can come from overlapping floor sensors), so an empty range just means no data. " +
   "A space that replaced another carries `replaces`, and `history_note` names the predecessor's ID: series are not merged, " +
   "so query the predecessor separately for history before the switch-over.\n\n" +
   "When NOT to Use:\n" +
@@ -103,21 +104,21 @@ async function buildPresenceData(
   // sensors today can still hold history from sensors that were moved
   // elsewhere (e.g. a room superseded by a re-mapped "_V2" copy).
   const sensorCount = asset.presenceSensors.length;
-  // A sensorless space (a room with no sensors of any mode, or an ARCHIVED
-  // zone with none; see isSensorlessSpace) gets a history-end probe in
-  // parallel with the range query, and its coverage note says where its
-  // recorded history ends. A non-archived zone is never sensorless, whatever
-  // its attributed-sensor count or however empty its range: zone occupancy
-  // can come from overlapping floor sensors, so an empty range on a live
-  // zone just means no data in range.
-  const sensorless = isSensorlessSpace(asset);
+  // A retired space (archived, or sensors removed) or a sensorless room gets
+  // a history-end probe in parallel with the range query, and its coverage
+  // note says where its recorded history ends (see needsHistoryProbe). A
+  // zone that is not retired is never probed, whatever its attributed-sensor
+  // count or however empty its range: zone occupancy can come from
+  // overlapping floor sensors, so an empty range on it just means no data.
+  const probed = needsHistoryProbe(asset, "timeseries");
   // A 0-presence floor, a room whose only sensors are traffic-mode, or a
   // room ID that did not resolve keeps the 0.6.2 speculative note.
-  const speculative = !sensorless && asset.assetType !== "zone" && sensorCount === 0;
-  // These lookups may well find nothing, and their failure must not take
-  // down the rest of the batch. Non-archived zones still fail the call on a
-  // 4xx as before.
-  const bestEffort = speculative || sensorless;
+  const speculative = !probed && asset.assetType !== "zone" && sensorCount === 0;
+  // These lookups may well find nothing, and a transient failure (429, 5xx,
+  // timeout) must not take down the rest of the batch. Any other 4xx is a
+  // bad request and still fails the call (VALIDATION_FAILED), as do auth
+  // errors and every error on a space with sensors.
+  const bestEffort = speculative || probed;
   const presenceData: TimeseriesMeasurementData = {
     available: !bestEffort,
     sensor_count: sensorCount,
@@ -125,7 +126,7 @@ async function buildPresenceData(
     timeseries: [],
   };
 
-  const early = sensorless ? probeSensorlessHistory(asset, assetId) : undefined;
+  const early = probed ? probeHistory(asset, assetId) : undefined;
   // Keep an auth rejection from going unhandled while the range query is in
   // flight; it is rethrown by the await below.
   early?.catch(() => undefined);
@@ -142,12 +143,13 @@ async function buildPresenceData(
     );
   } catch (error: unknown) {
     debug("occupancy-timeseries", "Presence query failed:", error);
-    // Auth failures are not asset-specific, so they still fail the call.
-    // Anything else on a best-effort lookup (429, 5xx, timeout) is reported
-    // on this asset only.
-    const isAuthError =
-      error instanceof ApiError && (error.statusCode === 401 || error.statusCode === 403);
-    if (error instanceof ApiError && error.statusCode >= 400 && (!bestEffort || isAuthError)) {
+    // On a best-effort lookup only a transient failure (429, 5xx, or a
+    // non-HTTP error such as a timeout) is reported on this asset alone.
+    // Auth and other 4xx errors are not asset-specific luck: they still fail
+    // the call.
+    const transient =
+      !(error instanceof ApiError) || error.statusCode === 429 || error.statusCode >= 500;
+    if (error instanceof ApiError && error.statusCode >= 400 && (!bestEffort || !transient)) {
       throw error;
     }
     presenceData.warning =

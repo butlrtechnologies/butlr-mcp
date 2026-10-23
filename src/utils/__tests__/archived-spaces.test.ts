@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   archivedDisplayName,
   describeSpaceRef,
-  findReplacements,
+  indexReplacements,
   findSpace,
   formatArchiveDate,
   isArchived,
@@ -55,11 +55,11 @@ describe("archived-spaces", () => {
   it("finds spaces and their replacements by kind", () => {
     expect(findSpace(floors, "room", "room_old")?.name).toBe("Pilot - Drop In");
     expect(findSpace(floors, "zone", "room_old")).toBeUndefined();
-    expect(findReplacements(floors, "room", "room_old").map((r) => r.id)).toEqual([
-      "room_v2a",
-      "room_v2b",
-    ]);
-    expect(findReplacements(floors, "zone", "room_old")).toEqual([]);
+    const index = indexReplacements(floors);
+    expect((index.get("room_old") ?? []).map((r) => r.id)).toEqual(["room_v2a", "room_v2b"]);
+    expect(index.get("zone_old")).toBeUndefined();
+    // Memoized per floors array.
+    expect(indexReplacements(floors)).toBe(index);
   });
 
   it("projects refs, keeping a bare ID when the space is not in the topology", () => {

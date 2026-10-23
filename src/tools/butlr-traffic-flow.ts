@@ -378,8 +378,11 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   // Resolve relative forms ("-20m", "now") to absolute timestamps: the
   // ETL-backed reporting API requires RFC3339, and the response period
   // metadata should carry real timestamps rather than relative strings.
-  start = resolveTimeToIso(start);
-  stop = resolveTimeToIso(stop);
+  // One clock read for both ends, so "-2h".."now" is exactly two hours and
+  // picks the 1m window, not 1h because of a tick between two reads.
+  const resolvedAt = new Date();
+  start = resolveTimeToIso(start, resolvedAt);
+  stop = resolveTimeToIso(stop, resolvedAt);
 
   // Pick window granularity from the range length. The ETL backend only
   // returns fully-closed, end-labeled buckets that fit inside [start, stop]:

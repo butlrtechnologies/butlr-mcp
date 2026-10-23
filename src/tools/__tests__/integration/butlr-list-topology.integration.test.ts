@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeListTopology } from "../../butlr-list-topology.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
-import { CombinedGraphQLErrors } from "@apollo/client/errors";
 import { GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY } from "../../../clients/queries/topology.js";
-import { resetArchiveFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
+import { primeSpaceFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
 import {
   clearTopologyCache,
   generateTopologyCacheKey,
+  getCachedTopology,
   setCachedTopology,
 } from "../../../cache/topology-cache.js";
 
@@ -1993,7 +1993,7 @@ describe("butlr_list_topology - Integration", () => {
 
   describe("archived spaces", () => {
     beforeEach(() => {
-      resetArchiveFieldSupport();
+      primeSpaceFieldSupport();
     });
 
     function archivedFixture() {
@@ -2022,23 +2022,33 @@ describe("butlr_list_topology - Integration", () => {
       );
     });
 
-    it("falls back to the legacy query when the API lacks the archive fields", async () => {
-      const legacyTopo = buildTopologyFixture();
-      vi.mocked(apolloClient.query).mockResolvedValueOnce({
-        data: undefined,
-        error: new CombinedGraphQLErrors({
-          errors: [{ message: 'Cannot query field "replacesID" on type "Room".' }],
-        }),
-      } as any);
-      setupFullTopologyMocks(legacyTopo);
+    it("strips the archive fields when the API lacks them, and does not cache that tree", async () => {
+      primeSpaceFieldSupport([]);
+      setupFullTopologyMocks(buildTopologyFixture());
 
       const result = await executeListTopology({ starting_depth: 3, traversal_depth: 0 });
 
       const sent = vi.mocked(apolloClient.query).mock.calls.map((c) => c[0].query);
-      expect(sent.slice(0, 2)).toEqual([GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY]);
+      expect(sent[0]).toBe(GET_FULL_TOPOLOGY_LEGACY);
       expect(result.tree).toEqual(expect.arrayContaining([["room_002", "Conf B"]]));
-      // The fallback is a complete answer, not a partial one.
+      // A complete answer, not a partial one...
       expect(result.warnings ?? []).not.toContainEqual({ kind: "partial_topology" });
+      // ...but not cached: the cache renews on every hit and would keep
+      // hiding archive state after the API deploys.
+      expect(
+        getCachedTopology(generateTopologyCacheKey("org_test123", true, true, true))
+      ).toBeUndefined();
+
+      // Once the API has the fields, the next call fetches (and caches) again.
+      primeSpaceFieldSupport();
+      setupFullTopologyMocks(archivedFixture());
+      const after = await executeListTopology({ starting_depth: 3, traversal_depth: 0 });
+      expect(after.tree).toEqual(
+        expect.arrayContaining([["room_002", "Conf B (archived 2026-10-20)"]])
+      );
+      expect(
+        getCachedTopology(generateTopologyCacheKey("org_test123", true, true, true))
+      ).toBeDefined();
     });
   });
 });

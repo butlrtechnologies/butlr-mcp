@@ -1,141 +1,164 @@
 /**
- * Send a query that selects the archive fields (archive-fields.ts), falling
- * back to the same query with those fields stripped when the API does not
- * have them yet.
+ * Send a query that selects the optional Room/Zone fields (archive-fields.ts)
+ * with whichever of them the API's schema lacks stripped out.
  *
- * This MCP can ship before the API that adds `archivedAt`/`replacesID` on
- * Room and Zone, and a GraphQL server rejects the whole query when it
- * selects a field the schema lacks. So the query is tried as written first;
- * if the API rejects it for one of these fields, the same query with those
- * selections stripped (`stripArchiveFields`) is sent once and the miss is
- * remembered, so later calls go straight to the stripped query instead of
- * paying a failed round trip each time. The memory expires
- * after an hour, so a long-running server picks the fields up once the API
- * deploys without a restart.
+ * This MCP can ship before the API that adds `archivedAt`, `replacesID` and
+ * `sensorsRemovedAt`, and a GraphQL server rejects the whole query when it
+ * selects a field the schema lacks. Instead of sending the query and reading
+ * the error text, a schema check (`__type(name: "Room"/"Zone") { fields }`)
+ * decides up front which fields to keep. Its answer is cached and re-checked
+ * hourly, so a long-running server picks new fields up after the API deploys
+ * without a restart. A field is kept only when both Room and Zone have it.
  *
- * Any other error is returned (or thrown) unchanged, exactly as the caller
- * would have seen it from `apolloClient.query`.
+ * If the schema check itself fails, every optional field is stripped (the
+ * query then works against any API version) and the check is retried after
+ * a few minutes.
+ *
+ * The result says which fields were left out (`omittedFields`), so callers
+ * that cache it can skip caching an incomplete answer.
  */
 
-import type { ApolloClient } from "@apollo/client";
+import { gql, type ApolloClient } from "@apollo/client";
 import { Kind, visit, type DocumentNode } from "graphql";
-import { CombinedGraphQLErrors, ServerError } from "@apollo/client/errors";
 import { apolloClient } from "./graphql-client.js";
 import { SPACE_ARCHIVE_FIELD_NAMES } from "./queries/archive-fields.js";
+import {
+  SPACE_FIELD_FAILURE_RECHECK_MS,
+  SPACE_FIELD_RECHECK_MS,
+  cachedSpaceFieldSupport,
+  recordSpaceFieldSupport,
+} from "./space-field-support.js";
 import { debug } from "../utils/debug.js";
 
-/** How long to skip the extended query after the API rejected it. */
-export const ARCHIVE_FIELDS_RETRY_MS = 60 * 60 * 1000;
+export {
+  primeSpaceFieldSupport,
+  resetSpaceFieldSupport,
+  SPACE_FIELD_RECHECK_MS,
+} from "./space-field-support.js";
 
-let skipExtendedUntil = 0;
+/** Schema check: the field names of Room and Zone. */
+export const SPACE_FIELD_SCHEMA_QUERY = gql`
+  query SpaceFieldSupport {
+    room: __type(name: "Room") {
+      fields {
+        name
+      }
+    }
+    zone: __type(name: "Zone") {
+      fields {
+        name
+      }
+    }
+  }
+`;
 
-/** True unless the API recently rejected the archive fields. */
-export function archiveFieldsMaybeSupported(now: number = Date.now()): boolean {
-  return now >= skipExtendedUntil;
+interface SchemaCheckData {
+  room?: { fields?: Array<{ name: string }> | null } | null;
+  zone?: { fields?: Array<{ name: string }> | null } | null;
 }
 
-/** Forget a remembered rejection. For tests. */
-export function resetArchiveFieldSupport(): void {
-  skipExtendedUntil = 0;
-}
-
-const MISSING_FIELD_PATTERN = new RegExp(
-  `Cannot query field \\\\?"(${SPACE_ARCHIVE_FIELD_NAMES.join("|")})\\\\?"`
-);
+let inFlight: Promise<ReadonlySet<string>> | null = null;
 
 /**
- * Whether an error is the API's schema validation rejecting one of the
- * archive fields (`Cannot query field "archivedAt" on type "Room".`).
- *
- * The message can arrive three ways: as a GraphQL error (the API answers
- * `application/graphql-response+json`, which Apollo parses even on a 4xx),
- * inside a ServerError's raw body (a plain `application/json` 422, which
- * Apollo does not parse), or flattened into an Error message.
+ * The optional fields the API supports, from cache or a fresh schema check.
+ * Concurrent callers share one in-flight check.
  */
-export function isMissingArchiveFieldsError(error: unknown): boolean {
-  if (!error) return false;
-
-  const texts: string[] = [];
-  if (CombinedGraphQLErrors.is(error)) {
-    texts.push(...error.errors.map((e) => e.message));
-  }
-  if (ServerError.is(error)) {
-    texts.push(error.bodyText);
-  }
-  if (error instanceof Error) {
-    texts.push(error.message);
-  }
-  const raw = (error as { graphQLErrors?: Array<{ message?: string }> }).graphQLErrors;
-  if (Array.isArray(raw)) {
-    texts.push(...raw.map((e) => e.message ?? ""));
-  }
-
-  return texts.some((t) => MISSING_FIELD_PATTERN.test(t));
+export function checkSpaceFieldSupport(): Promise<ReadonlySet<string>> {
+  const cached = cachedSpaceFieldSupport();
+  if (cached) return Promise.resolve(cached);
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    try {
+      const result = await apolloClient.query<SchemaCheckData>({
+        query: SPACE_FIELD_SCHEMA_QUERY,
+        fetchPolicy: "network-only",
+      });
+      const room = result.data?.room?.fields;
+      const zone = result.data?.zone?.fields;
+      if (result.error || !Array.isArray(room) || !Array.isArray(zone)) {
+        throw result.error ?? new Error("schema check returned no Room/Zone fields");
+      }
+      const roomNames = new Set(room.map((f) => f.name));
+      const zoneNames = new Set(zone.map((f) => f.name));
+      const supported = SPACE_ARCHIVE_FIELD_NAMES.filter(
+        (name) => roomNames.has(name) && zoneNames.has(name)
+      );
+      debug("archive-fallback", `API supports optional space fields: [${supported.join(", ")}]`);
+      return recordSpaceFieldSupport(supported, SPACE_FIELD_RECHECK_MS);
+    } catch (error: unknown) {
+      debug(
+        "archive-fallback",
+        "Schema check failed; stripping all optional space fields for a few minutes:",
+        error instanceof Error ? error.message : error
+      );
+      return recordSpaceFieldSupport([], SPACE_FIELD_FAILURE_RECHECK_MS);
+    } finally {
+      inFlight = null;
+    }
+  })();
+  return inFlight;
 }
 
-const ARCHIVE_FIELD_SET = new Set<string>(SPACE_ARCHIVE_FIELD_NAMES);
-const strippedCache = new WeakMap<DocumentNode, DocumentNode>();
+const strippedCache = new WeakMap<DocumentNode, Map<string, DocumentNode>>();
 
 /**
- * The same document with every `archivedAt`/`replacesID` field selection
- * removed, for an API that predates them. Memoized per document, so the
- * stripped query is the same object on every call.
+ * The same document with every selection of the named fields removed.
+ * Memoized per document and field set, so the result is the same object on
+ * every call.
  */
-export function stripArchiveFields(document: DocumentNode): DocumentNode {
-  const cached = strippedCache.get(document);
+export function stripFields(document: DocumentNode, names: readonly string[]): DocumentNode {
+  if (names.length === 0) return document;
+  const key = [...names].sort().join(",");
+  let byKey = strippedCache.get(document);
+  if (!byKey) {
+    byKey = new Map();
+    strippedCache.set(document, byKey);
+  }
+  const cached = byKey.get(key);
   if (cached) return cached;
+  const drop = new Set(names);
   const stripped = visit(document, {
     [Kind.FIELD](node) {
       // Returning null deletes the node from its selection set.
-      return ARCHIVE_FIELD_SET.has(node.name.value) ? null : undefined;
+      return drop.has(node.name.value) ? null : undefined;
     },
   });
-  strippedCache.set(document, stripped);
+  byKey.set(key, stripped);
   return stripped;
 }
 
-/**
- * Run `query`, or the same query with the archive fields stripped when the
- * API lacks them. Results from the stripped query carry no
- * `archivedAt`/`replacesID`, which every reader treats as "active, replaces
- * nothing".
- *
- * The first `apolloClient.query` call is made synchronously, before any
- * await, so callers that start several queries together keep their order.
- */
-export async function queryWithArchiveFallback<TData>(
-  query: DocumentNode,
-  variables?: Record<string, unknown>
-): Promise<ApolloClient.QueryResult<TData>> {
-  const queries = { extended: query, legacy: stripArchiveFields(query) };
-  const run = (query: DocumentNode) =>
-    apolloClient.query<TData>({
-      query,
-      ...(variables ? { variables } : {}),
-      fetchPolicy: "network-only",
-    } as ApolloClient.QueryOptions<TData>) as Promise<ApolloClient.QueryResult<TData>>;
-
-  if (archiveFieldsMaybeSupported()) {
-    let result: ApolloClient.QueryResult<TData>;
-    try {
-      result = await run(queries.extended);
-    } catch (error: unknown) {
-      if (!isMissingArchiveFieldsError(error)) throw error;
-      rememberMissingFields(error);
-      return run(queries.legacy);
-    }
-    if (!isMissingArchiveFieldsError(result.error)) return result;
-    rememberMissingFields(result.error);
-  }
-
-  return run(queries.legacy);
+/** The document with every optional space field removed. */
+export function stripArchiveFields(document: DocumentNode): DocumentNode {
+  return stripFields(document, SPACE_ARCHIVE_FIELD_NAMES);
 }
 
-function rememberMissingFields(error: unknown): void {
-  skipExtendedUntil = Date.now() + ARCHIVE_FIELDS_RETRY_MS;
-  debug(
-    "archive-fallback",
-    "API does not support archivedAt/replacesID yet; stripping them from queries for the next hour:",
-    error instanceof Error ? error.message : error
-  );
+export type SpaceFieldQueryResult<TData> = ApolloClient.QueryResult<TData> & {
+  /** Optional space fields that were stripped because the API lacks them. */
+  omittedFields: readonly string[];
+};
+
+/**
+ * Run `query` with the optional space fields the API lacks stripped out.
+ * Results carry no value for an omitted field, which every reader treats as
+ * "active, replaces nothing, removal time unknown".
+ *
+ * When the schema check is cached (the usual case) the `apolloClient.query`
+ * call is made synchronously, so callers that start several queries
+ * together keep their order.
+ */
+export function queryWithArchiveFallback<TData>(
+  query: DocumentNode,
+  variables?: Record<string, unknown>
+): Promise<SpaceFieldQueryResult<TData>> {
+  const run = async (supported: ReadonlySet<string>): Promise<SpaceFieldQueryResult<TData>> => {
+    const omittedFields = SPACE_ARCHIVE_FIELD_NAMES.filter((name) => !supported.has(name));
+    const result = (await apolloClient.query<TData>({
+      query: stripFields(query, omittedFields),
+      ...(variables ? { variables } : {}),
+      fetchPolicy: "network-only",
+    } as ApolloClient.QueryOptions<TData>)) as ApolloClient.QueryResult<TData>;
+    return Object.assign({}, result, { omittedFields });
+  };
+  const cached = cachedSpaceFieldSupport();
+  return cached ? run(cached) : checkSpaceFieldSupport().then(run);
 }

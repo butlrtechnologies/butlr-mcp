@@ -22,6 +22,11 @@ export interface ArchivableSpace {
   archivedAt?: string | null;
   /** ID of the same-kind space this one replaced (one level deep). */
   replacesID?: string | null;
+  /**
+   * RFC 3339 start of the space's current sensorless period; null while it
+   * has sensors, or when unknown (API #3038, may not be deployed yet).
+   */
+  sensorsRemovedAt?: string | null;
 }
 
 export interface Capacity {

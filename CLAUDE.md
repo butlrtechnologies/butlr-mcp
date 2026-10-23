@@ -68,6 +68,7 @@ npm run format       # Prettier
 | `BUTLR_BASE_URL` | No | API base URL (default: `https://api.butlr.io`) |
 | `BUTLR_TIMEZONE` | No | Default timezone (default: `UTC`) |
 | `MCP_CACHE_TOPO_TTL` | No | Topology cache TTL in seconds (default: 600) |
+| `MCP_CACHE_HISTORY_END_TTL` | No | History-end probe cache TTL in seconds (default: 600; `0` disables; invalid values fall back to the default with a warning) |
 | `DEBUG` | No | Set to `butlr-mcp` for verbose logging |
 
 ## Testing

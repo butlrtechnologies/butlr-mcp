@@ -186,4 +186,43 @@ describe("getLocalMidnight", () => {
       getLocalMidnight(new Date("2026-03-08T20:00:00Z"), "America/Los_Angeles").toISOString()
     ).toBe("2026-03-08T08:00:00.000Z");
   });
+
+  it("returns the first instant of the day where DST skips midnight", () => {
+    // Cairo springs forward at 00:00 on 2026-04-24: the day starts at 01:00
+    // EEST (UTC+3) = 2026-04-23T22:00Z. The old loop bounced and returned
+    // 23:00 of the day before.
+    expect(getLocalMidnight(new Date("2026-04-24T12:00:00Z"), "Africa/Cairo").toISOString()).toBe(
+      "2026-04-23T22:00:00.000Z"
+    );
+    // Beirut springs forward at 00:00 on 2026-03-29: day starts 01:00 EEST.
+    expect(getLocalMidnight(new Date("2026-03-29T12:00:00Z"), "Asia/Beirut").toISOString()).toBe(
+      "2026-03-28T22:00:00.000Z"
+    );
+    // The day after, midnight exists again.
+    expect(getLocalMidnight(new Date("2026-04-25T12:00:00Z"), "Africa/Cairo").toISOString()).toBe(
+      "2026-04-24T21:00:00.000Z"
+    );
+  });
+
+  it("is the first instant of its local day in every IANA zone on sampled days", () => {
+    const fmt = (tz: string) =>
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+    const zones = Intl.supportedValuesOf("timeZone");
+    const days = ["2026-01-01", "2026-03-29", "2026-04-24", "2026-10-31", "2026-11-01"];
+    for (const tz of zones) {
+      const f = fmt(tz);
+      for (const day of days) {
+        const at = new Date(`${day}T12:00:00Z`);
+        const result = getLocalMidnight(at, tz);
+        const want = f.format(at);
+        expect(f.format(result), `${tz} ${day}`).toBe(want);
+        expect(f.format(new Date(result.getTime() - 1000)) < want, `${tz} ${day}`).toBe(true);
+      }
+    }
+  });
 });

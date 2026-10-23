@@ -12,7 +12,12 @@ import {
 import { flattenTopology, type FlattenedAsset } from "../utils/asset-flattener.js";
 import { searchAssets, type SearchableAsset } from "../utils/fuzzy-match.js";
 import { buildAssetPath } from "../utils/path-builder.js";
-import { formatArchiveDate, indexReplacements } from "../utils/archived-spaces.js";
+import {
+  archivedDisplayName,
+  indexReplacements,
+  toSpaceRef,
+  type SpaceRef,
+} from "../utils/archived-spaces.js";
 import { resolveTimezone } from "../utils/timezone-helpers.js";
 import {
   isProductionHive,
@@ -106,7 +111,7 @@ const SEARCH_ASSETS_DESCRIPTION =
   "- Need to analyze occupancy or sensor data → use this tool first to find IDs, then use data tools\n\n" +
   'Archived spaces: archived rooms and zones are still matched by name. Their `path` ends in "(archived YYYY-MM-DD)" and they carry `archived_at` ' +
   "(no live data). The archive date is not where their history ends; butlr_get_occupancy_timeseries and butlr_get_current_occupancy return the last recorded day as `history_end`. " +
-  "`replaces_id` / `replaced_by` link a re-drawn space to the one it superseded.\n\n" +
+  "`replaces_id` and `replaced_by` (`{ id, name }` objects, `archived_at` set on an archived successor) link a re-drawn space to the one it superseded.\n\n" +
   "Search Features: Fuzzy matching (handles typos), multi-field search (name, MAC, serial), score threshold (≥70), type filtering, result limiting (default 20, max 100)\n\n" +
   "Example Workflow: butlr_search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +
   "See Also: butlr_get_asset_details, butlr_list_topology, butlr_fetch_entity_details";
@@ -134,7 +139,7 @@ export interface SearchResult {
   // Room/zone lifecycle. Omitted for an active space that replaces nothing.
   archived_at?: string;
   replaces_id?: string;
-  replaced_by?: string[];
+  replaced_by?: SpaceRef[];
 }
 
 /**
@@ -248,12 +253,20 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
         `Merged ${allSensors.length} sensors and ${allHives.length} hives into topology`
       );
 
-      // Only cache complete topology data — partial results should be re-fetched
-      if (!partialData) {
+      // Only cache complete topology data — partial results should be re-fetched.
+      // A tree fetched without some optional space fields (an API that
+      // predates them) is not cached either: the cache renews on every hit,
+      // so it would keep hiding archive state after the API deploys.
+      if (!partialData && result.omittedFields.length === 0) {
         setCachedTopology(cacheKey, { sites });
         debug("search-assets", `Cached topology with ${sites.length} sites`);
       } else {
-        debug("search-assets", "Skipping cache — topology data is partial");
+        debug(
+          "search-assets",
+          partialData
+            ? "Skipping cache — topology data is partial"
+            : `Skipping cache — API lacks ${result.omittedFields.join(", ")}`
+        );
       }
     } catch (error: unknown) {
       rethrowIfGraphQLError(error);
@@ -306,15 +319,17 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
     const path = buildAssetPath(asset);
     const successors =
       asset.type === "room" || asset.type === "zone"
-        ? (replacementIndex.get(asset.id) ?? []).map((s) => s.id)
+        ? (replacementIndex.get(asset.id) ?? []).map((s) => toSpaceRef(s.id, s))
         : [];
     return {
       id: asset.id,
       name: asset.name,
       type: asset.type,
-      path: asset.archived_at
-        ? `${path} (archived ${formatArchiveDate(asset.archived_at, resolveTimezone(asset.timezone).timezone)})`
-        : path,
+      path: archivedDisplayName(
+        path,
+        { archivedAt: asset.archived_at },
+        resolveTimezone(asset.timezone).timezone
+      ),
       match_score: match.score,
       ...(asset.type === "sensor" && asset.mode ? { mode: asset.mode } : {}),
       site_id: asset.site_id as string | undefined,

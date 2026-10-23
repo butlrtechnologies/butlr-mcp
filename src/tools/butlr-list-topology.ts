@@ -592,12 +592,20 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
       // Merge sensors and hives into topology by floor_id
       sites = mergeSensorsAndHivesIntoTopology(sites, allSensors, allHives);
 
-      // Only cache complete topology data — partial results should be re-fetched
-      if (!partialData) {
+      // Only cache complete topology data — partial results should be re-fetched.
+      // A tree fetched without some optional space fields (an API that
+      // predates them) is not cached either: the cache renews on every hit,
+      // so it would keep hiding archive state after the API deploys.
+      if (!partialData && result.omittedFields.length === 0) {
         setCachedTopology(cacheKey, { sites });
         debug("butlr-list-topology", `Cached topology with ${sites.length} sites`);
       } else {
-        debug("butlr-list-topology", "Skipping cache — topology data is partial");
+        debug(
+          "butlr-list-topology",
+          partialData
+            ? "Skipping cache — topology data is partial"
+            : `Skipping cache — API lacks ${result.omittedFields.join(", ")}`
+        );
       }
     } catch (error: unknown) {
       rethrowIfGraphQLError(error);
