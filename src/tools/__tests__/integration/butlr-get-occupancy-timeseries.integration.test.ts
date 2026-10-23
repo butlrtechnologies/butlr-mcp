@@ -3,14 +3,13 @@ import { executeGetOccupancyTimeseries } from "../../butlr-get-occupancy-timeser
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
 import { CombinedGraphQLErrors } from "@apollo/client/errors";
-import {
-  GET_ALL_SENSORS,
-  GET_FULL_TOPOLOGY,
-  GET_FULL_TOPOLOGY_LEGACY,
-} from "../../../clients/queries/topology.js";
-import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
+import { GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../../../clients/queries/topology.js";
+import { resetArchiveFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
 
 // Mock the GraphQL client
+// What the fallback sends to an API without the archive fields.
+const GET_FULL_TOPOLOGY_LEGACY = stripArchiveFields(GET_FULL_TOPOLOGY);
+
 vi.mock("../../../clients/graphql-client.js", () => ({
   apolloClient: {
     query: vi.fn(),
@@ -513,6 +512,11 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       // Must have fired the zone-specific measurement, not room_occupancy.
       expect(presenceBuilder.measurements).toHaveBeenCalledWith(["zone_occupancy"]);
       expect(presenceBuilder.execute).toHaveBeenCalledTimes(1);
+      // A zone with no attributed sensors that returns data is live, not
+      // sensorless: no history-end probe and no "No sensors assigned" note.
+      expect(asset.presence.coverage_note).toBe("Zones support presence measurement only.");
+      expect(asset).not.toHaveProperty("history_end");
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
     });
 
     it("reports correct sensor_count for a zone with directly-attributed sensors", async () => {
@@ -712,7 +716,9 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       const asset = result.assets[0];
       expect(presenceBuilder.execute).toHaveBeenCalledTimes(1);
       expect(asset.presence.available).toBe(false);
-      expect(asset.presence.coverage_note).toBe("No sensors assigned. No recorded history.");
+      expect(asset.presence.coverage_note).toBe(
+        "No sensors assigned. No recorded history in the last six months."
+      );
       expect(asset).not.toHaveProperty("history_end");
       expect(asset.recommended_measurement).toBe("none");
     });
@@ -793,7 +799,9 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
         expect(old.presence.available).toBe(false);
         expect(old.presence.warning).toContain("Failed to retrieve");
         expect(old.presence.coverage_note).toMatch(/lookup for the requested range failed/);
-        expect(old.presence.coverage_note).not.toBe("No sensors assigned. No recorded history.");
+        expect(old.presence.coverage_note).not.toBe(
+          "No sensors assigned. No recorded history in the last six months."
+        );
       });
 
       it("warns on a failed history-end probe without failing the batch", async () => {
@@ -1008,7 +1016,8 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       // The default probe answer is "no recorded history".
       expect(asset.recommendation_reason).toBe(
         "No sensors are assigned to this room (archived on 2026-10-22), so it has no occupancy data in the requested time range. " +
-          'It has no recorded history. Its replacement is "Drop In_V2" (room_v2).'
+          "It has no recorded history in the last six months; query an older range to check for earlier history. " +
+          'Its replacement is "Drop In_V2" (room_v2).'
       );
       expect(asset.recommendation_reason).toContain('"Drop In_V2" (room_v2)');
       expect(asset.recommendation_reason).not.toMatch(/Contact facilities/);
@@ -1188,6 +1197,155 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
         const sent = vi.mocked(apolloClient.query).mock.calls.map((c) => c[0].query);
         expect(sent).not.toContain(GET_FULL_TOPOLOGY_LEGACY);
       });
+    });
+  });
+
+  describe("Sensorless detection (review follow-ups)", () => {
+    function zoneTopology(zone: Record<string, unknown>, siteTimezone = "America/Los_Angeles") {
+      return {
+        topology: {
+          data: {
+            sites: {
+              data: [
+                {
+                  id: "site_001",
+                  name: "Test Site",
+                  timezone: siteTimezone,
+                  org_id: "org_001",
+                  buildings: [
+                    {
+                      id: "building_001",
+                      name: "Building",
+                      site_id: "site_001",
+                      floors: [
+                        {
+                          id: "space_z",
+                          name: "Floor 1",
+                          building_id: "building_001",
+                          rooms: [],
+                          zones: [{ floor_id: "space_z", ...zone }],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+        sensors: { data: { sensors: { data: [] } } },
+      };
+    }
+
+    const args = {
+      asset_ids: ["zone_live"],
+      interval: "1d" as const,
+      start: "2026-10-01T00:00:00Z",
+      stop: "2026-10-23T00:00:00Z",
+    };
+
+    it("does not probe a live zone with no attributed sensors when its range has data", async () => {
+      setupTopologyMocks(zoneTopology({ id: "zone_live", name: "Lounge Zone" }) as any);
+      // The probe would answer if asked; it must not be asked.
+      mockHistoryProbe({ zone_live: INDY_PROBE_DAYS });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [{ time: "2026-10-22T07:00:00Z", value: 4 }] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries(args);
+
+      const asset = result.assets[0];
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
+      expect(asset.presence.coverage_note).not.toMatch(/No sensors assigned/);
+      expect(asset).not.toHaveProperty("history_end");
+      expect(asset.recommended_measurement).toBe("presence");
+    });
+
+    it("probes that zone only after its range comes back empty", async () => {
+      setupTopologyMocks(zoneTopology({ id: "zone_live", name: "Lounge Zone" }) as any);
+      mockHistoryProbe({ zone_live: INDY_PROBE_DAYS });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries(args);
+
+      const asset = result.assets[0];
+      expect(reportingClient.queryReporting).toHaveBeenCalledTimes(1);
+      expect(asset.presence.coverage_note).toBe(
+        "No sensors assigned. Recorded history runs up to 2026-10-20."
+      );
+      expect(asset.history_end).toBe("2026-10-20");
+    });
+
+    it("does not treat a zone whose sensors are all traffic-mode as sensorless", async () => {
+      setupTopologyMocks(
+        zoneTopology({
+          id: "zone_live",
+          name: "Door Zone",
+          sensors: [
+            {
+              id: "sensor_door",
+              mac_address: "aa:bb:cc:dd:ee:99",
+              mode: "traffic",
+              floor_id: "space_z",
+              hive_serial: "HIVE001",
+            },
+          ],
+        }) as any
+      );
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries(args);
+
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
+      expect(result.assets[0].presence.coverage_note).not.toMatch(/No sensors assigned/);
+    });
+
+    it("reads an archived room that still has sensors like an active room", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 1, roomId: "room_odd" });
+      (topo.topology.data.sites.data[0].buildings[0].floors[0].rooms[0] as any).archivedAt =
+        "2026-10-22T20:00:00Z";
+      setupTopologyMocks(topo);
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({ ...args, asset_ids: ["room_odd"] });
+
+      const asset = result.assets[0];
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.coverage_note).toBe("Presence from 1 sensors.");
+      expect(asset.archived_at).toBe("2026-10-22T20:00:00Z");
+      expect(asset.history_note).toBe(
+        "This room was archived on 2026-10-22 but still has 1 sensor assigned, so it is read like an active room."
+      );
+      expect(asset.recommendation_reason).toMatch(/Sensor\(s\) configured but no presence reads/);
+    });
+
+    it("reports an unrecognized site timezone as a non-retryable warning", async () => {
+      const topo = buildTopologyResponse({
+        presenceSensors: 0,
+        roomId: "room_old",
+        siteTimezone: "Mars/Olympus",
+      });
+      setupTopologyMocks(topo);
+      mockHistoryProbe({ room_old: INDY_PROBE_DAYS });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({ ...args, asset_ids: ["room_old"] });
+
+      const asset = result.assets[0];
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
+      expect(asset.history_warning).toMatch(/"Mars\/Olympus" is not a recognized IANA timezone/);
+      expect(asset.history_warning).toMatch(/Retrying will not help/);
+      expect(asset.history_warning).not.toMatch(/Retry to check/);
+      expect(asset.presence.coverage_note).toBe("No sensors assigned.");
     });
   });
 });

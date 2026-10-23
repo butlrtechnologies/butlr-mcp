@@ -1,12 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { z } from "zod";
-import {
-  GET_ALL_HIVES,
-  GET_ALL_SENSORS,
-  GET_FULL_TOPOLOGY,
-  GET_FULL_TOPOLOGY_LEGACY,
-} from "../clients/queries/topology.js";
+import { GET_ALL_HIVES, GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
 import { queryWithArchiveFallback } from "../clients/archive-fallback.js";
 import type { Hive, Sensor, Site, SitesResponse } from "../clients/types.js";
 import {
@@ -17,7 +12,7 @@ import {
 import { flattenTopology, type FlattenedAsset } from "../utils/asset-flattener.js";
 import { searchAssets, type SearchableAsset } from "../utils/fuzzy-match.js";
 import { buildAssetPath } from "../utils/path-builder.js";
-import { formatArchiveDate } from "../utils/archived-spaces.js";
+import { findReplacements, formatArchiveDate } from "../utils/archived-spaces.js";
 import { resolveTimezone } from "../utils/timezone-helpers.js";
 import {
   isProductionHive,
@@ -110,7 +105,8 @@ const SEARCH_ASSETS_DESCRIPTION =
   "- Want to browse full organizational hierarchy → use butlr_list_topology instead\n" +
   "- Need to analyze occupancy or sensor data → use this tool first to find IDs, then use data tools\n\n" +
   'Archived spaces: archived rooms and zones are still matched by name. Their `path` ends in "(archived YYYY-MM-DD)" and they carry `archived_at` ' +
-  "(no live data; history up to that date). `replaces_id` / `replaced_by` link a re-drawn space to the one it superseded.\n\n" +
+  "(no live data). The archive date is not where their history ends; butlr_get_occupancy_timeseries and butlr_get_current_occupancy return the last recorded day as `history_end`. " +
+  "`replaces_id` / `replaced_by` link a re-drawn space to the one it superseded.\n\n" +
   "Search Features: Fuzzy matching (handles typos), multi-field search (name, MAC, serial), score threshold (≥70), type filtering, result limiting (default 20, max 100)\n\n" +
   "Example Workflow: butlr_search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +
   "See Also: butlr_get_asset_details, butlr_list_topology, butlr_fetch_entity_details";
@@ -184,10 +180,7 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
 
     try {
       const [result, sensorsResult, hivesResult] = await Promise.all([
-        queryWithArchiveFallback<{ sites: SitesResponse }>({
-          extended: GET_FULL_TOPOLOGY,
-          legacy: GET_FULL_TOPOLOGY_LEGACY,
-        }),
+        queryWithArchiveFallback<{ sites: SitesResponse }>(GET_FULL_TOPOLOGY),
         apolloClient.query<{ sensors: { data: Sensor[] } }>({
           query: GET_ALL_SENSORS,
           fetchPolicy: "network-only",
@@ -298,16 +291,10 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
 
   debug("search-assets", `Found ${matches.length} matches`);
 
-  // Reverse replaced-space links over the whole corpus (not just the
+  // Replacements are looked up over the whole topology (not just the
   // matches), so an archived room found by its old name points at its
   // replacement even when the replacement's name did not match the query.
-  const replacedBy = new Map<string, string[]>();
-  for (const asset of flattened) {
-    if (!asset.replaces_id) continue;
-    const list = replacedBy.get(asset.replaces_id) ?? [];
-    list.push(asset.id);
-    replacedBy.set(asset.replaces_id, list);
-  }
+  const floors = sites.flatMap((site) => (site.buildings ?? []).flatMap((b) => b.floors ?? []));
 
   // Format results with minimal fields. Archived rooms/zones stay searchable
   // by their plain name (users ask for old rooms by name); the label goes on
@@ -315,7 +302,10 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
   const results: SearchResult[] = matches.map((match) => {
     const asset = match.asset;
     const path = buildAssetPath(asset);
-    const successors = replacedBy.get(asset.id);
+    const successors =
+      asset.type === "room" || asset.type === "zone"
+        ? findReplacements(floors, asset.type, asset.id).map((s) => s.id)
+        : [];
     return {
       id: asset.id,
       name: asset.name,
@@ -331,9 +321,7 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
       room_id: asset.room_id as string | undefined,
       ...(asset.archived_at ? { archived_at: asset.archived_at } : {}),
       ...(asset.replaces_id ? { replaces_id: asset.replaces_id } : {}),
-      ...(successors && (asset.type === "room" || asset.type === "zone")
-        ? { replaced_by: successors }
-        : {}),
+      ...(successors.length > 0 ? { replaced_by: successors } : {}),
     };
   });
 

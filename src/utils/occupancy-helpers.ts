@@ -10,7 +10,6 @@ import { apolloClient } from "../clients/graphql-client.js";
 import {
   GET_ALL_SENSORS,
   GET_FULL_TOPOLOGY,
-  GET_FULL_TOPOLOGY_LEGACY,
   GET_SENSORS_BY_IDS,
   GET_SENSORS_BY_ROOM_IDS,
 } from "../clients/queries/topology.js";
@@ -25,9 +24,9 @@ import type {
 import { detectAssetType } from "./asset-helpers.js";
 import { isProductionSensor, throwIfGraphQLErrors } from "./graphql-helpers.js";
 import { ApiError } from "../clients/reporting-client.js";
-import { fetchHistoryEndDay } from "./history-end.js";
+import { fetchHistoryEndDay, HISTORY_LOOKBACK_MONTHS } from "./history-end.js";
 import { debug } from "./debug.js";
-import { getTimezoneForAsset, buildTimezoneMetadata } from "./timezone-helpers.js";
+import { getTimezoneForAsset, buildTimezoneMetadata, isValidTimezone } from "./timezone-helpers.js";
 import { rethrowIfGraphQLError } from "./graphql-helpers.js";
 import {
   describeSpaceRef,
@@ -64,10 +63,7 @@ export async function fetchTopology(): Promise<TopologyOnly> {
   let topoResult;
 
   try {
-    topoResult = await queryWithArchiveFallback<{ sites: { data: Site[] } }>({
-      extended: GET_FULL_TOPOLOGY,
-      legacy: GET_FULL_TOPOLOGY_LEGACY,
-    });
+    topoResult = await queryWithArchiveFallback<{ sites: { data: Site[] } }>(GET_FULL_TOPOLOGY);
     throwIfGraphQLErrors(topoResult);
   } catch (error: unknown) {
     rethrowIfGraphQLError(error);
@@ -183,6 +179,12 @@ export interface AssetContext {
   timezoneWarning?: string;
   presenceSensors: Sensor[];
   trafficSensors: Sensor[];
+  /**
+   * Production sensors attributed to the asset, of any mode. Zero for a room
+   * or zone means it is sensorless (see isSensorlessSpace); a zone whose
+   * sensors are all traffic-mode is not.
+   */
+  attributedSensorCount: number;
   /** RFC 3339 archive time; set only for an archived room/zone. */
   archivedAt?: string;
   /** `archivedAt` as a site-local YYYY-MM-DD; set with `archivedAt`. */
@@ -220,8 +222,12 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
     ? `Could not determine site timezone for asset ${assetId}. Using ${timezone} as fallback — timestamps may not reflect the site's actual local time.`
     : undefined;
 
-  // Resolve asset name
-  const assetName = findAssetName(assetId, typedAssetType, ctx.floors);
+  // One walk over the floors finds the room/zone itself: its name, its
+  // zone sensors and its archive fields all come from the same object.
+  const space =
+    typedAssetType === "floor" ? undefined : findSpace(ctx.floors, typedAssetType, assetId);
+  const assetName =
+    typedAssetType === "floor" ? ctx.floors.find((f) => f.id === assetId)?.name : space?.name;
 
   // Filter sensors for this asset. Rooms get sensors via the flat
   // productionSensors list (joined by sensor.room_id). Zones get them
@@ -231,8 +237,7 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
   // floor; the legacy zone.room_id field is decorative).
   let assetSensors: Sensor[];
   if (typedAssetType === "zone") {
-    const zone = findZone(assetId, ctx.floors);
-    assetSensors = (zone?.sensors ?? []).filter(isProductionSensor);
+    assetSensors = ((space as Zone | undefined)?.sensors ?? []).filter(isProductionSensor);
   } else {
     assetSensors = ctx.productionSensors.filter((s) => {
       const sensorFloorId = s.floor_id || s.floorID;
@@ -273,13 +278,13 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
     timezoneWarning,
     presenceSensors,
     trafficSensors,
+    attributedSensorCount: assetSensors.length,
   };
 
   // Archive state and replaced-space links (rooms and zones only). Absent
   // fields — including every space when the API predates them — leave the
   // context as an active space that replaces nothing.
   if (typedAssetType !== "floor") {
-    const space = findSpace(ctx.floors, typedAssetType, assetId);
     if (space?.archivedAt) {
       context.archivedAt = space.archivedAt;
       context.archivedOn = formatArchiveDate(space.archivedAt, timezone);
@@ -301,40 +306,45 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
 
 /**
  * Outcome of the history-end probe for a sensorless room or zone.
- * - skipped: the space has sensors (or is a floor); no probe was sent.
- * - ok: `endDay` is the last full day of recorded history, or null if none.
- * - failed: the probe errored (not auth); the history end is unknown.
+ * - skipped: no probe was sent (the space has sensors, is a floor, or is a
+ *   zone whose live/range read already returned data).
+ * - ok: `endDay` is the last full day of recorded history within the
+ *   lookback window, or null if the window holds none.
+ * - failed: the history end is unknown. `reason` is "lookup" for a
+ *   transient failure (worth a retry) or "timezone" when the site timezone
+ *   is not recognized (a retry cannot help).
  */
 export type HistoryProbe =
   | { status: "skipped" }
   | { status: "ok"; endDay: string | null }
-  | { status: "failed" };
+  | { status: "failed"; reason: "lookup" | "timezone" };
+
+const SKIPPED: HistoryProbe = { status: "skipped" };
 
 /**
- * Whether a space gets the history-end probe: an archived room/zone, or a
- * room/zone with no sensors of either mode (the 0.6.2 "speculative" case).
- * A room whose only sensor is a traffic sensor is not sensorless. Floors are
- * never probed.
+ * Whether a room or zone has no production sensors attributed, of any mode.
+ * Only these get the history-end probe and the "No sensors assigned" wording.
+ * Archive state does not enter into it: an archived space that still has
+ * sensors (the API refuses to archive one, so this is bad data) is read like
+ * an active space. Floors are never sensorless here.
  */
 export function isSensorlessSpace(asset: AssetContext): boolean {
-  if (asset.assetType === "floor") return false;
-  return (
-    Boolean(asset.archivedOn) ||
-    (asset.presenceSensors.length === 0 && asset.trafficSensors.length === 0)
-  );
+  return asset.assetType !== "floor" && asset.attributedSensorCount === 0;
 }
 
 /**
  * Find where a sensorless room's or zone's recorded history ends (see
  * src/utils/history-end.ts). Best-effort, like the 0.6.2 speculative
  * lookups: auth errors still fail the call, anything else is reported as
- * `failed` so the caller can warn on that asset alone.
+ * `failed` so the caller can warn on that asset alone. Returns `skipped`
+ * for a space that is not sensorless.
  */
 export async function probeSensorlessHistory(
   asset: AssetContext,
   assetId: string
 ): Promise<HistoryProbe> {
-  if (!isSensorlessSpace(asset) || asset.assetType === "floor") return { status: "skipped" };
+  if (!isSensorlessSpace(asset) || asset.assetType === "floor") return SKIPPED;
+  if (!isValidTimezone(asset.timezone)) return { status: "failed", reason: "timezone" };
   try {
     const endDay = await fetchHistoryEndDay(asset.assetType, assetId, asset.timezone);
     return { status: "ok", endDay };
@@ -343,18 +353,27 @@ export async function probeSensorlessHistory(
       throw error;
     }
     debug("occupancy-helpers", `History-end probe failed for ${assetId}:`, error);
-    return { status: "failed" };
+    return { status: "failed", reason: "lookup" };
   }
 }
 
-/** "Recorded history runs up to <day>." / "No recorded history." / "" when unknown. */
+/**
+ * The lookback window in words, for "no history" copy. The probe only sees
+ * HISTORY_LOOKBACK_MONTHS back, so "none" means none in that window, not
+ * none ever.
+ */
+const LOOKBACK_PHRASE = `the last ${HISTORY_LOOKBACK_MONTHS === 6 ? "six" : HISTORY_LOOKBACK_MONTHS} months`;
+
+/** "Recorded history runs up to <day>." / "No recorded history in <window>." / "" when unknown. */
 function historyClause(probe: HistoryProbe): string {
   if (probe.status !== "ok") return "";
-  return probe.endDay ? `Recorded history runs up to ${probe.endDay}.` : "No recorded history.";
+  return probe.endDay
+    ? `Recorded history runs up to ${probe.endDay}.`
+    : `No recorded history in ${LOOKBACK_PHRASE}.`;
 }
 
 /**
- * Coverage note for a probed (sensorless or archived) space:
+ * Coverage note for a probed (sensorless) space:
  * "No sensors assigned (archived on <date>). Recorded history runs up to <day>."
  * The archive part is dropped for an active space; the history part is
  * dropped when the probe failed.
@@ -366,9 +385,11 @@ export function sensorlessCoverageNote(asset: AssetContext, probe: HistoryProbe)
 
 /** Asset-level warning when the probe failed, or undefined. */
 export function historyProbeWarning(asset: AssetContext, probe: HistoryProbe): string | undefined {
-  return probe.status === "failed"
-    ? `Could not determine where this ${asset.assetType}'s recorded history ends; the lookup failed. Retry to check.`
-    : undefined;
+  if (probe.status !== "failed") return undefined;
+  const subject = `Could not determine where this ${asset.assetType}'s recorded history ends`;
+  return probe.reason === "timezone"
+    ? `${subject}: the site timezone "${asset.timezone}" is not a recognized IANA timezone. Retrying will not help; the site's timezone needs to be corrected.`
+    : `${subject}; the lookup failed. Retry to check.`;
 }
 
 /**
@@ -384,7 +405,7 @@ export function buildSpaceLifecycle(
   asset: AssetContext,
   assetId: string,
   tool: "timeseries" | "current",
-  probe: HistoryProbe = { status: "skipped" }
+  probe: HistoryProbe = SKIPPED
 ): SpaceLifecycle {
   const lifecycle: SpaceLifecycle = {};
   const notes: string[] = [];
@@ -396,20 +417,25 @@ export function buildSpaceLifecycle(
 
   if (asset.archivedAt && asset.archivedOn) {
     lifecycle.archived_at = asset.archivedAt;
-    const history = historyClause(probe);
-    notes.push(
-      tool === "timeseries"
-        ? [`This ${kind} was archived on ${asset.archivedOn}.`, history].filter(Boolean).join(" ")
-        : [
-            `This ${kind} was archived on ${asset.archivedOn}; archived spaces have no live data.`,
-            history,
-            probe.status === "ok" && !probe.endDay
-              ? ""
-              : "Use butlr_get_occupancy_timeseries for its history.",
-          ]
-            .filter(Boolean)
-            .join(" ")
-    );
+    if (!isSensorlessSpace(asset)) {
+      const n = asset.attributedSensorCount;
+      notes.push(
+        `This ${kind} was archived on ${asset.archivedOn} but still has ${n} sensor${n === 1 ? "" : "s"} assigned, so it is read like an active ${kind}.`
+      );
+    } else {
+      const history = historyClause(probe);
+      notes.push(
+        tool === "timeseries"
+          ? [`This ${kind} was archived on ${asset.archivedOn}.`, history].filter(Boolean).join(" ")
+          : [
+              `This ${kind} was archived on ${asset.archivedOn}; archived spaces have no live data.`,
+              history,
+              "Use butlr_get_occupancy_timeseries for its history.",
+            ]
+              .filter(Boolean)
+              .join(" ")
+      );
+    }
   }
 
   if (asset.replacedBy && asset.replacedBy.length > 0) {
@@ -440,17 +466,18 @@ export function buildSpaceLifecycle(
 }
 
 /**
- * Recommendation reason for a probed space with no usable reading, or
- * undefined to keep the generic copy. Always set for an archived space;
- * set for an active sensorless space only when the probe found history
- * (with no history at all, "instrument it" is still the right advice).
- * See RecommendationContext.archivedReason.
+ * Recommendation reason for a sensorless space with no usable reading, or
+ * undefined to keep the generic copy. Always set for an archived sensorless
+ * space; set for an active one only when the probe found history (with none,
+ * "instrument it" is still the right advice). Undefined for a space that
+ * has sensors. See RecommendationContext.archivedReason.
  */
 export function sensorlessRecommendationReason(
   asset: AssetContext,
   tool: "timeseries" | "current",
   probe: HistoryProbe
 ): string | undefined {
+  if (!isSensorlessSpace(asset)) return undefined;
   const foundHistory = probe.status === "ok" && probe.endDay !== null;
   if (!asset.archivedOn && !foundHistory) return undefined;
 
@@ -461,13 +488,19 @@ export function sensorlessRecommendationReason(
       : `No sensors are assigned to this ${asset.assetType}${archived}, so it has no live data.`,
   ];
   if (probe.status === "ok") {
-    parts.push(
-      probe.endDay
-        ? tool === "timeseries"
+    if (probe.endDay) {
+      parts.push(
+        tool === "timeseries"
           ? `Recorded history runs up to ${probe.endDay}.`
           : `Recorded history runs up to ${probe.endDay}; use butlr_get_occupancy_timeseries for it.`
-        : "It has no recorded history."
-    );
+      );
+    } else {
+      parts.push(
+        tool === "timeseries"
+          ? `It has no recorded history in ${LOOKBACK_PHRASE}; query an older range to check for earlier history.`
+          : `It has no recorded history in ${LOOKBACK_PHRASE}; use butlr_get_occupancy_timeseries to check older ranges.`
+      );
+    }
   }
   const successors = asset.replacedBy ?? [];
   if (successors.length > 0) {
@@ -544,44 +577,6 @@ export function resolveSensorContext(sensor: Sensor, ctx: TopologyOnly): SensorC
     floor,
     building,
   };
-}
-
-/**
- * Find the display name for an asset by searching the topology.
- */
-function findAssetName(
-  assetId: string,
-  assetType: "floor" | "room" | "zone",
-  floors: Floor[]
-): string | undefined {
-  switch (assetType) {
-    case "floor":
-      return floors.find((f) => f.id === assetId)?.name;
-    case "room":
-      for (const floor of floors) {
-        const room = floor.rooms?.find((r) => r.id === assetId);
-        if (room) return room.name;
-      }
-      return undefined;
-    case "zone":
-      for (const floor of floors) {
-        const zone = floor.zones?.find((z) => z.id === assetId);
-        if (zone) return zone.name;
-      }
-      return undefined;
-  }
-}
-
-/**
- * Find a zone object in the topology by id. Returns undefined if the zone
- * isn't present (e.g. stale id or topology that didn't include zones).
- */
-function findZone(zoneId: string, floors: Floor[]): Zone | undefined {
-  for (const floor of floors) {
-    const zone = floor.zones?.find((z) => z.id === zoneId);
-    if (zone) return zone;
-  }
-  return undefined;
 }
 
 /**

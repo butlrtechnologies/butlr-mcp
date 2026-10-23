@@ -125,8 +125,7 @@ const AVAILABLE_ROOMS_DESCRIPTION =
 
 export type AvailableRoomsArgs = z.output<typeof AvailableRoomsArgsSchema>;
 
-function buildRoomsByFloorQuery(withArchiveFields: boolean) {
-  return gql`
+const GET_ROOMS_BY_FLOOR = gql`
   query GetRoomsByFloor($floorId: ID!) {
     floor(id: $floorId) {
       id
@@ -147,7 +146,7 @@ function buildRoomsByFloorQuery(withArchiveFields: boolean) {
         }
         coordinates
         customID
-        ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
+        ${SPACE_ARCHIVE_FIELDS}
       }
       building {
         id
@@ -157,12 +156,8 @@ function buildRoomsByFloorQuery(withArchiveFields: boolean) {
     }
   }
 `;
-}
-const GET_ROOMS_BY_FLOOR = buildRoomsByFloorQuery(true);
-const GET_ROOMS_BY_FLOOR_LEGACY = buildRoomsByFloorQuery(false);
 
-function buildRoomsByBuildingQuery(withArchiveFields: boolean) {
-  return gql`
+const GET_ROOMS_BY_BUILDING = gql`
   query GetRoomsByBuilding($buildingId: ID!) {
     building(id: $buildingId) {
       id
@@ -187,18 +182,14 @@ function buildRoomsByBuildingQuery(withArchiveFields: boolean) {
           }
           coordinates
           customID
-          ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
+          ${SPACE_ARCHIVE_FIELDS}
         }
       }
     }
   }
 `;
-}
-const GET_ROOMS_BY_BUILDING = buildRoomsByBuildingQuery(true);
-const GET_ROOMS_BY_BUILDING_LEGACY = buildRoomsByBuildingQuery(false);
 
-function buildRoomsByTagQuery(withArchiveFields: boolean) {
-  return gql`
+export const GET_ROOMS_BY_TAG = gql`
   query GetRoomsByTag($tagIDs: [String!]!, $useOR: Boolean) {
     roomsByTag(tagIDs: $tagIDs, useOR: $useOR) {
       data {
@@ -216,7 +207,7 @@ function buildRoomsByTagQuery(withArchiveFields: boolean) {
         }
         coordinates
         customID
-        ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
+        ${SPACE_ARCHIVE_FIELDS}
         floor {
           id
           name
@@ -231,12 +222,8 @@ function buildRoomsByTagQuery(withArchiveFields: boolean) {
     }
   }
 `;
-}
-export const GET_ROOMS_BY_TAG = buildRoomsByTagQuery(true);
-const GET_ROOMS_BY_TAG_LEGACY = buildRoomsByTagQuery(false);
 
-function buildAllRoomsQuery(withArchiveFields: boolean) {
-  return gql`
+const GET_ALL_ROOMS = gql`
   query GetAllRooms {
     sites {
       data {
@@ -265,7 +252,7 @@ function buildAllRoomsQuery(withArchiveFields: boolean) {
               }
               coordinates
               customID
-              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
+              ${SPACE_ARCHIVE_FIELDS}
             }
           }
         }
@@ -273,9 +260,6 @@ function buildAllRoomsQuery(withArchiveFields: boolean) {
     }
   }
 `;
-}
-const GET_ALL_ROOMS = buildAllRoomsQuery(true);
-const GET_ALL_ROOMS_LEGACY = buildAllRoomsQuery(false);
 
 /**
  * Execute available rooms tool
@@ -320,10 +304,9 @@ export async function executeAvailableRooms(
 
   try {
     if (args.floor_id) {
-      const result = await queryWithArchiveFallback<{ floor: Floor }>(
-        { extended: GET_ROOMS_BY_FLOOR, legacy: GET_ROOMS_BY_FLOOR_LEGACY },
-        { floorId: args.floor_id }
-      );
+      const result = await queryWithArchiveFallback<{ floor: Floor }>(GET_ROOMS_BY_FLOOR, {
+        floorId: args.floor_id,
+      });
       throwIfGraphQLErrors(result);
 
       if (!result.data?.floor) {
@@ -334,10 +317,9 @@ export async function executeAvailableRooms(
       floors = [result.data.floor];
       buildings = result.data.floor.building ? [result.data.floor.building] : [];
     } else if (args.building_id) {
-      const result = await queryWithArchiveFallback<{ building: Building }>(
-        { extended: GET_ROOMS_BY_BUILDING, legacy: GET_ROOMS_BY_BUILDING_LEGACY },
-        { buildingId: args.building_id }
-      );
+      const result = await queryWithArchiveFallback<{ building: Building }>(GET_ROOMS_BY_BUILDING, {
+        buildingId: args.building_id,
+      });
       throwIfGraphQLErrors(result);
 
       if (!result.data?.building) {
@@ -442,7 +424,7 @@ export async function executeAvailableRooms(
       const useOR = tagMatch === "any";
 
       const result = await queryWithArchiveFallback<{ roomsByTag: { data: Room[] } | null }>(
-        { extended: GET_ROOMS_BY_TAG, legacy: GET_ROOMS_BY_TAG_LEGACY },
+        GET_ROOMS_BY_TAG,
         { tagIDs: resolvedIds, useOR }
       );
       throwIfGraphQLErrors(result);
@@ -467,7 +449,7 @@ export async function executeAvailableRooms(
     } else {
       const result = await queryWithArchiveFallback<{
         sites: { data: { buildings: Building[] }[] };
-      }>({ extended: GET_ALL_ROOMS, legacy: GET_ALL_ROOMS_LEGACY });
+      }>(GET_ALL_ROOMS);
       throwIfGraphQLErrors(result);
 
       if (!result.data?.sites?.data) {

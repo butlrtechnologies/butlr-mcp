@@ -70,10 +70,10 @@ export const GET_SITE_STRUCTURE = gql`
  *
  * Rooms and zones select `archivedAt`/`replacesID` (see archive-fields.ts).
  * An API that predates those fields rejects the whole query, so fetch this
- * through `queryWithArchiveFallback`, which retries with the legacy variant.
+ * through `queryWithArchiveFallback`, which retries once with those fields
+ * stripped (see archive-fallback.ts).
  */
-function buildFullTopologyQuery(withArchiveFields: boolean) {
-  return gql`
+export const GET_FULL_TOPOLOGY = gql`
   query GetFullTopology {
     sites {
       data {
@@ -124,7 +124,7 @@ function buildFullTopologyQuery(withArchiveFields: boolean) {
                 mid
               }
               coordinates
-              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
+              ${SPACE_ARCHIVE_FIELDS}
             }
             zones {
               id
@@ -133,7 +133,7 @@ function buildFullTopologyQuery(withArchiveFields: boolean) {
               room_id
               customID
               coordinates
-              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
+              ${SPACE_ARCHIVE_FIELDS}
               sensors {
                 id
                 name
@@ -152,16 +152,6 @@ function buildFullTopologyQuery(withArchiveFields: boolean) {
     }
   }
 `;
-}
-
-/** Full topology, including the archive fields on rooms and zones. */
-export const GET_FULL_TOPOLOGY = buildFullTopologyQuery(true);
-
-/**
- * GET_FULL_TOPOLOGY without the archive fields, for an API that predates
- * them. Use through `queryWithArchiveFallback`, never directly.
- */
-export const GET_FULL_TOPOLOGY_LEGACY = buildFullTopologyQuery(false);
 
 /**
  * Get all sensors for the organization
@@ -276,8 +266,7 @@ export const GET_ALL_HIVES = gql`
  * Lightweight topology without devices
  * Faster when sensor/hive data isn't needed
  */
-function buildTopologyNoDevicesQuery(withArchiveFields: boolean) {
-  return gql`
+export const GET_TOPOLOGY_NO_DEVICES = gql`
   query GetTopologyNoDevices {
     sites {
       data {
@@ -327,7 +316,6 @@ function buildTopologyNoDevicesQuery(withArchiveFields: boolean) {
                 mid
               }
               coordinates
-              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
             }
             zones {
               id
@@ -336,7 +324,6 @@ function buildTopologyNoDevicesQuery(withArchiveFields: boolean) {
               room_id
               customID
               coordinates
-              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
             }
           }
         }
@@ -344,10 +331,3 @@ function buildTopologyNoDevicesQuery(withArchiveFields: boolean) {
     }
   }
 `;
-}
-
-/** Lightweight topology, including the archive fields on rooms and zones. */
-export const GET_TOPOLOGY_NO_DEVICES = buildTopologyNoDevicesQuery(true);
-
-/** GET_TOPOLOGY_NO_DEVICES without the archive fields (see GET_FULL_TOPOLOGY_LEGACY). */
-export const GET_TOPOLOGY_NO_DEVICES_LEGACY = buildTopologyNoDevicesQuery(false);

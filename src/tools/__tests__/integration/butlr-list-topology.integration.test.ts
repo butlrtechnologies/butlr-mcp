@@ -3,7 +3,7 @@ import { executeListTopology } from "../../butlr-list-topology.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import { CombinedGraphQLErrors } from "@apollo/client/errors";
 import { GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY } from "../../../clients/queries/topology.js";
-import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
+import { resetArchiveFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
 import {
   clearTopologyCache,
   generateTopologyCacheKey,
@@ -11,6 +11,9 @@ import {
 } from "../../../cache/topology-cache.js";
 
 // Mock the GraphQL client
+// What the fallback sends to an API without the archive fields.
+const GET_FULL_TOPOLOGY_LEGACY = stripArchiveFields(GET_FULL_TOPOLOGY);
+
 vi.mock("../../../clients/graphql-client.js", () => ({
   apolloClient: {
     query: vi.fn(),

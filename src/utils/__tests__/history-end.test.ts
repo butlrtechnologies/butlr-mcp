@@ -81,6 +81,26 @@ describe("history probe request", () => {
     );
   });
 
+  it("lands on local midnight of the 1st west of UTC (month ends clamp, then +1 day)", () => {
+    // These used to walk days early: the start is the 1st of a month, and
+    // getLocalMidnight compared only the day of the month.
+    // Aug 31 -> Feb 28 (clamped) -> Mar 1, EST
+    expect(historyProbeStart(new Date("2026-08-31T16:00:00Z"), INDY).toISOString()).toBe(
+      "2026-03-01T05:00:00.000Z"
+    );
+    // Oct 31 -> Apr 30 (clamped) -> May 1, EDT
+    expect(historyProbeStart(new Date("2026-10-31T16:00:00Z"), INDY).toISOString()).toBe(
+      "2026-05-01T04:00:00.000Z"
+    );
+    // Dec 31 -> Jun 30 (clamped) -> Jul 1, EDT
+    expect(historyProbeStart(new Date("2026-12-31T16:00:00Z"), INDY).toISOString()).toBe(
+      "2026-07-01T04:00:00.000Z"
+    );
+    expect(
+      historyProbeStart(new Date("2026-12-31T20:00:00Z"), "America/Los_Angeles").toISOString()
+    ).toBe("2026-07-01T07:00:00.000Z");
+  });
+
   it("queries daily max occupancy for the space, zeros included", () => {
     const now = new Date("2026-10-23T18:00:00Z");
     expect(buildHistoryProbeRequest("zone", "zone_1", INDY, now)).toMatchObject({

@@ -28,7 +28,7 @@ const GET_CURRENT_OCCUPANCY_DESCRIPTION =
   "Get current occupancy for floors, rooms, or zones (last 5 minutes median). Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete current occupancy picture.\n\n" +
-  "An archived room or zone (`archived_at` set) has no live data and is reported as such rather than queried. " +
+  "An archived room or zone with no sensors (`archived_at` set) has no live data and is reported as such rather than queried. " +
   "For a sensorless or archived room/zone, `history_end` is the last full day of its recorded history; " +
   "`history_note` points at butlr_get_occupancy_timeseries for that history and names any replacement.\n\n" +
   "When NOT to Use:\n" +
@@ -73,22 +73,19 @@ export async function executeGetCurrentOccupancy(
     // `resolveAssetContext`), but the server computes `zone_occupancy`
     // independently. Always query for zones; gate on sensor count for
     // rooms/floors where 0 sensors really does mean "no data possible".
-    // An archived room or zone is never queried: it has no live data by
-    // definition, and the note below says so instead of a lookup that can
-    // only come back empty (or, for a zone, fail).
-    const shouldQueryPresence =
-      !archivedOn && (asset.assetType === "zone" || asset.presenceSensors.length > 0);
-    // A sensorless or archived room/zone gets a history-end probe so the
-    // response can say where its recorded history ends.
+    // An archived room or zone with no sensors is never queried: it is
+    // retired, and the note below says so instead of a lookup that can only
+    // come back empty (or, for a zone, fail). An archived space that still
+    // has sensors (bad data; the API refuses to archive one) is read like an
+    // active space.
     const sensorless = isSensorlessSpace(asset);
-    let probe: HistoryProbe = await probeSensorlessHistory(asset, assetId);
-    const sensorlessNote = sensorless ? sensorlessCoverageNote(asset, probe) : undefined;
-    const archivedNote = archivedOn ? sensorlessNote : undefined;
+    const retired = sensorless && Boolean(archivedOn);
+    const shouldQueryPresence =
+      !retired && (asset.assetType === "zone" || asset.presenceSensors.length > 0);
     const presenceData: CurrentMeasurementData = {
       available: shouldQueryPresence,
       sensor_count: asset.presenceSensors.length,
-      coverage_note:
-        archivedNote ?? getPresenceCoverageNote(asset.assetType, asset.presenceSensors.length),
+      coverage_note: getPresenceCoverageNote(asset.assetType, asset.presenceSensors.length),
     };
 
     let presenceHasData = false;
@@ -120,26 +117,26 @@ export async function executeGetCurrentOccupancy(
       }
     }
 
-    if (sensorless && !archivedOn) {
-      if (presenceHasData) {
-        // A zone with no attributed sensors that still reads live (zone
-        // occupancy can come from overlapping floor sensors) is not retired;
-        // don't annotate it with a history end.
-        probe = { status: "skipped" };
-      } else if (!presenceData.warning) {
-        presenceData.coverage_note = sensorlessNote;
-      }
+    // A sensorless room/zone gets a history-end probe so the response can say
+    // where its recorded history ends -- but only once the live read (if any)
+    // came back empty. A zone with no attributed sensors that still reads
+    // live (zone occupancy can come from overlapping floor sensors) is not
+    // retired, and the six-month probe would be wasted on it.
+    let probe: HistoryProbe = { status: "skipped" };
+    if (sensorless && !presenceHasData && !presenceData.warning) {
+      probe = await probeSensorlessHistory(asset, assetId);
+      presenceData.coverage_note = sensorlessCoverageNote(asset, probe);
     }
 
     // ---- Traffic ----
-    const shouldQueryTraffic = !archivedOn && asset.trafficSensors.length > 0;
+    const shouldQueryTraffic = asset.trafficSensors.length > 0;
     const trafficData: CurrentMeasurementData = {
       available: shouldQueryTraffic,
       entrance_sensor_count: asset.assetType === "floor" ? asset.trafficSensors.length : undefined,
       sensor_count: asset.assetType === "room" ? asset.trafficSensors.length : undefined,
       coverage_note:
-        archivedNote && asset.assetType === "room"
-          ? archivedNote
+        retired && asset.assetType === "room"
+          ? presenceData.coverage_note
           : getTrafficCoverageNote(asset.assetType, asset.trafficSensors.length),
     };
 

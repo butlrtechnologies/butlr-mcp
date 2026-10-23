@@ -11,6 +11,7 @@
  */
 
 import type { ArchivableSpace, Floor, Room, Zone } from "../clients/types.js";
+import { formatLocalDate } from "./timezone-helpers.js";
 
 /** A space referenced from another one's lifecycle fields. */
 export interface SpaceRef {
@@ -34,17 +35,10 @@ export function isArchived(space: ArchivableSpace | null | undefined): boolean {
 export function formatArchiveDate(archivedAt: string, timezone: string = "UTC"): string {
   const date = new Date(archivedAt);
   if (Number.isNaN(date.getTime())) return archivedAt;
-  const format = (timeZone: string) =>
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(date);
   try {
-    return format(timezone);
+    return formatLocalDate(date, timezone);
   } catch {
-    return format("UTC");
+    return formatLocalDate(date, "UTC");
   }
 }
 

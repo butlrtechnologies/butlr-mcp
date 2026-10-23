@@ -1,11 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
-import {
-  GET_FULL_TOPOLOGY,
-  GET_FULL_TOPOLOGY_LEGACY,
-  GET_ALL_SENSORS,
-  GET_ALL_HIVES,
-} from "../clients/queries/topology.js";
+import { GET_FULL_TOPOLOGY, GET_ALL_SENSORS, GET_ALL_HIVES } from "../clients/queries/topology.js";
 import { queryWithArchiveFallback } from "../clients/archive-fallback.js";
 import {
   GET_TAGS_WITH_USAGE,
@@ -51,7 +46,7 @@ const LIST_TOPOLOGY_DESCRIPTION =
   "- Pass tag_names (case-insensitive) to scope the tree to subtrees containing rooms, zones, or floors with those tags. Combines AND-style with asset_ids when both are supplied.\n" +
   "- tag_match defaults to 'any' (entity is in any tagged subtree). 'all' intersects per-tag SUBTREES — e.g. a tag on Floor 1 AND a tag on a room inside Floor 1 yields the room (it's in both subtrees), not the empty set. Note this 'any' default differs from butlr_available_rooms, which defaults to 'all' because it filters a single entity type.\n" +
   "- Use butlr_list_tags to discover what tag vocabulary exists in this org.\n\n" +
-  'Archived spaces: archived rooms and zones stay in the tree (findable by name) with an "(archived YYYY-MM-DD)" suffix on their display name. They have no live data; their history runs up to that date.\n\n' +
+  'Archived spaces: archived rooms and zones stay in the tree (findable by name) with an "(archived YYYY-MM-DD)" suffix on their display name. They have no live data. The archive date is not where their history ends (recording stops when the sensors move, which can be days earlier): butlr_get_occupancy_timeseries and butlr_get_current_occupancy return the last recorded day as `history_end`.\n\n' +
   "Diagnostics:\n" +
   "- The response includes a `warning` field when a filter input doesn't fully resolve — typo'd asset_ids, unknown tag_names, asset_ids and tag_names scoping disjoint subtrees, or tag associations pointing at deleted entities. Read it before retrying.\n" +
   "- `unknown_tags` lists any tag names that didn't resolve, for the caller to surface or correct.\n\n" +
@@ -528,10 +523,7 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
     debug("butlr-list-topology", "Fetching fresh topology");
 
     try {
-      const result = await queryWithArchiveFallback<{ sites: SitesResponse }>({
-        extended: GET_FULL_TOPOLOGY,
-        legacy: GET_FULL_TOPOLOGY_LEGACY,
-      });
+      const result = await queryWithArchiveFallback<{ sites: SitesResponse }>(GET_FULL_TOPOLOGY);
 
       // Apollo can return both data and errors - only fail if we have no
       // data. Route the error through `throwIfGraphQLErrors` so it lands

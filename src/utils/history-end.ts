@@ -13,7 +13,7 @@
  */
 
 import { queryReporting, type ReportingRequest } from "../clients/reporting-client.js";
-import { getLocalMidnight } from "./timezone-helpers.js";
+import { formatLocalDate, getLocalMidnight } from "./timezone-helpers.js";
 
 /**
  * How far back the probe looks. Reporting routes a request to one storage
@@ -22,16 +22,6 @@ import { getLocalMidnight } from "./timezone-helpers.js";
  * the slow cold (Trino) tier.
  */
 export const HISTORY_LOOKBACK_MONTHS = 6;
-
-/** Local calendar date (YYYY-MM-DD) of an instant in `timezone`. */
-function localDate(ms: number, timezone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(ms));
-}
 
 /**
  * The last full local day (YYYY-MM-DD in `timezone`) of a space's recorded
@@ -54,7 +44,7 @@ export function historyEndDay(
     if (p?.value == null || !p.time) continue;
     const ts = Date.parse(p.time);
     if (Number.isNaN(ts)) continue;
-    days.add(localDate(ts - 1, timezone));
+    days.add(formatLocalDate(ts - 1, timezone));
   }
   // YYYY-MM-DD sorts chronologically as a string.
   const sorted = Array.from(days).sort();
@@ -68,7 +58,7 @@ export function historyEndDay(
  * to the last day of a shorter month).
  */
 export function historyProbeStart(now: Date, timezone: string): Date {
-  const [y, m, d] = localDate(now.getTime(), timezone).split("-").map(Number);
+  const [y, m, d] = formatLocalDate(now.getTime(), timezone).split("-").map(Number);
   const monthIndex = m - 1 - HISTORY_LOOKBACK_MONTHS;
   const lastDay = new Date(Date.UTC(y, monthIndex + 1, 0)).getUTCDate();
   const target = new Date(Date.UTC(y, monthIndex, Math.min(d, lastDay) + 1));
@@ -78,7 +68,7 @@ export function historyProbeStart(now: Date, timezone: string): Date {
   // No single UTC hour lands on the same local date across UTC-12..UTC+14,
   // so start at noon UTC and step half a day toward the target if needed.
   let probe = new Date(`${want}T12:00:00Z`);
-  const got = localDate(probe.getTime(), timezone);
+  const got = formatLocalDate(probe.getTime(), timezone);
   if (got > want) probe = new Date(probe.getTime() - 12 * 3600 * 1000);
   else if (got < want) probe = new Date(probe.getTime() + 12 * 3600 * 1000);
   return getLocalMidnight(probe, timezone);

@@ -1,13 +1,15 @@
 /**
  * Send a query that selects the archive fields (archive-fields.ts), falling
- * back to its legacy variant when the API does not have them yet.
+ * back to the same query with those fields stripped when the API does not
+ * have them yet.
  *
  * This MCP can ship before the API that adds `archivedAt`/`replacesID` on
  * Room and Zone, and a GraphQL server rejects the whole query when it
- * selects a field the schema lacks. So the extended query is tried first;
- * if the API rejects it for one of these fields, the legacy query is sent
- * once and the miss is remembered, so later calls go straight to the legacy
- * query instead of paying a failed round trip each time. The memory expires
+ * selects a field the schema lacks. So the query is tried as written first;
+ * if the API rejects it for one of these fields, the same query with those
+ * selections stripped (`stripArchiveFields`) is sent once and the miss is
+ * remembered, so later calls go straight to the stripped query instead of
+ * paying a failed round trip each time. The memory expires
  * after an hour, so a long-running server picks the fields up once the API
  * deploys without a restart.
  *
@@ -16,7 +18,7 @@
  */
 
 import type { ApolloClient } from "@apollo/client";
-import type { DocumentNode } from "graphql";
+import { Kind, visit, type DocumentNode } from "graphql";
 import { CombinedGraphQLErrors, ServerError } from "@apollo/client/errors";
 import { apolloClient } from "./graphql-client.js";
 import { SPACE_ARCHIVE_FIELD_NAMES } from "./queries/archive-fields.js";
@@ -71,25 +73,41 @@ export function isMissingArchiveFieldsError(error: unknown): boolean {
   return texts.some((t) => MISSING_FIELD_PATTERN.test(t));
 }
 
-export interface ArchiveQueryPair {
-  /** The query with SPACE_ARCHIVE_FIELDS selected. */
-  extended: DocumentNode;
-  /** The same query without them. */
-  legacy: DocumentNode;
+const ARCHIVE_FIELD_SET = new Set<string>(SPACE_ARCHIVE_FIELD_NAMES);
+const strippedCache = new WeakMap<DocumentNode, DocumentNode>();
+
+/**
+ * The same document with every `archivedAt`/`replacesID` field selection
+ * removed, for an API that predates them. Memoized per document, so the
+ * stripped query is the same object on every call.
+ */
+export function stripArchiveFields(document: DocumentNode): DocumentNode {
+  const cached = strippedCache.get(document);
+  if (cached) return cached;
+  const stripped = visit(document, {
+    [Kind.FIELD](node) {
+      // Returning null deletes the node from its selection set.
+      return ARCHIVE_FIELD_SET.has(node.name.value) ? null : undefined;
+    },
+  });
+  strippedCache.set(document, stripped);
+  return stripped;
 }
 
 /**
- * Run `queries.extended`, or `queries.legacy` when the API lacks the archive
- * fields. Results from the legacy query carry no `archivedAt`/`replacesID`,
- * which every reader treats as "active, replaces nothing".
+ * Run `query`, or the same query with the archive fields stripped when the
+ * API lacks them. Results from the stripped query carry no
+ * `archivedAt`/`replacesID`, which every reader treats as "active, replaces
+ * nothing".
  *
  * The first `apolloClient.query` call is made synchronously, before any
  * await, so callers that start several queries together keep their order.
  */
 export async function queryWithArchiveFallback<TData>(
-  queries: ArchiveQueryPair,
+  query: DocumentNode,
   variables?: Record<string, unknown>
 ): Promise<ApolloClient.QueryResult<TData>> {
+  const queries = { extended: query, legacy: stripArchiveFields(query) };
   const run = (query: DocumentNode) =>
     apolloClient.query<TData>({
       query,
@@ -117,7 +135,7 @@ function rememberMissingFields(error: unknown): void {
   skipExtendedUntil = Date.now() + ARCHIVE_FIELDS_RETRY_MS;
   debug(
     "archive-fallback",
-    "API does not support archivedAt/replacesID yet; using legacy queries for the next hour:",
+    "API does not support archivedAt/replacesID yet; stripping them from queries for the next hour:",
     error instanceof Error ? error.message : error
   );
 }

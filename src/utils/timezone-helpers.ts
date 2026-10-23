@@ -70,6 +70,29 @@ export function getTimezoneForAsset(
   return resolveTimezone(null);
 }
 
+/** Whether `timezone` is an IANA zone this runtime's Intl recognizes. */
+export function isValidTimezone(timezone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Local calendar date (YYYY-MM-DD) of an instant in `timezone`. Throws a
+ * RangeError for an unrecognized timezone.
+ */
+export function formatLocalDate(date: Date | number, timezone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
 /**
  * Get timezone abbreviation (PST, PDT, CST, EST, etc.)
  * Uses Intl.DateTimeFormat to get the correct abbreviation for the given date
@@ -208,20 +231,23 @@ export function getLocalMidnight(date: Date, timezone: string): Date {
       }).formatToParts(estimate);
 
       // `% 24` as a second guard against a "24" hour from any ICU build.
-      const h = parseInt(localAtEstimate.find((p) => p.type === "hour")?.value || "0") % 24;
-      const m = parseInt(localAtEstimate.find((p) => p.type === "minute")?.value || "0");
-      const d = parseInt(localAtEstimate.find((p) => p.type === "day")?.value || "0");
+      const part = (type: string) =>
+        parseInt(localAtEstimate.find((p) => p.type === type)?.value || "0");
+      const h = part("hour") % 24;
+      const m = part("minute");
 
-      if (h === 0 && m === 0 && d === day) break; // Found it
+      // Compare WHOLE dates, not the day of the month: on the 1st, a
+      // timezone west of UTC reads the first estimate (UTC midnight) as the
+      // 30th/31st of the previous month, and a day-of-month comparison took
+      // that for "a day ahead" and walked the result days early.
+      const dayDiff =
+        (Date.UTC(part("year"), part("month") - 1, part("day")) - Date.UTC(year, month - 1, day)) /
+        86400000;
+
+      if (dayDiff === 0 && h === 0 && m === 0) break; // Found it
 
       // Adjust: we want local to be 00:00 on `day`
-      let diffMinutes = h * 60 + m;
-      if (d !== day) {
-        // Day is wrong, big adjustment needed
-        if (d < day)
-          diffMinutes -= 24 * 60; // We're a day behind
-        else diffMinutes += 24 * 60; // We're a day ahead
-      }
+      const diffMinutes = dayDiff * 1440 + h * 60 + m;
       estimate = new Date(estimate.getTime() - diffMinutes * 60 * 1000);
     }
 

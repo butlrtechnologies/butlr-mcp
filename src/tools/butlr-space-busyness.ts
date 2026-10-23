@@ -162,6 +162,8 @@ const GET_ZONE = gql`
 export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
   let spaceId = args.space_id_or_name;
   let spaceType: "room" | "zone" = "room";
+  // Set when a name resolved to an archived space and was redirected.
+  let resolutionNote: string | undefined;
 
   // If not an ID, search for the space
   if (!spaceId.match(/^(room|zone)_/)) {
@@ -179,12 +181,31 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       );
     }
 
-    // Use best match
+    // Use the best match, but never a retired space when a live one is
+    // available: archived rooms keep their plain names in the search corpus,
+    // so an old room and its re-drawn replacement can share a name. An
+    // archived best match is followed to its replacement; failing that, the
+    // best non-archived match wins.
     const bestMatch = searchResults.matches[0];
-    spaceId = bestMatch.id;
-    spaceType = bestMatch.type as "room" | "zone";
+    const successorId = bestMatch.archived_at ? bestMatch.replaced_by?.[0] : undefined;
+    const activeMatch = searchResults.matches.find((m) => !m.archived_at);
+    if (successorId) {
+      spaceId = successorId;
+      spaceType = bestMatch.type as "room" | "zone";
+      resolutionNote = `"${bestMatch.name}" (${bestMatch.id}) is archived; showing its replacement ${successorId}.`;
+    } else if (bestMatch.archived_at && activeMatch) {
+      spaceId = activeMatch.id;
+      spaceType = activeMatch.type as "room" | "zone";
+      resolutionNote = `The closest name match "${bestMatch.name}" (${bestMatch.id}) is archived; showing "${activeMatch.name}" (${activeMatch.id}) instead.`;
+    } else {
+      spaceId = bestMatch.id;
+      spaceType = bestMatch.type as "room" | "zone";
+      if (bestMatch.archived_at) {
+        resolutionNote = `"${bestMatch.name}" (${bestMatch.id}) is archived and has no live data; use butlr_get_occupancy_timeseries for its history.`;
+      }
+    }
 
-    debug("space-busyness", `Using best match: ${bestMatch.name} (${spaceId})`);
+    debug("space-busyness", `Using match: ${spaceId} (best match ${bestMatch.name})`);
   } else {
     // Determine type from ID prefix
     spaceType = spaceId.startsWith("room_") ? "room" : "zone";
@@ -277,6 +298,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
 
   // Build response
   const warnings: string[] = [];
+  if (resolutionNote) warnings.push(resolutionNote);
   if (timezoneFallback) {
     warnings.push(
       `Could not determine site timezone for this space. Using ${spaceTimezone} as fallback — time-based comparisons may not reflect the site's actual local time.`

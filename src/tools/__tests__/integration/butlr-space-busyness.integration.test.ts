@@ -195,6 +195,82 @@ describe("butlr_space_busyness - Integration", () => {
       expect(result.current.occupancy).toBe(25);
     });
 
+    describe("archived matches", () => {
+      function mockRoomQuery() {
+        vi.mocked(apolloClient.query).mockImplementation((async (opts: any) => ({
+          data: {
+            room: { id: opts.variables.roomId, name: "Huddle", capacity: { max: 4 } },
+          },
+        })) as never);
+        vi.mocked(reportingClient.getCurrentOccupancy).mockImplementation(async (_t, ids) => [
+          {
+            start: "2026-10-23T15:00:00Z",
+            measurement: "room_occupancy",
+            value: 1,
+            asset_id: ids[0],
+          },
+        ]);
+      }
+
+      it("follows an archived best match to its replacement", async () => {
+        vi.mocked(searchAssets.executeSearchAssets).mockResolvedValue({
+          query: "Pilot - Huddle",
+          matches: [
+            {
+              id: "room_old",
+              type: "room",
+              name: "Pilot - Huddle",
+              match_score: 100,
+              path: "Tower / Floor 07 / Pilot - Huddle (archived 2026-10-22)",
+              archived_at: "2026-10-22T20:00:00Z",
+              replaced_by: ["room_v2"],
+            },
+            { id: "room_other", type: "room", name: "Pilot - Hub", match_score: 80, path: "x" },
+          ],
+          total_matches: 2,
+        } as any);
+        mockRoomQuery();
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "Pilot - Huddle",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_v2");
+        expect(vi.mocked(apolloClient.query).mock.calls[0][0].variables).toEqual({
+          roomId: "room_v2",
+        });
+        expect(result.warning).toContain('"Pilot - Huddle" (room_old) is archived');
+      });
+
+      it("prefers a non-archived match when the archived one has no replacement", async () => {
+        vi.mocked(searchAssets.executeSearchAssets).mockResolvedValue({
+          query: "Huddle",
+          matches: [
+            {
+              id: "room_old",
+              type: "room",
+              name: "Huddle",
+              match_score: 100,
+              path: "x",
+              archived_at: "2026-10-22T20:00:00Z",
+            },
+            { id: "room_live", type: "room", name: "Huddle 2", match_score: 90, path: "y" },
+          ],
+          total_matches: 2,
+        } as any);
+        mockRoomQuery();
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "Huddle",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_live");
+        expect(result.warning).toContain("is archived; showing");
+      });
+    });
+
     it("throws error if no spaces found", async () => {
       vi.mocked(searchAssets.executeSearchAssets).mockResolvedValue({
         query: "nonexistent",
