@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { getTimezoneForAsset } from "../timezone-helpers.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { getLocalMidnight, getTimezoneForAsset } from "../timezone-helpers.js";
 import type { Site, Building, Floor } from "../../clients/types.js";
 
 function makeSite(timezone: string | null): Site {
@@ -111,5 +111,37 @@ describe("getTimezoneForAsset", () => {
       expect(result.timezone).toBe("UTC");
       expect(result.isFallback).toBe(true);
     });
+  });
+});
+
+describe("getLocalMidnight", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns local midnight on the same local day", () => {
+    const at = new Date("2026-04-24T12:00:00Z");
+    expect(getLocalMidnight(at, "America/Indiana/Indianapolis").toISOString()).toBe(
+      "2026-04-24T04:00:00.000Z"
+    );
+    expect(getLocalMidnight(at, "UTC").toISOString()).toBe("2026-04-24T00:00:00.000Z");
+  });
+
+  it("is not thrown a day back by an ICU build that prints midnight as hour 24", () => {
+    // Some ICU builds (e.g. CI's Node) format local midnight as "24" under hour12:false.
+    const original = Intl.DateTimeFormat.prototype.formatToParts;
+    vi.spyOn(Intl.DateTimeFormat.prototype, "formatToParts").mockImplementation(function (
+      this: Intl.DateTimeFormat,
+      date?: Date | number
+    ) {
+      return original
+        .call(this, date)
+        .map((p) => (p.type === "hour" && p.value === "00" ? { ...p, value: "24" } : p));
+    });
+    const at = new Date("2026-04-24T12:00:00Z");
+    expect(getLocalMidnight(at, "America/Indiana/Indianapolis").toISOString()).toBe(
+      "2026-04-24T04:00:00.000Z"
+    );
+    expect(getLocalMidnight(at, "UTC").toISOString()).toBe("2026-04-24T00:00:00.000Z");
   });
 });

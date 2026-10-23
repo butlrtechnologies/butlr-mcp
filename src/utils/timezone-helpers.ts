@@ -202,10 +202,13 @@ export function getLocalMidnight(date: Date, timezone: string): Date {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
-        hour12: false,
+        // h23, not hour12:false: with hour12:false some ICU builds (CI's Node) print local
+        // midnight as "24", which read as 24h past midnight and stepped the result back a day.
+        hourCycle: "h23",
       }).formatToParts(estimate);
 
-      const h = parseInt(localAtEstimate.find((p) => p.type === "hour")?.value || "0");
+      // `% 24` as a second guard against a "24" hour from any ICU build.
+      const h = parseInt(localAtEstimate.find((p) => p.type === "hour")?.value || "0") % 24;
       const m = parseInt(localAtEstimate.find((p) => p.type === "minute")?.value || "0");
       const d = parseInt(localAtEstimate.find((p) => p.type === "day")?.value || "0");
 
