@@ -24,6 +24,9 @@ import type {
 } from "../types/responses.js";
 import { detectAssetType } from "./asset-helpers.js";
 import { isProductionSensor, throwIfGraphQLErrors } from "./graphql-helpers.js";
+import { ApiError } from "../clients/reporting-client.js";
+import { fetchHistoryEndDay } from "./history-end.js";
+import { debug } from "./debug.js";
 import { getTimezoneForAsset, buildTimezoneMetadata } from "./timezone-helpers.js";
 import { rethrowIfGraphQLError } from "./graphql-helpers.js";
 import {
@@ -297,10 +300,82 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
 }
 
 /**
+ * Outcome of the history-end probe for a sensorless room or zone.
+ * - skipped: the space has sensors (or is a floor); no probe was sent.
+ * - ok: `endDay` is the last full day of recorded history, or null if none.
+ * - failed: the probe errored (not auth); the history end is unknown.
+ */
+export type HistoryProbe =
+  | { status: "skipped" }
+  | { status: "ok"; endDay: string | null }
+  | { status: "failed" };
+
+/**
+ * Whether a space gets the history-end probe: an archived room/zone, or a
+ * room/zone with no sensors of either mode (the 0.6.2 "speculative" case).
+ * A room whose only sensor is a traffic sensor is not sensorless. Floors are
+ * never probed.
+ */
+export function isSensorlessSpace(asset: AssetContext): boolean {
+  if (asset.assetType === "floor") return false;
+  return (
+    Boolean(asset.archivedOn) ||
+    (asset.presenceSensors.length === 0 && asset.trafficSensors.length === 0)
+  );
+}
+
+/**
+ * Find where a sensorless room's or zone's recorded history ends (see
+ * src/utils/history-end.ts). Best-effort, like the 0.6.2 speculative
+ * lookups: auth errors still fail the call, anything else is reported as
+ * `failed` so the caller can warn on that asset alone.
+ */
+export async function probeSensorlessHistory(
+  asset: AssetContext,
+  assetId: string
+): Promise<HistoryProbe> {
+  if (!isSensorlessSpace(asset) || asset.assetType === "floor") return { status: "skipped" };
+  try {
+    const endDay = await fetchHistoryEndDay(asset.assetType, assetId, asset.timezone);
+    return { status: "ok", endDay };
+  } catch (error: unknown) {
+    if (error instanceof ApiError && (error.statusCode === 401 || error.statusCode === 403)) {
+      throw error;
+    }
+    debug("occupancy-helpers", `History-end probe failed for ${assetId}:`, error);
+    return { status: "failed" };
+  }
+}
+
+/** "Recorded history runs up to <day>." / "No recorded history." / "" when unknown. */
+function historyClause(probe: HistoryProbe): string {
+  if (probe.status !== "ok") return "";
+  return probe.endDay ? `Recorded history runs up to ${probe.endDay}.` : "No recorded history.";
+}
+
+/**
+ * Coverage note for a probed (sensorless or archived) space:
+ * "No sensors assigned (archived on <date>). Recorded history runs up to <day>."
+ * The archive part is dropped for an active space; the history part is
+ * dropped when the probe failed.
+ */
+export function sensorlessCoverageNote(asset: AssetContext, probe: HistoryProbe): string {
+  const archived = asset.archivedOn ? ` (archived on ${asset.archivedOn})` : "";
+  return [`No sensors assigned${archived}.`, historyClause(probe)].filter(Boolean).join(" ");
+}
+
+/** Asset-level warning when the probe failed, or undefined. */
+export function historyProbeWarning(asset: AssetContext, probe: HistoryProbe): string | undefined {
+  return probe.status === "failed"
+    ? `Could not determine where this ${asset.assetType}'s recorded history ends; the lookup failed. Retry to check.`
+    : undefined;
+}
+
+/**
  * Lifecycle fields for an occupancy response: archive state, replaced-space
- * links, and a `history_note` telling the caller where the rest of the
- * history lives. Series are never merged across a replacement; the note
- * names the other ID so the caller can fetch it.
+ * links, the probed history end, and a `history_note` telling the caller
+ * where the rest of the history lives. Series are never merged across a
+ * replacement; the note names the other ID so the caller can fetch it.
  *
  * `tool` picks the wording: a timeseries covers a range, while current
  * occupancy is a live reading an archived space can never have.
@@ -308,18 +383,32 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
 export function buildSpaceLifecycle(
   asset: AssetContext,
   assetId: string,
-  tool: "timeseries" | "current"
+  tool: "timeseries" | "current",
+  probe: HistoryProbe = { status: "skipped" }
 ): SpaceLifecycle {
   const lifecycle: SpaceLifecycle = {};
   const notes: string[] = [];
   const kind = asset.assetType;
 
+  if (probe.status === "ok" && probe.endDay) lifecycle.history_end = probe.endDay;
+  const warning = historyProbeWarning(asset, probe);
+  if (warning) lifecycle.history_warning = warning;
+
   if (asset.archivedAt && asset.archivedOn) {
     lifecycle.archived_at = asset.archivedAt;
+    const history = historyClause(probe);
     notes.push(
       tool === "timeseries"
-        ? `This ${kind} was archived on ${asset.archivedOn}; history recorded until then.`
-        : `This ${kind} was archived on ${asset.archivedOn}; archived spaces have no live data. Use butlr_get_occupancy_timeseries for its history up to then.`
+        ? [`This ${kind} was archived on ${asset.archivedOn}.`, history].filter(Boolean).join(" ")
+        : [
+            `This ${kind} was archived on ${asset.archivedOn}; archived spaces have no live data.`,
+            history,
+            probe.status === "ok" && !probe.endDay
+              ? ""
+              : "Use butlr_get_occupancy_timeseries for its history.",
+          ]
+            .filter(Boolean)
+            .join(" ")
     );
   }
 
@@ -351,23 +440,44 @@ export function buildSpaceLifecycle(
 }
 
 /**
- * Recommendation reason for an archived space with no usable reading, or
- * undefined for an active one. See RecommendationContext.archivedReason.
+ * Recommendation reason for a probed space with no usable reading, or
+ * undefined to keep the generic copy. Always set for an archived space;
+ * set for an active sensorless space only when the probe found history
+ * (with no history at all, "instrument it" is still the right advice).
+ * See RecommendationContext.archivedReason.
  */
-export function archivedRecommendationReason(
+export function sensorlessRecommendationReason(
   asset: AssetContext,
-  tool: "timeseries" | "current"
+  tool: "timeseries" | "current",
+  probe: HistoryProbe
 ): string | undefined {
-  if (!asset.archivedOn) return undefined;
-  const base =
+  const foundHistory = probe.status === "ok" && probe.endDay !== null;
+  if (!asset.archivedOn && !foundHistory) return undefined;
+
+  const archived = asset.archivedOn ? ` (archived on ${asset.archivedOn})` : "";
+  const parts = [
     tool === "timeseries"
-      ? `This ${asset.assetType} was archived on ${asset.archivedOn} and has no occupancy data in the requested time range. History is available up to ${asset.archivedOn}.`
-      : `This ${asset.assetType} was archived on ${asset.archivedOn} and has no live data.`;
+      ? `No sensors are assigned to this ${asset.assetType}${archived}, so it has no occupancy data in the requested time range.`
+      : `No sensors are assigned to this ${asset.assetType}${archived}, so it has no live data.`,
+  ];
+  if (probe.status === "ok") {
+    parts.push(
+      probe.endDay
+        ? tool === "timeseries"
+          ? `Recorded history runs up to ${probe.endDay}.`
+          : `Recorded history runs up to ${probe.endDay}; use butlr_get_occupancy_timeseries for it.`
+        : "It has no recorded history."
+    );
+  }
   const successors = asset.replacedBy ?? [];
-  if (successors.length === 0) return base;
-  return `${base} Its replacement${successors.length === 1 ? " is" : "s are"} ${successors
-    .map(describeSpaceRef)
-    .join(", ")}.`;
+  if (successors.length > 0) {
+    parts.push(
+      `Its replacement${successors.length === 1 ? " is" : "s are"} ${successors
+        .map(describeSpaceRef)
+        .join(", ")}.`
+    );
+  }
+  return parts.join(" ");
 }
 
 /**

@@ -10,7 +10,11 @@ import {
   getTrafficCoverageNote,
   buildRecommendation,
   buildSpaceLifecycle,
-  archivedRecommendationReason,
+  isSensorlessSpace,
+  probeSensorlessHistory,
+  sensorlessCoverageNote,
+  sensorlessRecommendationReason,
+  type HistoryProbe,
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
@@ -24,8 +28,9 @@ const GET_CURRENT_OCCUPANCY_DESCRIPTION =
   "Get current occupancy for floors, rooms, or zones (last 5 minutes median). Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete current occupancy picture.\n\n" +
-  "An archived room or zone (`archived_at` set) has no live data and is reported as such rather than queried; " +
-  "`history_note` points at butlr_get_occupancy_timeseries for its history and names any replacement.\n\n" +
+  "An archived room or zone (`archived_at` set) has no live data and is reported as such rather than queried. " +
+  "For a sensorless or archived room/zone, `history_end` is the last full day of its recorded history; " +
+  "`history_note` points at butlr_get_occupancy_timeseries for that history and names any replacement.\n\n" +
   "When NOT to Use:\n" +
   "- Historical occupancy trends or time-range analysis → use butlr_get_occupancy_timeseries instead\n" +
   "- Qualitative busyness labels (quiet/moderate/busy) with trend comparison → use butlr_space_busyness instead\n" +
@@ -73,9 +78,12 @@ export async function executeGetCurrentOccupancy(
     // only come back empty (or, for a zone, fail).
     const shouldQueryPresence =
       !archivedOn && (asset.assetType === "zone" || asset.presenceSensors.length > 0);
-    const archivedNote = archivedOn
-      ? `This ${asset.assetType} was archived on ${archivedOn}; archived spaces have no live data.`
-      : undefined;
+    // A sensorless or archived room/zone gets a history-end probe so the
+    // response can say where its recorded history ends.
+    const sensorless = isSensorlessSpace(asset);
+    let probe: HistoryProbe = await probeSensorlessHistory(asset, assetId);
+    const sensorlessNote = sensorless ? sensorlessCoverageNote(asset, probe) : undefined;
+    const archivedNote = archivedOn ? sensorlessNote : undefined;
     const presenceData: CurrentMeasurementData = {
       available: shouldQueryPresence,
       sensor_count: asset.presenceSensors.length,
@@ -109,6 +117,17 @@ export async function executeGetCurrentOccupancy(
         }
         presenceData.warning =
           "Failed to retrieve current presence data. Occupancy value may be missing.";
+      }
+    }
+
+    if (sensorless && !archivedOn) {
+      if (presenceHasData) {
+        // A zone with no attributed sensors that still reads live (zone
+        // occupancy can come from overlapping floor sensors) is not retired;
+        // don't annotate it with a history end.
+        probe = { status: "skipped" };
+      } else if (!presenceData.warning) {
+        presenceData.coverage_note = sensorlessNote;
       }
     }
 
@@ -162,7 +181,7 @@ export async function executeGetCurrentOccupancy(
       {
         assetType: asset.assetType,
         windowLabel: "the last 5 minutes",
-        archivedReason: archivedRecommendationReason(asset, "current"),
+        archivedReason: sensorlessRecommendationReason(asset, "current", probe),
       }
     );
 
@@ -170,7 +189,7 @@ export async function executeGetCurrentOccupancy(
       asset_id: assetId,
       asset_type: asset.assetType,
       asset_name: asset.assetName,
-      ...buildSpaceLifecycle(asset, assetId, "current"),
+      ...buildSpaceLifecycle(asset, assetId, "current", probe),
       ...asset.tzMetadata,
       presence: presenceData,
       traffic: trafficData,
