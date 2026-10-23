@@ -50,4 +50,15 @@ describe("time-resolver", () => {
       expect(resolveTimeToIso("2025-01-13T14:30:00-08:00")).toBe("2025-01-13T22:30:00.000Z");
     });
   });
+
+  describe("shared `now`", () => {
+    it('anchors "now" and relative forms to the instant passed in, not the clock', () => {
+      const now = new Date("2026-10-23T08:00:00.123Z");
+      expect(resolveTimeToIso("now", now)).toBe("2026-10-23T08:00:00.123Z");
+      expect(resolveTimeToIso("-5m", now)).toBe("2026-10-23T07:55:00.123Z");
+      // A range resolved against one instant is exact, whatever the clock does in between.
+      const span = parseTimeString("now", now).getTime() - parseTimeString("-5m", now).getTime();
+      expect(span).toBe(5 * 60 * 1000);
+    });
+  });
 });

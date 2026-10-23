@@ -310,8 +310,10 @@ export class ReportingRequestBuilder {
    * to absolute ISO-8601 here.
    */
   timeRange(start: string, stop?: string): this {
-    this.request.filter.start = resolveTimeToIso(start);
-    this.request.filter.stop = resolveTimeToIso(stop || "now");
+    // One clock read for both ends, so "-5m".."now" is exactly 5 minutes.
+    const now = new Date();
+    this.request.filter.start = resolveTimeToIso(start, now);
+    this.request.filter.stop = resolveTimeToIso(stop || "now", now);
     return this;
   }
 
@@ -366,8 +368,9 @@ export class ReportingRequestBuilder {
 
     // Guarantee absolute timestamps and an explicit stop even when
     // timeRange() was never called (e.g. the "-24h" constructor default)
-    this.request.filter.start = resolveTimeToIso(this.request.filter.start);
-    this.request.filter.stop = resolveTimeToIso(this.request.filter.stop || "now");
+    const now = new Date();
+    this.request.filter.start = resolveTimeToIso(this.request.filter.start, now);
+    this.request.filter.stop = resolveTimeToIso(this.request.filter.stop || "now", now);
 
     return this.request;
   }
