@@ -39,6 +39,10 @@ export interface FlattenedAsset {
   roomType?: string;
   coordinates?: number[][] | number[];
 
+  // Room and zone lifecycle (absent when active / when the API predates them)
+  archived_at?: string;
+  replaces_id?: string;
+
   // Sensor fields
   mac_address?: string;
   mode?: "presence" | "traffic";
@@ -118,6 +122,9 @@ export function flattenTopology(sites: Site[]): FlattenedAsset[] {
             capacity: room.capacity,
             area: room.area,
             coordinates: room.coordinates,
+            timezone: site.timezone || undefined,
+            ...(room.archivedAt ? { archived_at: room.archivedAt } : {}),
+            ...(room.replacesID ? { replaces_id: room.replacesID } : {}),
           });
         }
 
@@ -139,6 +146,9 @@ export function flattenTopology(sites: Site[]): FlattenedAsset[] {
             customID: zone.customID,
             capacity: zone.capacity,
             coordinates: zone.coordinates,
+            timezone: site.timezone || undefined,
+            ...(zone.archivedAt ? { archived_at: zone.archivedAt } : {}),
+            ...(zone.replacesID ? { replaces_id: zone.replacesID } : {}),
           });
         }
 

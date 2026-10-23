@@ -8,6 +8,7 @@
 import type { Capacity, Area } from "../clients/types.js";
 import type { TagMatch, TagName } from "../clients/queries/tags.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
+import type { SpaceRef } from "../utils/archived-spaces.js";
 
 // ---------------------------------------------------------------------------
 // Shared primitives
@@ -50,6 +51,29 @@ export interface AssetIdentifier {
   asset_id: string;
   asset_type: string;
   asset_name?: string;
+}
+
+/**
+ * Archive state and replaced-space links for a room or zone in occupancy
+ * responses. Every field is omitted for an active space that replaces
+ * nothing (and for every space when the API predates these fields).
+ */
+export interface SpaceLifecycle {
+  /** RFC 3339 time the space was archived. */
+  archived_at?: string;
+  /** The space this one replaced. Its own ID holds the history before the switch-over. */
+  replaces?: SpaceRef;
+  /** Spaces that replaced this one. */
+  replaced_by?: SpaceRef[];
+  /**
+   * Last full local day (YYYY-MM-DD) of recorded history for a sensorless or
+   * archived room/zone: the day before its final, partial recorded day.
+   */
+  history_end?: string;
+  /** Set when the lookup for `history_end` failed; the end is unknown. */
+  history_warning?: string;
+  /** Plain-language guidance on where the rest of this space's history lives. */
+  history_note?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +121,12 @@ export interface SpaceBusynessResponse {
     name: string;
     type: "room" | "zone";
     path: string;
+    /** Set when the space is archived (and was not redirected to a replacement). */
+    archived_at?: string;
+    /** Successors of an archived space. */
+    replaced_by?: SpaceRef[];
   };
+  /** Null for an archived space: it has no live busyness. */
   current: {
     occupancy: number;
     capacity: Capacity;
@@ -105,7 +134,9 @@ export interface SpaceBusynessResponse {
     label: "quiet" | "moderate" | "busy" | null;
     capacity_configured: boolean;
     as_of: string;
-  };
+  } | null;
+  /** For an archived space: where its history lives (see `history_end`). */
+  history_note?: string;
   trend?: {
     typical_for_time: number;
     vs_typical_percent: number;
@@ -288,6 +319,7 @@ export interface FetchEntityDetailsResponse {
 // ---------------------------------------------------------------------------
 
 export type AssetOccupancyTimeseries = AssetIdentifier &
+  SpaceLifecycle &
   TimezoneMetadata &
   MeasurementRecommendation & {
     presence: TimeseriesMeasurementData;
@@ -309,6 +341,7 @@ export interface OccupancyTimeseriesResponse {
 // ---------------------------------------------------------------------------
 
 export type AssetCurrentOccupancy = AssetIdentifier &
+  SpaceLifecycle &
   TimezoneMetadata &
   MeasurementRecommendation & {
     presence: CurrentMeasurementData;

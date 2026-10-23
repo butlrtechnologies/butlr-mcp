@@ -9,11 +9,13 @@
 
 /**
  * Parse a time string ("now", relative like "-24h", or ISO-8601) to a Date.
+ * `now` anchors "now" and relative forms; pass one shared instant when resolving both ends
+ * of a range, so a clock tick between the two reads can't stretch it by a millisecond.
  * @throws Error if the string is not a recognized time format
  */
-export function parseTimeString(timeStr: string): Date {
+export function parseTimeString(timeStr: string, now: Date = new Date()): Date {
   if (timeStr === "now") {
-    return new Date();
+    return new Date(now.getTime());
   }
 
   // Relative time pattern: -<number><unit>
@@ -21,7 +23,6 @@ export function parseTimeString(timeStr: string): Date {
   if (relativeMatch) {
     const amount = parseInt(relativeMatch[1], 10);
     const unit = relativeMatch[2];
-    const now = new Date();
 
     switch (unit) {
       case "m":
@@ -46,6 +47,6 @@ export function parseTimeString(timeStr: string): Date {
 /**
  * Resolve a time string to an absolute ISO-8601 timestamp string.
  */
-export function resolveTimeToIso(timeStr: string): string {
-  return parseTimeString(timeStr).toISOString();
+export function resolveTimeToIso(timeStr: string, now: Date = new Date()): string {
+  return parseTimeString(timeStr, now).toISOString();
 }

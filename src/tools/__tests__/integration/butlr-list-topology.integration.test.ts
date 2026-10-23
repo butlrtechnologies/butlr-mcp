@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeListTopology } from "../../butlr-list-topology.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
+import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import { GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY } from "../../../clients/queries/topology.js";
+import { resetArchiveFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
 import {
   clearTopologyCache,
   generateTopologyCacheKey,
@@ -8,6 +11,9 @@ import {
 } from "../../../cache/topology-cache.js";
 
 // Mock the GraphQL client
+// What the fallback sends to an API without the archive fields.
+const GET_FULL_TOPOLOGY_LEGACY = stripArchiveFields(GET_FULL_TOPOLOGY);
+
 vi.mock("../../../clients/graphql-client.js", () => ({
   apolloClient: {
     query: vi.fn(),
@@ -1982,6 +1988,57 @@ describe("butlr_list_topology - Integration", () => {
       await expect(
         executeListTopology({ tag_names: ["huddle"], starting_depth: 0, traversal_depth: 0 })
       ).rejects.toThrow(/\[INTERNAL_ERROR\].*expected array.*null/);
+    });
+  });
+
+  describe("archived spaces", () => {
+    beforeEach(() => {
+      resetArchiveFieldSupport();
+    });
+
+    function archivedFixture() {
+      const topo = buildTopologyFixture();
+      const floor1 = topo.sites.data[0].buildings[0].floors[0] as any;
+      // 01:30 UTC on Oct 21 = 21:30 on Oct 20 in New York (the site tz)
+      floor1.rooms[1].archivedAt = "2026-10-21T01:30:00Z";
+      floor1.rooms[0].replacesID = "room_002";
+      floor1.zones[0].archivedAt = "2026-10-21T01:30:00Z";
+      return topo;
+    }
+
+    it("keeps archived rooms and zones in the tree with an archive label", async () => {
+      setupFullTopologyMocks(archivedFixture());
+
+      const result = await executeListTopology({ starting_depth: 3, traversal_depth: 0 });
+
+      expect(vi.mocked(apolloClient.query).mock.calls[0][0].query).toBe(GET_FULL_TOPOLOGY);
+      expect(result.tree).toEqual(
+        expect.arrayContaining([
+          ["room_001", "Conf A"],
+          ["room_002", "Conf B (archived 2026-10-20)"],
+          ["zone_001", "Reception (archived 2026-10-20)"],
+          ["room_003", "Board Room"],
+        ])
+      );
+    });
+
+    it("falls back to the legacy query when the API lacks the archive fields", async () => {
+      const legacyTopo = buildTopologyFixture();
+      vi.mocked(apolloClient.query).mockResolvedValueOnce({
+        data: undefined,
+        error: new CombinedGraphQLErrors({
+          errors: [{ message: 'Cannot query field "replacesID" on type "Room".' }],
+        }),
+      } as any);
+      setupFullTopologyMocks(legacyTopo);
+
+      const result = await executeListTopology({ starting_depth: 3, traversal_depth: 0 });
+
+      const sent = vi.mocked(apolloClient.query).mock.calls.map((c) => c[0].query);
+      expect(sent.slice(0, 2)).toEqual([GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY]);
+      expect(result.tree).toEqual(expect.arrayContaining([["room_002", "Conf B"]]));
+      // The fallback is a complete answer, not a partial one.
+      expect(result.warnings ?? []).not.toContainEqual({ kind: "partial_topology" });
     });
   });
 });

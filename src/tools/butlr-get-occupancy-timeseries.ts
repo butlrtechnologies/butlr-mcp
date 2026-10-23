@@ -10,8 +10,15 @@ import {
   getPresenceCoverageNote,
   getTrafficCoverageNote,
   buildRecommendation,
+  buildSpaceLifecycle,
+  isSensorlessSpace,
+  probeSensorlessHistory,
+  sensorlessCoverageNote,
+  sensorlessRecommendationReason,
+  type HistoryProbe,
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   OccupancyTimeseriesResponse,
@@ -24,6 +31,10 @@ const GET_OCCUPANCY_TIMESERIES_DESCRIPTION =
   "Get occupancy timeseries data for floors, rooms, or zones. Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete occupancy picture without guessing measurement types.\n\n" +
+  "Sensorless, archived and replaced spaces: a room or zone with no sensors (archived or not; see `archived_at`) still returns the history it recorded; " +
+  "`history_end` is the last full day of that history (the day before its final, partial recorded day), which can be well before the archive date. " +
+  "A space that replaced another carries `replaces`, and `history_note` names the predecessor's ID: series are not merged, " +
+  "so query the predecessor separately for history before the switch-over.\n\n" +
   "When NOT to Use:\n" +
   "- Real-time current occupancy snapshot → use butlr_get_current_occupancy instead\n" +
   "- Qualitative busyness labels (quiet/moderate/busy) → use butlr_space_busyness instead\n" +
@@ -83,46 +94,41 @@ async function queryTimeseries(
   );
 }
 
-/**
- * Map over items with at most `limit` calls in flight, preserving order.
- */
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
-
 async function buildPresenceData(
   asset: ReturnType<typeof resolveAssetContext>,
   assetId: string,
   args: GetOccupancyTimeseriesArgs
-): Promise<TimeseriesMeasurementData> {
-  // Always query, whatever the current sensor count: zones have no
-  // client-visible sensor attribution (see occupancy-helpers
-  // `resolveAssetContext`), and a room or floor with 0 sensors today can
-  // still hold history from sensors that were moved elsewhere (e.g. a room
-  // superseded by a re-mapped "_V2" copy).
+): Promise<{ presenceData: TimeseriesMeasurementData; probe: HistoryProbe }> {
+  // Always query, whatever the current sensor count: a room or zone with 0
+  // sensors today can still hold history from sensors that were moved
+  // elsewhere (e.g. a room superseded by a re-mapped "_V2" copy).
   const sensorCount = asset.presenceSensors.length;
-  // For a 0-sensor room/floor the query is speculative: it may well find
-  // nothing, and its failure must not take down the rest of the batch.
-  const speculative = asset.assetType !== "zone" && sensorCount === 0;
+  // A sensorless space (a room with no sensors of any mode, or an ARCHIVED
+  // zone with none; see isSensorlessSpace) gets a history-end probe in
+  // parallel with the range query, and its coverage note says where its
+  // recorded history ends. A non-archived zone is never sensorless, whatever
+  // its attributed-sensor count or however empty its range: zone occupancy
+  // can come from overlapping floor sensors, so an empty range on a live
+  // zone just means no data in range.
+  const sensorless = isSensorlessSpace(asset);
+  // A 0-presence floor, a room whose only sensors are traffic-mode, or a
+  // room ID that did not resolve keeps the 0.6.2 speculative note.
+  const speculative = !sensorless && asset.assetType !== "zone" && sensorCount === 0;
+  // These lookups may well find nothing, and their failure must not take
+  // down the rest of the batch. Non-archived zones still fail the call on a
+  // 4xx as before.
+  const bestEffort = speculative || sensorless;
   const presenceData: TimeseriesMeasurementData = {
-    available: !speculative,
+    available: !bestEffort,
     sensor_count: sensorCount,
     coverage_note: getPresenceCoverageNote(asset.assetType, sensorCount),
     timeseries: [],
   };
+
+  const early = sensorless ? probeSensorlessHistory(asset, assetId) : undefined;
+  // Keep an auth rejection from going unhandled while the range query is in
+  // flight; it is rethrown by the await below.
+  early?.catch(() => undefined);
 
   try {
     presenceData.timeseries = await queryTimeseries(
@@ -137,20 +143,32 @@ async function buildPresenceData(
   } catch (error: unknown) {
     debug("occupancy-timeseries", "Presence query failed:", error);
     // Auth failures are not asset-specific, so they still fail the call.
-    // Anything else on a speculative lookup (429, 5xx, timeout) is reported
+    // Anything else on a best-effort lookup (429, 5xx, timeout) is reported
     // on this asset only.
     const isAuthError =
       error instanceof ApiError && (error.statusCode === 401 || error.statusCode === 403);
-    if (error instanceof ApiError && error.statusCode >= 400 && (!speculative || isAuthError)) {
+    if (error instanceof ApiError && error.statusCode >= 400 && (!bestEffort || isAuthError)) {
       throw error;
     }
     presenceData.warning =
       "Failed to retrieve presence timeseries data. Results may be incomplete.";
   }
 
-  if (speculative) {
+  const probe: HistoryProbe = early ? await early : { status: "skipped" };
+
+  if (bestEffort && presenceData.timeseries.length > 0) {
+    presenceData.available = true;
+  }
+
+  if (probe.status !== "skipped") {
+    presenceData.coverage_note = sensorlessCoverageNote(asset, probe);
+    if (presenceData.warning && presenceData.timeseries.length === 0) {
+      // Don't let "no data" stand when the range lookup itself failed.
+      presenceData.coverage_note +=
+        " The lookup for the requested range failed; it may still have data, retry to check.";
+    }
+  } else if (speculative) {
     if (presenceData.timeseries.length > 0) {
-      presenceData.available = true;
       presenceData.coverage_note = `No presence sensors are assigned to this ${asset.assetType} now; this history was recorded by sensors assigned to it earlier.`;
     } else if (presenceData.warning) {
       // Don't claim "no sensors, no data" when we never found out.
@@ -158,7 +176,7 @@ async function buildPresenceData(
     }
   }
 
-  return presenceData;
+  return { presenceData, probe };
 }
 
 async function buildTrafficData(
@@ -218,7 +236,7 @@ export async function executeGetOccupancyTimeseries(
 
   const resolved = await mapWithConcurrency(args.asset_ids, ASSET_CONCURRENCY, async (assetId) => {
     const asset = resolveAssetContext(assetId, ctx);
-    const [presenceData, trafficData] = await Promise.all([
+    const [{ presenceData, probe }, trafficData] = await Promise.all([
       buildPresenceData(asset, assetId, args),
       buildTrafficData(asset, assetId, args),
     ]);
@@ -229,13 +247,18 @@ export async function executeGetOccupancyTimeseries(
       trafficData,
       presenceData.timeseries.length > 0,
       trafficData.timeseries.length > 0,
-      { assetType: asset.assetType, windowLabel: "the requested time range" }
+      {
+        assetType: asset.assetType,
+        windowLabel: "the requested time range",
+        archivedReason: sensorlessRecommendationReason(asset, "timeseries", probe),
+      }
     );
 
     const assetEntry: AssetOccupancyTimeseries = {
       asset_id: assetId,
       asset_type: asset.assetType,
       asset_name: asset.assetName,
+      ...buildSpaceLifecycle(asset, assetId, "timeseries", probe),
       ...asset.tzMetadata,
       presence: presenceData,
       traffic: trafficData,

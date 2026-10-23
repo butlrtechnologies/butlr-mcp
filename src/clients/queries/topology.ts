@@ -1,4 +1,5 @@
 import { gql } from "@apollo/client";
+import { SPACE_ARCHIVE_FIELDS } from "./archive-fields.js";
 
 /**
  * GraphQL queries for topology retrieval
@@ -66,6 +67,11 @@ export const GET_SITE_STRUCTURE = gql`
  * shows no pagination args on the nested `sensors` field).
  * Still use GET_ALL_SENSORS and GET_ALL_HIVES for full device detail (model,
  * battery, heartbeat, ...), merged by floor_id/room_id.
+ *
+ * Rooms and zones select `archivedAt`/`replacesID` (see archive-fields.ts).
+ * An API that predates those fields rejects the whole query, so fetch this
+ * through `queryWithArchiveFallback`, which retries once with those fields
+ * stripped (see archive-fallback.ts).
  */
 export const GET_FULL_TOPOLOGY = gql`
   query GetFullTopology {
@@ -118,6 +124,7 @@ export const GET_FULL_TOPOLOGY = gql`
                 mid
               }
               coordinates
+              ${SPACE_ARCHIVE_FIELDS}
             }
             zones {
               id
@@ -126,6 +133,7 @@ export const GET_FULL_TOPOLOGY = gql`
               room_id
               customID
               coordinates
+              ${SPACE_ARCHIVE_FIELDS}
               sensors {
                 id
                 name

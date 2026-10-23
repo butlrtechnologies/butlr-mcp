@@ -826,4 +826,73 @@ describe("formatTopologyTree", () => {
       expect(result[0].length).toBe(2);
     });
   });
+
+  describe("archived rooms and zones", () => {
+    function archivedTopology(siteTimezone: string | null): Site[] {
+      return [
+        {
+          id: "site_a",
+          name: "Indy Tower",
+          timezone: siteTimezone,
+          buildings: [
+            {
+              id: "building_a",
+              name: "Tower",
+              site_id: "site_a",
+              floors: [
+                {
+                  id: "floor_7",
+                  name: "Floor 07",
+                  building_id: "building_a",
+                  rooms: [
+                    // 01:30 UTC on the 21st = evening of the 20th in Indianapolis
+                    { id: "room_old", name: "Pilot - Drop In", archivedAt: "2026-10-21T01:30:00Z" },
+                    { id: "room_new", name: "Drop In_V2", replacesID: "room_old" },
+                  ],
+                  zones: [
+                    { id: "zone_old", name: "Desk Zone", archivedAt: "2026-10-21T01:30:00Z" },
+                    {
+                      id: "zone_in_room",
+                      name: "Nook",
+                      room_id: "room_old",
+                      archivedAt: "2026-10-21T01:30:00Z",
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ] as unknown as Site[];
+    }
+
+    it("keeps archived spaces in the tree with a site-local archive date", () => {
+      const result = formatTopologyTree(archivedTopology("America/Indiana/Indianapolis"), 3, 0);
+      expect(result).toEqual([
+        ["room_old", "Pilot - Drop In (archived 2026-10-20)"],
+        ["room_new", "Drop In_V2"],
+        ["zone_old", "Desk Zone (archived 2026-10-20)"],
+        ["zone_in_room", "Nook (archived 2026-10-20)"],
+      ]);
+    });
+
+    it("labels nested rooms and zones in a full tree", () => {
+      const result = formatTopologyTree(archivedTopology("America/Indiana/Indianapolis"), 2, 10);
+      const floorChildren = (result[0] as [string, string, TopologyNode[]])[2];
+      expect(floorChildren).toEqual([
+        [
+          "room_old",
+          "Pilot - Drop In (archived 2026-10-20)",
+          [["zone_in_room", "Nook (archived 2026-10-20)"]],
+        ],
+        ["room_new", "Drop In_V2"],
+        ["zone_old", "Desk Zone (archived 2026-10-20)"],
+      ]);
+    });
+
+    it("dates in UTC when the site has no timezone", () => {
+      const result = formatTopologyTree(archivedTopology(null), 3, 0);
+      expect(result[0]).toEqual(["room_old", "Pilot - Drop In (archived 2026-10-21)"]);
+    });
+  });
 });

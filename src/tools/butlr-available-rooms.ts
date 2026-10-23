@@ -1,5 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
+import { queryWithArchiveFallback } from "../clients/archive-fallback.js";
+import { SPACE_ARCHIVE_FIELDS } from "../clients/queries/archive-fields.js";
+import { isArchived } from "../utils/archived-spaces.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
 import type { Room, Building, Floor } from "../clients/types.js";
@@ -143,6 +146,7 @@ const GET_ROOMS_BY_FLOOR = gql`
         }
         coordinates
         customID
+        ${SPACE_ARCHIVE_FIELDS}
       }
       building {
         id
@@ -178,6 +182,7 @@ const GET_ROOMS_BY_BUILDING = gql`
           }
           coordinates
           customID
+          ${SPACE_ARCHIVE_FIELDS}
         }
       }
     }
@@ -202,6 +207,7 @@ export const GET_ROOMS_BY_TAG = gql`
         }
         coordinates
         customID
+        ${SPACE_ARCHIVE_FIELDS}
         floor {
           id
           name
@@ -246,6 +252,7 @@ const GET_ALL_ROOMS = gql`
               }
               coordinates
               customID
+              ${SPACE_ARCHIVE_FIELDS}
             }
           }
         }
@@ -297,10 +304,8 @@ export async function executeAvailableRooms(
 
   try {
     if (args.floor_id) {
-      const result = await apolloClient.query<{ floor: Floor }>({
-        query: GET_ROOMS_BY_FLOOR,
-        variables: { floorId: args.floor_id },
-        fetchPolicy: "network-only",
+      const result = await queryWithArchiveFallback<{ floor: Floor }>(GET_ROOMS_BY_FLOOR, {
+        floorId: args.floor_id,
       });
       throwIfGraphQLErrors(result);
 
@@ -312,10 +317,8 @@ export async function executeAvailableRooms(
       floors = [result.data.floor];
       buildings = result.data.floor.building ? [result.data.floor.building] : [];
     } else if (args.building_id) {
-      const result = await apolloClient.query<{ building: Building }>({
-        query: GET_ROOMS_BY_BUILDING,
-        variables: { buildingId: args.building_id },
-        fetchPolicy: "network-only",
+      const result = await queryWithArchiveFallback<{ building: Building }>(GET_ROOMS_BY_BUILDING, {
+        buildingId: args.building_id,
       });
       throwIfGraphQLErrors(result);
 
@@ -420,11 +423,10 @@ export async function executeAvailableRooms(
 
       const useOR = tagMatch === "any";
 
-      const result = await apolloClient.query<{ roomsByTag: { data: Room[] } | null }>({
-        query: GET_ROOMS_BY_TAG,
-        variables: { tagIDs: resolvedIds, useOR },
-        fetchPolicy: "network-only",
-      });
+      const result = await queryWithArchiveFallback<{ roomsByTag: { data: Room[] } | null }>(
+        GET_ROOMS_BY_TAG,
+        { tagIDs: resolvedIds, useOR }
+      );
       throwIfGraphQLErrors(result);
 
       if (!result.data?.roomsByTag?.data) {
@@ -445,12 +447,9 @@ export async function executeAvailableRooms(
         }
       }
     } else {
-      const result = await apolloClient.query<{
+      const result = await queryWithArchiveFallback<{
         sites: { data: { buildings: Building[] }[] };
-      }>({
-        query: GET_ALL_ROOMS,
-        fetchPolicy: "network-only",
-      });
+      }>(GET_ALL_ROOMS);
       throwIfGraphQLErrors(result);
 
       if (!result.data?.sites?.data) {
@@ -471,6 +470,11 @@ export async function executeAvailableRooms(
     rethrowIfGraphQLError(error);
     throw error;
   }
+
+  // Archived rooms are retired: never "available", and out of the room
+  // counts below (building_context.total_rooms / occupancy_percent), where
+  // their missing live reading would otherwise count them as occupied.
+  rooms = rooms.filter((r) => !isArchived(r));
 
   debug("available-rooms", `Found ${rooms.length} rooms before filtering`);
 

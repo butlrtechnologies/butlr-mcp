@@ -1,6 +1,16 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
+import { queryWithArchiveFallback } from "../clients/archive-fallback.js";
+import { SPACE_ARCHIVE_FIELDS } from "../clients/queries/archive-fields.js";
+import { fetchTopology } from "../utils/occupancy-helpers.js";
+import {
+  describeSpaceRef,
+  findReplacements,
+  formatArchiveDate,
+  isArchived,
+  toSpaceRef,
+  type SpaceRef,
+} from "../utils/archived-spaces.js";
 import { z } from "zod";
 import type { Room, Zone, Floor } from "../clients/types.js";
 import { getCurrentOccupancy, ApiError } from "../clients/reporting-client.js";
@@ -90,6 +100,7 @@ const SPACE_BUSYNESS_DESCRIPTION =
   "- Entry/exit traffic counts (lobby, building entrance) → use butlr_traffic_flow instead\n" +
   "- Searching for a space first → use butlr_search_assets to find room/zone ID by name\n\n" +
   "Qualitative Labels: Quiet (<30% utilized), Moderate (30-70%), Busy (>=70%)\n\n" +
+  "Archived spaces: an archived room or zone has no live busyness. If it has exactly one replacement that is not archived, the tool reports the replacement and says so in `warning`; otherwise it returns the archived space with `space.archived_at`, `current: null`, any successors in `space.replaced_by`, and a `history_note` pointing at `history_end` from the occupancy tools.\n\n" +
   "See Also: butlr_get_current_occupancy, butlr_traffic_flow, butlr_search_assets, butlr_get_occupancy_timeseries";
 
 export type SpaceBusynessArgs = z.output<typeof SpaceBusynessArgsSchema>;
@@ -106,6 +117,7 @@ const GET_ROOM = gql`
       name
       floorID
       roomType
+      ${SPACE_ARCHIVE_FIELDS}
       capacity {
         max
         mid
@@ -134,6 +146,7 @@ const GET_ZONE = gql`
       id
       name
       floorID
+      ${SPACE_ARCHIVE_FIELDS}
       capacity {
         max
         mid
@@ -156,12 +169,99 @@ const GET_ZONE = gql`
   }
 `;
 
+interface FetchedSpace {
+  space: RoomWithFloor | ZoneWithFloor;
+  path: string;
+  timezone: string;
+  timezoneFallback: boolean;
+}
+
+/**
+ * Fetch a room or zone by ID, including its archive fields (stripped and
+ * retried on an API that predates them, see archive-fallback.ts).
+ */
+async function fetchSpace(spaceType: "room" | "zone", spaceId: string): Promise<FetchedSpace> {
+  let space: RoomWithFloor | ZoneWithFloor | undefined;
+  try {
+    if (spaceType === "room") {
+      const result = await queryWithArchiveFallback<{ room: RoomWithFloor }>(GET_ROOM, {
+        roomId: spaceId,
+      });
+      throwIfGraphQLErrors(result);
+      space = result.data?.room;
+      if (!space) throw new Error(`Room ${spaceId} not found`);
+    } else {
+      const result = await queryWithArchiveFallback<{ zone: ZoneWithFloor }>(GET_ZONE, {
+        zoneId: spaceId,
+      });
+      throwIfGraphQLErrors(result);
+      space = result.data?.zone;
+      if (!space) throw new Error(`Zone ${spaceId} not found`);
+    }
+  } catch (error: unknown) {
+    rethrowIfGraphQLError(error);
+    throw error;
+  }
+
+  const floor = space.floor;
+  const building = floor?.building;
+  const siteTimezone = building?.site?.timezone;
+  return {
+    space,
+    path: building ? `${building.name} > ${floor.name} > ${space.name}` : space.name,
+    timezone: siteTimezone || process.env.BUTLR_TIMEZONE || "UTC",
+    timezoneFallback: !siteTimezone,
+  };
+}
+
+/**
+ * Response for an archived space that was not redirected to a replacement:
+ * no live busyness (`current: null`), flagged as archived, pointing at the
+ * occupancy tools for its history and listing any successors.
+ */
+function buildArchivedResponse(
+  fetched: FetchedSpace,
+  spaceType: "room" | "zone",
+  successors: SpaceRef[],
+  warnings: string[]
+): SpaceBusynessResponse {
+  const { space } = fetched;
+  const archivedAt = space.archivedAt as string;
+  const archivedOn = formatArchiveDate(archivedAt, fetched.timezone);
+  const successorText =
+    successors.length > 0
+      ? ` It was replaced by ${successors.map(describeSpaceRef).join(", ")}; query ${successors.length === 1 ? "that space" : "one of those"} for live busyness.`
+      : "";
+  const response: SpaceBusynessResponse = {
+    space: {
+      id: space.id,
+      name: space.name,
+      type: spaceType,
+      path: fetched.path,
+      archived_at: archivedAt,
+      ...(successors.length > 0 ? { replaced_by: successors } : {}),
+    },
+    current: null,
+    recommendation: `This ${spaceType} was archived on ${archivedOn} and has no live busyness.${successorText}`,
+    history_note:
+      `Archived on ${archivedOn}. Its recorded history can end earlier than that: ` +
+      `butlr_get_occupancy_timeseries and butlr_get_current_occupancy return the last recorded day as history_end for ${space.id}.`,
+    summary: `${space.name} is archived (since ${archivedOn}) and has no live occupancy.`,
+    timestamp: new Date().toISOString(),
+  };
+  if (warnings.length > 0) response.warning = warnings.join(" ");
+  return response;
+}
+
 /**
  * Execute space busyness tool
  */
-export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
+export async function executeSpaceBusyness(
+  args: SpaceBusynessArgs
+): Promise<SpaceBusynessResponse> {
   let spaceId = args.space_id_or_name;
   let spaceType: "room" | "zone" = "room";
+  const warnings: string[] = [];
 
   // If not an ID, search for the space
   if (!spaceId.match(/^(room|zone)_/)) {
@@ -179,7 +279,9 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       );
     }
 
-    // Use best match
+    // Use the best match. An archived best match is NOT swapped for a weaker
+    // non-archived one; it gets the archived handling below, like an
+    // archived space passed by ID.
     const bestMatch = searchResults.matches[0];
     spaceId = bestMatch.id;
     spaceType = bestMatch.type as "room" | "zone";
@@ -190,58 +292,37 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
     spaceType = spaceId.startsWith("room_") ? "room" : "zone";
   }
 
-  // Query space details
-  let space: RoomWithFloor | ZoneWithFloor | null = null;
-  let spacePath = "";
-  let spaceTimezone: string = process.env.BUTLR_TIMEZONE || "UTC";
-  let timezoneFallback = true;
+  let fetched = await fetchSpace(spaceType, spaceId);
 
-  try {
-    if (spaceType === "room") {
-      const result = await apolloClient.query<{ room: RoomWithFloor }>({
-        query: GET_ROOM,
-        variables: { roomId: spaceId },
-        fetchPolicy: "network-only",
-      });
-      throwIfGraphQLErrors(result);
-
-      if (!result.data?.room) {
-        throw new Error(`Room ${spaceId} not found`);
-      }
-
-      space = result.data.room;
-      const floor = space.floor;
-      const building = floor?.building;
-      spacePath = building ? `${building.name} > ${floor.name} > ${space.name}` : space.name;
-      if (building?.site?.timezone) {
-        spaceTimezone = building.site.timezone;
-        timezoneFallback = false;
-      }
-    } else {
-      const result = await apolloClient.query<{ zone: ZoneWithFloor }>({
-        query: GET_ZONE,
-        variables: { zoneId: spaceId },
-        fetchPolicy: "network-only",
-      });
-      throwIfGraphQLErrors(result);
-
-      if (!result.data?.zone) {
-        throw new Error(`Zone ${spaceId} not found`);
-      }
-
-      space = result.data.zone;
-      const floor = space.floor;
-      const building = floor?.building;
-      spacePath = building ? `${building.name} > ${floor.name} > ${space.name}` : space.name;
-      if (building?.site?.timezone) {
-        spaceTimezone = building.site.timezone;
-        timezoneFallback = false;
-      }
+  // An archived space has no live busyness. Follow its replacement only when
+  // that is unambiguous: exactly one successor, itself not archived. A split
+  // (several successors) or an archived successor returns the archived space
+  // itself, flagged, with its successors listed.
+  if (fetched.space.archivedAt) {
+    const topology = await fetchTopology();
+    const successors = findReplacements(topology.floors, spaceType, spaceId);
+    const successorRefs = successors.map((s) => toSpaceRef(s.id, s));
+    if (successors.length === 1 && !isArchived(successors[0])) {
+      const archived = fetched.space;
+      fetched = await fetchSpace(spaceType, successors[0].id);
+      spaceId = fetched.space.id;
+      warnings.push(
+        `"${archived.name}" (${archived.id}) is archived; showing its replacement ${describeSpaceRef(toSpaceRef(fetched.space.id, fetched.space))}.`
+      );
     }
-  } catch (error: unknown) {
-    rethrowIfGraphQLError(error);
-    throw error;
+    if (fetched.space.archivedAt) {
+      if (fetched.timezoneFallback) {
+        warnings.push(
+          `Could not determine site timezone for this space. Using ${fetched.timezone} as fallback for the archive date.`
+        );
+      }
+      return buildArchivedResponse(fetched, spaceType, successorRefs, warnings);
+    }
   }
+
+  const space = fetched.space;
+  const spaceTimezone = fetched.timezone;
+  const timezoneFallback = fetched.timezoneFallback;
 
   // Get current occupancy (check cache first)
   const now = new Date();
@@ -276,7 +357,6 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
   const label = utilizationPercent !== null ? getOccupancyLabel(utilizationPercent) : null;
 
   // Build response
-  const warnings: string[] = [];
   if (timezoneFallback) {
     warnings.push(
       `Could not determine site timezone for this space. Using ${spaceTimezone} as fallback — time-based comparisons may not reflect the site's actual local time.`
@@ -293,7 +373,7 @@ export async function executeSpaceBusyness(args: SpaceBusynessArgs) {
       id: space.id,
       name: space.name,
       type: spaceType,
-      path: spacePath,
+      path: fetched.path,
     },
     current: {
       occupancy: Math.round(currentOccupancy),

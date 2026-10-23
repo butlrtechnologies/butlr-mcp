@@ -725,6 +725,42 @@ describe("butlr_traffic_flow - Integration", () => {
       }
     });
 
+    it("starts 'today' at local midnight on the 1st of a month (not days earlier)", async () => {
+      // 08:00 PDT on Nov 1. getLocalMidnight used to compare only the day of
+      // the month and walked back to Oct 28 for US sites on the 1st.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-11-01T15:00:00.000Z"));
+      try {
+        mockGraphQLTopologyAndSensors([
+          {
+            id: "sensor_direct",
+            name: "N. Elevator",
+            mac_address: "aa:bb:cc:dd:ee:01",
+            mode: "traffic",
+            room_id: "room_test",
+            floor_id: "floor_test",
+          },
+        ]);
+        const timeRangeSpy = vi.spyOn(
+          reportingClient.ReportingRequestBuilder.prototype,
+          "timeRange"
+        );
+        vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+          data: [],
+        });
+
+        const result = await executeTrafficFlow({
+          space_id_or_name: "sensor_direct",
+          time_window: "today",
+        });
+
+        expect(timeRangeSpy.mock.calls[0][0]).toBe("2026-11-01T07:00:00.000Z");
+        expect(result.traffic.period.start_utc).toBe("2026-11-01T07:00:00.000Z");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("works for a traffic sensor with no room assigned", async () => {
       mockGraphQLTopologyAndSensors([
         {

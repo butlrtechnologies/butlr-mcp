@@ -5,6 +5,10 @@ import * as reportingClient from "../../../clients/reporting-client.js";
 import * as statsClient from "../../../clients/stats-client.js";
 import * as searchAssets from "../../butlr-search-assets.js";
 import { clearOccupancyCache } from "../../../cache/occupancy-cache.js";
+import { GET_FULL_TOPOLOGY } from "../../../clients/queries/topology.js";
+import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
+import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import { print } from "graphql";
 
 // Mock all the clients
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -47,6 +51,7 @@ describe("butlr_space_busyness - Integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearOccupancyCache(); // Clear cache between tests
+    resetArchiveFieldSupport();
   });
 
   describe("Direct ID lookup", () => {
@@ -193,6 +198,226 @@ describe("butlr_space_busyness - Integration", () => {
 
       expect(result.space.id).toBe("room_cafe");
       expect(result.current.occupancy).toBe(25);
+    });
+
+    describe("archived spaces", () => {
+      const ARCHIVED_AT = "2026-10-22T20:00:00Z";
+
+      /**
+       * Floor 7 rooms keyed by id; `room(id:)` and the topology both answer
+       * from this table.
+       */
+      function mockFloor7(rooms: Array<Record<string, unknown>>) {
+        vi.mocked(apolloClient.query).mockImplementation((async (opts: any) => {
+          if (opts.query === GET_FULL_TOPOLOGY) {
+            return {
+              data: {
+                sites: {
+                  data: [
+                    {
+                      id: "site_1",
+                      name: "Indy",
+                      timezone: "America/Indiana/Indianapolis",
+                      buildings: [
+                        {
+                          id: "building_1",
+                          name: "Tower",
+                          site_id: "site_1",
+                          floors: [
+                            {
+                              id: "floor_7",
+                              name: "Floor 07",
+                              building_id: "building_1",
+                              rooms,
+                              zones: [],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            };
+          }
+          const room = rooms.find((r) => r.id === opts.variables?.roomId);
+          return {
+            data: {
+              room: room && {
+                ...room,
+                capacity: { max: 4 },
+                floor: {
+                  id: "floor_7",
+                  name: "Floor 07",
+                  building: {
+                    id: "building_1",
+                    name: "Tower",
+                    site_id: "site_1",
+                    site: { id: "site_1", timezone: "America/Indiana/Indianapolis" },
+                  },
+                },
+              },
+            },
+          };
+        }) as never);
+        vi.mocked(reportingClient.getCurrentOccupancy).mockImplementation(async (_t, ids) => [
+          {
+            start: "2026-10-23T15:00:00Z",
+            measurement: "room_occupancy",
+            value: 1,
+            asset_id: ids[0],
+          },
+        ]);
+      }
+
+      function searchReturns(matches: Array<Record<string, unknown>>) {
+        vi.mocked(searchAssets.executeSearchAssets).mockResolvedValue({
+          query: "q",
+          matches: matches.map((m) => ({ type: "room", match_score: 90, path: "p", ...m })),
+          total_matches: matches.length,
+        } as any);
+      }
+
+      const OLD = { id: "room_old", name: "Pilot - Huddle", archivedAt: ARCHIVED_AT };
+
+      it("follows an archived best match to its single, active replacement", async () => {
+        mockFloor7([OLD, { id: "room_v2", name: "Huddle_V2", replacesID: "room_old" }]);
+        searchReturns([{ ...OLD, archived_at: ARCHIVED_AT }]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "Pilot - Huddle",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_v2");
+        expect(result.current?.occupancy).toBe(1);
+        expect(result.warning).toContain(
+          '"Pilot - Huddle" (room_old) is archived; showing its replacement "Huddle_V2" (room_v2).'
+        );
+      });
+
+      it("does not auto-follow a split: returns the archived space with its successors", async () => {
+        mockFloor7([
+          OLD,
+          { id: "room_v2a", name: "Huddle_V2", replacesID: "room_old" },
+          { id: "room_v2b", name: "Focus_V2", replacesID: "room_old" },
+        ]);
+        searchReturns([{ ...OLD, archived_at: ARCHIVED_AT }]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "Pilot - Huddle",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_old");
+        expect(result.space.archived_at).toBe(ARCHIVED_AT);
+        expect(result.current).toBeNull();
+        expect(result.space.replaced_by).toEqual([
+          { id: "room_v2a", name: "Huddle_V2" },
+          { id: "room_v2b", name: "Focus_V2" },
+        ]);
+        expect(result.history_note).toContain("history_end");
+        expect(reportingClient.getCurrentOccupancy).not.toHaveBeenCalled();
+      });
+
+      it("does not follow a successor that is itself archived", async () => {
+        mockFloor7([
+          OLD,
+          { id: "room_v2", name: "Huddle_V2", replacesID: "room_old", archivedAt: ARCHIVED_AT },
+        ]);
+        searchReturns([{ ...OLD, archived_at: ARCHIVED_AT }]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "Pilot - Huddle",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_old");
+        expect(result.current).toBeNull();
+        expect(result.space.replaced_by).toEqual([
+          { id: "room_v2", name: "Huddle_V2", archived_at: ARCHIVED_AT },
+        ]);
+      });
+
+      it("does not switch to a weaker non-archived match", async () => {
+        mockFloor7([OLD, { id: "room_other", name: "Pilot - Hub" }]);
+        searchReturns([
+          { ...OLD, archived_at: ARCHIVED_AT, match_score: 100 },
+          { id: "room_other", name: "Pilot - Hub", match_score: 80 },
+        ]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "Pilot - Huddle",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_old");
+        expect(result.current).toBeNull();
+        expect(result.recommendation).toBe(
+          "This room was archived on 2026-10-22 and has no live busyness."
+        );
+        expect(result.space).not.toHaveProperty("replaced_by");
+      });
+
+      it("gives an archived room passed by ID the same treatment", async () => {
+        mockFloor7([OLD]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "room_old",
+          include_trend: false,
+        });
+
+        expect(searchAssets.executeSearchAssets).not.toHaveBeenCalled();
+        expect(result.space.archived_at).toBe(ARCHIVED_AT);
+        expect(result.current).toBeNull();
+        expect(reportingClient.getCurrentOccupancy).not.toHaveBeenCalled();
+      });
+
+      it("retries GetRoom without the archive fields on an API that lacks them", async () => {
+        const sent: string[] = [];
+        vi.mocked(apolloClient.query).mockImplementation((async (opts: any) => {
+          const body = print(opts.query);
+          sent.push(body);
+          if (body.includes("archivedAt")) {
+            return {
+              data: undefined,
+              error: new CombinedGraphQLErrors({
+                errors: [{ message: 'Cannot query field "archivedAt" on type "Room".' }],
+              }),
+            };
+          }
+          return { data: { room: { id: "room_123", name: "Room", capacity: { max: 10 } } } };
+        }) as never);
+        vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([
+          {
+            start: "2026-10-23T15:00:00Z",
+            measurement: "room_occupancy",
+            value: 2,
+            asset_id: "room_123",
+          },
+        ]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "room_123",
+          include_trend: false,
+        });
+
+        expect(sent).toHaveLength(2);
+        expect(sent[1]).not.toMatch(/archivedAt|replacesID/);
+        expect(result.current?.occupancy).toBe(2);
+      });
+
+      it("follows the single active replacement from an archived ID too", async () => {
+        mockFloor7([OLD, { id: "room_v2", name: "Huddle_V2", replacesID: "room_old" }]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "room_old",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_v2");
+        expect(result.warning).toContain("showing its replacement");
+      });
     });
 
     it("throws error if no spaces found", async () => {
