@@ -567,6 +567,185 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
     });
   });
 
+  // A room whose sensors were moved to a re-mapped copy has 0 sensors today
+  // but still holds its history under its own room_id. The old gate skipped
+  // the query, so the tool reported "No presence sensors" for past ranges
+  // that the Reporting API could answer.
+  describe("Rooms with 0 sensors today", () => {
+    it("returns room_occupancy history for a room whose sensors were moved", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 0, roomId: "room_old" });
+      setupTopologyMocks(topo);
+
+      const presenceBuilder = mockReportingBuilder({
+        data: [
+          { time: "2026-10-01T04:00:00Z", value: 3 },
+          { time: "2026-10-02T04:00:00Z", value: 5 },
+        ],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_old"],
+        interval: "1d",
+        start: "2026-09-20T00:00:00Z",
+        stop: "2026-10-16T00:00:00Z",
+      });
+
+      const asset = result.assets[0];
+      expect(presenceBuilder.measurements).toHaveBeenCalledWith(["room_occupancy"]);
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.sensor_count).toBe(0);
+      expect(asset.presence.timeseries).toHaveLength(2);
+      expect(asset.presence.coverage_note).toMatch(/assigned to it earlier/);
+      expect(asset.recommended_measurement).toBe("presence");
+    });
+
+    it("still reports no presence sensors when a 0-sensor room has no history", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 0, roomId: "room_empty" });
+      setupTopologyMocks(topo);
+
+      const presenceBuilder = mockReportingBuilder({ data: [] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_empty"],
+        interval: "1h",
+        start: "-24h",
+        stop: "now",
+      });
+
+      const asset = result.assets[0];
+      expect(presenceBuilder.execute).toHaveBeenCalledTimes(1);
+      expect(asset.presence.available).toBe(false);
+      expect(asset.presence.coverage_note).toBe("No presence sensors on this room.");
+      expect(asset.recommended_measurement).toBe("none");
+    });
+
+    it("returns floor_occupancy history for a floor with 0 sensors today", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 0, floorId: "space_old" });
+      setupTopologyMocks(topo);
+
+      const presenceBuilder = mockReportingBuilder({
+        data: [{ time: "2026-10-01T04:00:00Z", value: 12 }],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["space_old"],
+        interval: "1d",
+        start: "2026-09-20T00:00:00Z",
+        stop: "2026-10-16T00:00:00Z",
+      });
+
+      const asset = result.assets[0];
+      expect(asset.asset_type).toBe("floor");
+      expect(presenceBuilder.measurements).toHaveBeenCalledWith(["floor_occupancy"]);
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.timeseries).toHaveLength(1);
+      expect(asset.presence.coverage_note).toMatch(/assigned to it earlier/);
+    });
+
+    describe("a failed lookup on a 0-sensor room", () => {
+      // Two rooms on one floor: room_live has a sensor, room_old has none.
+      function setupMixedBatch() {
+        const topo = buildTopologyResponse({ presenceSensors: 1, roomId: "room_live" });
+        topo.topology.data.sites.data[0].buildings[0].floors[0].rooms.push({
+          id: "room_old",
+          name: "Pilot - Drop In",
+          floorID: "space_100",
+          capacity: { max: 4 },
+        });
+        setupTopologyMocks(topo);
+      }
+
+      // Builder whose execute() answers per room id.
+      function mockBuilderByRoom(byRoom: Record<string, () => Promise<unknown>>) {
+        vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => {
+          let roomId = "";
+          const builder = mockReportingBuilder(null);
+          builder.assets.mockImplementation((_type: string, ids: string[]) => {
+            roomId = ids[0];
+            return builder;
+          });
+          builder.execute.mockImplementation(() => byRoom[roomId]());
+          return builder as any;
+        });
+      }
+
+      it("does not fail the batch on a 429, and does not claim there is no history", async () => {
+        setupMixedBatch();
+        mockBuilderByRoom({
+          room_live: async () => ({ data: [{ time: "2026-10-01T04:00:00Z", value: 2 }] }),
+          room_old: async () => {
+            throw new reportingClient.ApiError(429, "Rate limit exceeded.");
+          },
+        });
+
+        const result = await executeGetOccupancyTimeseries({
+          asset_ids: ["room_old", "room_live"],
+          interval: "1d",
+          start: "2026-09-20T00:00:00Z",
+          stop: "2026-10-16T00:00:00Z",
+        });
+
+        // Order follows asset_ids despite concurrent processing.
+        expect(result.assets.map((a) => a.asset_id)).toEqual(["room_old", "room_live"]);
+        const [old, live] = result.assets;
+        expect(live.presence.timeseries).toHaveLength(1);
+        expect(old.presence.available).toBe(false);
+        expect(old.presence.warning).toContain("Failed to retrieve");
+        expect(old.presence.coverage_note).toMatch(
+          /lookup for history from earlier sensors failed/
+        );
+        expect(old.presence.coverage_note).not.toBe("No presence sensors on this room.");
+      });
+
+      it("still fails the call on an auth error", async () => {
+        setupMixedBatch();
+        mockBuilderByRoom({
+          room_live: async () => ({ data: [] }),
+          room_old: async () => {
+            throw new reportingClient.ApiError(401, "Authentication failed.");
+          },
+        });
+
+        await expect(
+          executeGetOccupancyTimeseries({
+            asset_ids: ["room_old", "room_live"],
+            interval: "1d",
+            start: "2026-09-20T00:00:00Z",
+            stop: "2026-10-16T00:00:00Z",
+          })
+        ).rejects.toMatchObject({ statusCode: 401 });
+      });
+
+      it("still fails the call on a 4xx for a room that has sensors", async () => {
+        setupMixedBatch();
+        mockBuilderByRoom({
+          room_live: async () => {
+            throw new reportingClient.ApiError(400, "Invalid request parameters.");
+          },
+          room_old: async () => ({ data: [] }),
+        });
+
+        await expect(
+          executeGetOccupancyTimeseries({
+            asset_ids: ["room_old", "room_live"],
+            interval: "1d",
+            start: "2026-09-20T00:00:00Z",
+            stop: "2026-10-16T00:00:00Z",
+          })
+        ).rejects.toMatchObject({ statusCode: 400 });
+      });
+    });
+  });
+
   describe("Null site timezone fallback", () => {
     it("falls back to UTC with warnings when site timezone is null", async () => {
       const topo = buildTopologyResponse({ presenceSensors: 1, siteTimezone: null });
