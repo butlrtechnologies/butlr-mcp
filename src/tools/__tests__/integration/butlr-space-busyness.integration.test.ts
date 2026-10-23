@@ -6,8 +6,12 @@ import * as statsClient from "../../../clients/stats-client.js";
 import * as searchAssets from "../../butlr-search-assets.js";
 import { clearOccupancyCache } from "../../../cache/occupancy-cache.js";
 import { GET_FULL_TOPOLOGY } from "../../../clients/queries/topology.js";
-import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
-import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import {
+  clearTopologyCache,
+  generateTopologyCacheKey,
+  setCachedTopology,
+} from "../../../cache/topology-cache.js";
+import { primeSpaceFieldSupport } from "../../../clients/archive-fallback.js";
 import { print } from "graphql";
 
 // Mock all the clients
@@ -51,7 +55,8 @@ describe("butlr_space_busyness - Integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearOccupancyCache(); // Clear cache between tests
-    resetArchiveFieldSupport();
+    primeSpaceFieldSupport();
+    clearTopologyCache();
   });
 
   describe("Direct ID lookup", () => {
@@ -282,7 +287,9 @@ describe("butlr_space_busyness - Integration", () => {
 
       it("follows an archived best match to its single, active replacement", async () => {
         mockFloor7([OLD, { id: "room_v2", name: "Huddle_V2", replacesID: "room_old" }]);
-        searchReturns([{ ...OLD, archived_at: ARCHIVED_AT }]);
+        searchReturns([
+          { ...OLD, archived_at: ARCHIVED_AT, replaced_by: [{ id: "room_v2", name: "Huddle_V2" }] },
+        ]);
 
         const result = await executeSpaceBusyness({
           space_id_or_name: "Pilot - Huddle",
@@ -302,7 +309,16 @@ describe("butlr_space_busyness - Integration", () => {
           { id: "room_v2a", name: "Huddle_V2", replacesID: "room_old" },
           { id: "room_v2b", name: "Focus_V2", replacesID: "room_old" },
         ]);
-        searchReturns([{ ...OLD, archived_at: ARCHIVED_AT }]);
+        searchReturns([
+          {
+            ...OLD,
+            archived_at: ARCHIVED_AT,
+            replaced_by: [
+              { id: "room_v2a", name: "Huddle_V2" },
+              { id: "room_v2b", name: "Focus_V2" },
+            ],
+          },
+        ]);
 
         const result = await executeSpaceBusyness({
           space_id_or_name: "Pilot - Huddle",
@@ -325,7 +341,13 @@ describe("butlr_space_busyness - Integration", () => {
           OLD,
           { id: "room_v2", name: "Huddle_V2", replacesID: "room_old", archivedAt: ARCHIVED_AT },
         ]);
-        searchReturns([{ ...OLD, archived_at: ARCHIVED_AT }]);
+        searchReturns([
+          {
+            ...OLD,
+            archived_at: ARCHIVED_AT,
+            replaced_by: [{ id: "room_v2", name: "Huddle_V2", archived_at: ARCHIVED_AT }],
+          },
+        ]);
 
         const result = await executeSpaceBusyness({
           space_id_or_name: "Pilot - Huddle",
@@ -359,6 +381,97 @@ describe("butlr_space_busyness - Integration", () => {
         expect(result.space).not.toHaveProperty("replaced_by");
       });
 
+      it("uses the search result's successors on the name path, without the topology", async () => {
+        mockFloor7([OLD, { id: "room_v2", name: "Huddle_V2", replacesID: "room_old" }]);
+        searchReturns([
+          { ...OLD, archived_at: ARCHIVED_AT, replaced_by: [{ id: "room_v2", name: "Huddle_V2" }] },
+        ]);
+
+        await executeSpaceBusyness({ space_id_or_name: "Pilot - Huddle", include_trend: false });
+
+        const topologyFetches = vi
+          .mocked(apolloClient.query)
+          .mock.calls.filter((c) => c[0].query === GET_FULL_TOPOLOGY);
+        expect(topologyFetches).toHaveLength(0);
+      });
+
+      it("does not call a successor its replacement once it turns out archived", async () => {
+        // The search corpus (cached topology) still says room_v2 is active,
+        // but GetRoom now returns it archived.
+        mockFloor7([
+          OLD,
+          { id: "room_v2", name: "Huddle_V2", replacesID: "room_old", archivedAt: ARCHIVED_AT },
+        ]);
+        searchReturns([
+          { ...OLD, archived_at: ARCHIVED_AT, replaced_by: [{ id: "room_v2", name: "Huddle_V2" }] },
+        ]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "Pilot - Huddle",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_old");
+        expect(result.current).toBeNull();
+        expect(result.space.replaced_by).toEqual([
+          { id: "room_v2", name: "Huddle_V2", archived_at: ARCHIVED_AT },
+        ]);
+        expect(result.recommendation).not.toMatch(/replaced by "Pilot - Huddle"/);
+        expect(result.warning ?? "").not.toMatch(/showing its replacement/);
+      });
+
+      it("reads successors for an archived ID from the cached topology when warm", async () => {
+        mockFloor7([OLD, { id: "room_v2", name: "Huddle_V2", replacesID: "room_old" }]);
+        setCachedTopology(generateTopologyCacheKey("org_test123", true, true, true), {
+          sites: [
+            {
+              id: "site_1",
+              buildings: [
+                {
+                  id: "building_1",
+                  floors: [
+                    {
+                      id: "floor_7",
+                      rooms: [OLD, { id: "room_v2", name: "Huddle_V2", replacesID: "room_old" }],
+                      zones: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        });
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "room_old",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_v2");
+        const topologyFetches = vi
+          .mocked(apolloClient.query)
+          .mock.calls.filter((c) => c[0].query === GET_FULL_TOPOLOGY);
+        expect(topologyFetches).toHaveLength(0);
+      });
+
+      it("still answers for an archived ID when the topology cannot be loaded", async () => {
+        mockFloor7([OLD]);
+        const answer = vi.mocked(apolloClient.query).getMockImplementation()!;
+        vi.mocked(apolloClient.query).mockImplementation((async (opts: any) => {
+          if (opts.query === GET_FULL_TOPOLOGY) throw new Error("upstream down");
+          return answer(opts);
+        }) as never);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "room_old",
+          include_trend: false,
+        });
+
+        expect(result.space.archived_at).toBe(ARCHIVED_AT);
+        expect(result.current).toBeNull();
+        expect(result.warning).toContain("Could not look up this space's replacements");
+      });
+
       it("gives an archived room passed by ID the same treatment", async () => {
         mockFloor7([OLD]);
 
@@ -373,19 +486,11 @@ describe("butlr_space_busyness - Integration", () => {
         expect(reportingClient.getCurrentOccupancy).not.toHaveBeenCalled();
       });
 
-      it("retries GetRoom without the archive fields on an API that lacks them", async () => {
+      it("strips the archive fields from GetRoom on an API that lacks them", async () => {
+        primeSpaceFieldSupport([]);
         const sent: string[] = [];
         vi.mocked(apolloClient.query).mockImplementation((async (opts: any) => {
-          const body = print(opts.query);
-          sent.push(body);
-          if (body.includes("archivedAt")) {
-            return {
-              data: undefined,
-              error: new CombinedGraphQLErrors({
-                errors: [{ message: 'Cannot query field "archivedAt" on type "Room".' }],
-              }),
-            };
-          }
+          sent.push(print(opts.query));
           return { data: { room: { id: "room_123", name: "Room", capacity: { max: 10 } } } };
         }) as never);
         vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([
@@ -402,8 +507,8 @@ describe("butlr_space_busyness - Integration", () => {
           include_trend: false,
         });
 
-        expect(sent).toHaveLength(2);
-        expect(sent[1]).not.toMatch(/archivedAt|replacesID/);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]).not.toMatch(/archivedAt|replacesID|sensorsRemovedAt/);
         expect(result.current?.occupancy).toBe(2);
       });
 

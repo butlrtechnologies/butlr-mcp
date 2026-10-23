@@ -205,62 +205,41 @@ export function getCurrentLocalTime(timezone: string): string {
  * Get midnight (start of day) in a specific timezone
  * Returns UTC Date object representing midnight in the given timezone
  *
+ * More precisely, the FIRST INSTANT of the local calendar day that `date`
+ * falls on. That is local 00:00 everywhere except where a DST change skips
+ * midnight (Africa/Cairo on 2026-04-24, Asia/Beirut on 2026-03-29), where
+ * 00:00 does not exist and the day starts at 01:00.
+ *
  * Example: getLocalMidnight(new Date("2025-10-15T10:00:00Z"), "Asia/Kolkata")
  * Returns: Date object for "2025-10-14T18:30:00Z" (which is Oct 15 midnight IST)
  */
 export function getLocalMidnight(date: Date, timezone: string): Date {
   try {
-    // Get the local date in the target timezone using Intl.DateTimeFormat
-    const localDate = new Intl.DateTimeFormat("en-CA", {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
       timeZone: timezone,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
-    }).format(date);
-    // localDate is "YYYY-MM-DD" in the target timezone
+    });
+    // "YYYY-MM-DD" in the target timezone; compares chronologically as a string.
+    const target = formatter.format(date);
+    const [year, month, day] = target.split("-").map(Number);
 
-    const [year, month, day] = localDate.split("-").map(Number);
-
-    // Start with a rough estimate: UTC midnight on that date
-    let estimate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
-
-    // Iteratively adjust to find the UTC time that corresponds to midnight local time
-    for (let i = 0; i < 3; i++) {
-      const localAtEstimate = new Intl.DateTimeFormat("en-CA", {
-        timeZone: timezone,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        // h23, not hour12:false: with hour12:false some ICU builds (CI's Node) print local
-        // midnight as "24", which read as 24h past midnight and stepped the result back a day.
-        hourCycle: "h23",
-      }).formatToParts(estimate);
-
-      // `% 24` as a second guard against a "24" hour from any ICU build.
-      const part = (type: string) =>
-        parseInt(localAtEstimate.find((p) => p.type === type)?.value || "0");
-      const h = part("hour") % 24;
-      const m = part("minute");
-
-      // Compare WHOLE dates, not the day of the month: on the 1st, a
-      // timezone west of UTC reads the first estimate (UTC midnight) as the
-      // 30th/31st of the previous month, and a day-of-month comparison took
-      // that for "a day ahead" and walked the result days early.
-      const dayDiff =
-        (Date.UTC(part("year"), part("month") - 1, part("day")) - Date.UTC(year, month - 1, day)) /
-        86400000;
-
-      if (dayDiff === 0 && h === 0 && m === 0) break; // Found it
-
-      // Adjust: we want local to be 00:00 on `day`
-      const diffMinutes = dayDiff * 1440 + h * 60 + m;
-      estimate = new Date(estimate.getTime() - diffMinutes * 60 * 1000);
+    // The local day starts somewhere between UTC midnight - 15h (UTC+14 is the
+    // furthest ahead) and UTC midnight + 13h (UTC-12 is the furthest behind).
+    // The local date never goes backwards as time moves forward, so binary
+    // search for the first second whose local date has reached `target`.
+    // Searching whole dates (not hour/minute arithmetic) is what makes this
+    // correct across month and year ends and when DST skips midnight.
+    const utcMidnight = Date.UTC(year, month - 1, day);
+    let lo = (utcMidnight - 15 * 3600 * 1000) / 1000; // local date < target
+    let hi = (utcMidnight + 13 * 3600 * 1000) / 1000; // local date >= target
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (formatter.format(new Date(mid * 1000)) >= target) hi = mid;
+      else lo = mid;
     }
-
-    return estimate;
+    return new Date(hi * 1000);
   } catch (error) {
     debug("timezone-helpers", `Failed to calculate local midnight for ${timezone}:`, error);
     // Fallback to UTC midnight

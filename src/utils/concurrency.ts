@@ -17,3 +17,26 @@ export async function mapWithConcurrency<T, R>(
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
+
+/**
+ * A scheduler that runs at most `limit` tasks at once. Unlike
+ * mapWithConcurrency, each task gets its own promise, so a caller can start
+ * a batch and await the results one by one as it needs them.
+ */
+export function createLimiter(limit: number): <R>(task: () => Promise<R>) => Promise<R> {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const release = () => {
+    active--;
+    queue.shift()?.();
+  };
+  return <R>(task: () => Promise<R>) =>
+    new Promise<R>((resolve, reject) => {
+      const start = () => {
+        active++;
+        task().then(resolve, reject).finally(release);
+      };
+      if (active < limit) start();
+      else queue.push(start);
+    });
+}

@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeSearchAssets } from "../../butlr-search-assets.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import { topologyCache } from "../../../cache/topology-cache.js";
-import { CombinedGraphQLErrors } from "@apollo/client/errors";
 import { GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY } from "../../../clients/queries/topology.js";
-import { resetArchiveFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
+import { primeSpaceFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
 
 // What the fallback sends to an API without the archive fields.
 const GET_FULL_TOPOLOGY_LEGACY = stripArchiveFields(GET_FULL_TOPOLOGY);
@@ -306,17 +305,10 @@ const FLOOR7_TOPOLOGY = {
 };
 
 function mockFloor7(opts?: { apiHasArchiveFields?: boolean }) {
-  const apiHasArchiveFields = opts?.apiHasArchiveFields ?? true;
+  // The schema check's answer: all optional fields, or none.
+  primeSpaceFieldSupport(opts?.apiHasArchiveFields === false ? [] : undefined);
   vi.mocked(apolloClient.query).mockImplementation((options: any) => {
     if (options.query === GET_FULL_TOPOLOGY) {
-      if (!apiHasArchiveFields) {
-        return Promise.resolve({
-          data: undefined,
-          error: new CombinedGraphQLErrors({
-            errors: [{ message: 'Cannot query field "archivedAt" on type "Room".' }],
-          }),
-        } as any);
-      }
       return Promise.resolve({ data: structuredClone(FLOOR7_TOPOLOGY) } as any);
     }
     if (options.query === GET_FULL_TOPOLOGY_LEGACY) {
@@ -344,7 +336,7 @@ describe("butlr_search_assets - archived spaces", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     topologyCache.clear();
-    resetArchiveFieldSupport();
+    primeSpaceFieldSupport();
   });
 
   it("finds an archived room by its old name and labels it", async () => {
@@ -359,7 +351,7 @@ describe("butlr_search_assets - archived spaces", () => {
     expect(match?.path).toBe("Indy / Tower / Floor 07 / Pilot - Drop In (archived 2026-10-20)");
     expect(match?.archived_at).toBe("2026-10-21T01:30:00Z");
     // The replacement is linked even though its name did not match.
-    expect(match?.replaced_by).toEqual(["room_v2"]);
+    expect(match?.replaced_by).toEqual([{ id: "room_v2", name: "Huddle_V2" }]);
   });
 
   it("labels archived zones and links a replacement to its predecessor", async () => {
@@ -377,7 +369,7 @@ describe("butlr_search_assets - archived spaces", () => {
     expect(match).not.toHaveProperty("archived_at");
   });
 
-  it("falls back to the legacy query when the API lacks the fields", async () => {
+  it("strips the fields when the API lacks them, and does not cache that tree", async () => {
     mockFloor7({ apiHasArchiveFields: false });
 
     const result = await executeSearchAssets({ query: "Pilot - Drop In", max_results: 5 });
@@ -387,5 +379,6 @@ describe("butlr_search_assets - archived spaces", () => {
     const match = result.matches.find((m) => m.id === "room_old");
     expect(match?.path).toBe("Indy / Tower / Floor 07 / Pilot - Drop In");
     expect(match).not.toHaveProperty("archived_at");
+    expect(topologyCache.size).toBe(0);
   });
 });

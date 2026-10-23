@@ -5,14 +5,15 @@ import { SPACE_ARCHIVE_FIELDS } from "../clients/queries/archive-fields.js";
 import { fetchTopology } from "../utils/occupancy-helpers.js";
 import {
   describeSpaceRef,
-  findReplacements,
   formatArchiveDate,
-  isArchived,
+  indexReplacements,
   toSpaceRef,
   type SpaceRef,
 } from "../utils/archived-spaces.js";
+import { resolveTimezone } from "../utils/timezone-helpers.js";
+import { generateTopologyCacheKey, getCachedTopology } from "../cache/topology-cache.js";
 import { z } from "zod";
-import type { Room, Zone, Floor } from "../clients/types.js";
+import type { Room, Zone, Floor, Site } from "../clients/types.js";
 import { getCurrentOccupancy, ApiError } from "../clients/reporting-client.js";
 import { getSingleAssetStats } from "../clients/stats-client.js";
 import { executeSearchAssets } from "./butlr-search-assets.js";
@@ -205,13 +206,43 @@ async function fetchSpace(spaceType: "room" | "zone", spaceId: string): Promise<
 
   const floor = space.floor;
   const building = floor?.building;
-  const siteTimezone = building?.site?.timezone;
+  const tz = resolveTimezone(building?.site?.timezone);
   return {
     space,
     path: building ? `${building.name} > ${floor.name} > ${space.name}` : space.name,
-    timezone: siteTimezone || process.env.BUTLR_TIMEZONE || "UTC",
-    timezoneFallback: !siteTimezone,
+    timezone: tz.timezone,
+    timezoneFallback: tz.isFallback,
   };
+}
+
+/**
+ * Successors of an archived space. The name path already has them from the
+ * search result. Otherwise they come from the cached topology, or a fresh
+ * fetch on a cache miss; if that fails, `known` is false and the caller
+ * still answers (an archived response without successors beats an error).
+ */
+async function findSuccessors(
+  spaceId: string,
+  fromSearch: SpaceRef[] | undefined
+): Promise<{ refs: SpaceRef[]; known: boolean }> {
+  if (fromSearch) return { refs: fromSearch, known: true };
+  let floors: Floor[];
+  const cached = getCachedTopology(
+    generateTopologyCacheKey(process.env.BUTLR_ORG_ID || "default", true, true, true, undefined)
+  );
+  const cachedSites = cached?.data?.sites as Site[] | undefined;
+  if (cachedSites) {
+    floors = cachedSites.flatMap((site) => (site.buildings ?? []).flatMap((b) => b.floors ?? []));
+  } else {
+    try {
+      floors = (await fetchTopology()).floors;
+    } catch (error: unknown) {
+      debug("space-busyness", "Could not load the topology to find replacements:", error);
+      return { refs: [], known: false };
+    }
+  }
+  const successors = indexReplacements(floors).get(spaceId) ?? [];
+  return { refs: successors.map((s) => toSpaceRef(s.id, s)), known: true };
 }
 
 /**
@@ -262,6 +293,8 @@ export async function executeSpaceBusyness(
   let spaceId = args.space_id_or_name;
   let spaceType: "room" | "zone" = "room";
   const warnings: string[] = [];
+  // Successors of the best name match, from the search result.
+  let searchSuccessors: SpaceRef[] | undefined;
 
   // If not an ID, search for the space
   if (!spaceId.match(/^(room|zone)_/)) {
@@ -285,6 +318,7 @@ export async function executeSpaceBusyness(
     const bestMatch = searchResults.matches[0];
     spaceId = bestMatch.id;
     spaceType = bestMatch.type as "room" | "zone";
+    searchSuccessors = bestMatch.replaced_by ?? [];
 
     debug("space-busyness", `Using best match: ${bestMatch.name} (${spaceId})`);
   } else {
@@ -294,29 +328,43 @@ export async function executeSpaceBusyness(
 
   let fetched = await fetchSpace(spaceType, spaceId);
 
-  // An archived space has no live busyness. Follow its replacement only when
-  // that is unambiguous: exactly one successor, itself not archived. A split
+  // An archived space is retired: no live busyness, whether or not sensors
+  // are still attributed. Follow its replacement only when that is
+  // unambiguous: exactly one successor, itself not archived. A split
   // (several successors) or an archived successor returns the archived space
   // itself, flagged, with its successors listed.
   if (fetched.space.archivedAt) {
-    const topology = await fetchTopology();
-    const successors = findReplacements(topology.floors, spaceType, spaceId);
-    const successorRefs = successors.map((s) => toSpaceRef(s.id, s));
-    if (successors.length === 1 && !isArchived(successors[0])) {
-      const archived = fetched.space;
-      fetched = await fetchSpace(spaceType, successors[0].id);
-      spaceId = fetched.space.id;
-      warnings.push(
-        `"${archived.name}" (${archived.id}) is archived; showing its replacement ${describeSpaceRef(toSpaceRef(fetched.space.id, fetched.space))}.`
-      );
+    const archived = fetched;
+    const { refs, known } = await findSuccessors(spaceId, searchSuccessors);
+    if (!known) {
+      warnings.push("Could not look up this space's replacements; it may have been replaced.");
     }
-    if (fetched.space.archivedAt) {
-      if (fetched.timezoneFallback) {
+    if (refs.length === 1 && !refs[0].archived_at) {
+      let successor: FetchedSpace | undefined;
+      try {
+        successor = await fetchSpace(spaceType, refs[0].id);
+      } catch (error: unknown) {
+        debug("space-busyness", "Could not load the replacement:", error);
+      }
+      if (successor && !successor.space.archivedAt) {
+        fetched = successor;
+        spaceId = successor.space.id;
         warnings.push(
-          `Could not determine site timezone for this space. Using ${fetched.timezone} as fallback for the archive date.`
+          `"${archived.space.name}" (${archived.space.id}) is archived; showing its replacement ${describeSpaceRef(toSpaceRef(successor.space.id, successor.space))}.`
+        );
+      } else if (successor?.space.archivedAt) {
+        // The topology said the successor was active, but it is archived
+        // now: list it as an archived successor, don't follow it.
+        refs[0] = { ...refs[0], archived_at: successor.space.archivedAt };
+      }
+    }
+    if (fetched === archived) {
+      if (archived.timezoneFallback) {
+        warnings.push(
+          `Could not determine site timezone for this space. Using ${archived.timezone} as fallback for the archive date.`
         );
       }
-      return buildArchivedResponse(fetched, spaceType, successorRefs, warnings);
+      return buildArchivedResponse(archived, spaceType, refs, warnings);
     }
   }
 

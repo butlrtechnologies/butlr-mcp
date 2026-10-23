@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import { print } from "graphql";
 import { executeAvailableRooms, GET_ROOMS_BY_TAG } from "../../butlr-available-rooms.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
 import { loadGraphQLFixture } from "../../../__mocks__/apollo-client.js";
-import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
+import { primeSpaceFieldSupport } from "../../../clients/archive-fallback.js";
 
 // Mock the clients
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -635,7 +636,7 @@ describe("butlr_available_rooms - Integration", () => {
 
   describe("archived rooms", () => {
     beforeEach(() => {
-      resetArchiveFieldSupport();
+      primeSpaceFieldSupport();
     });
 
     function buildingWithArchivedRoom(opts?: { withArchiveFields?: boolean }) {
@@ -702,25 +703,20 @@ describe("butlr_available_rooms - Integration", () => {
       });
     });
 
-    it("falls back to the legacy query when the API lacks the archive fields", async () => {
-      vi.mocked(apolloClient.query)
-        .mockResolvedValueOnce({
-          data: undefined,
-          error: new CombinedGraphQLErrors({
-            errors: [{ message: 'Cannot query field "archivedAt" on type "Room".' }],
-          }),
-        } as any)
-        .mockResolvedValueOnce({
-          data: buildingWithArchivedRoom({ withArchiveFields: false }),
-        } as any);
+    it("strips the archive fields when the API lacks them", async () => {
+      // The schema check found none of the optional fields.
+      primeSpaceFieldSupport([]);
+      vi.mocked(apolloClient.query).mockResolvedValueOnce({
+        data: buildingWithArchivedRoom({ withArchiveFields: false }),
+      } as any);
       vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([]);
 
       await executeAvailableRooms({ building_id: "building_arch" });
 
       const calls = vi.mocked(apolloClient.query).mock.calls;
-      expect(calls).toHaveLength(2);
-      expect(calls[1][0].query).not.toBe(calls[0][0].query);
-      expect(calls[1][0].variables).toEqual({ buildingId: "building_arch" });
+      expect(calls).toHaveLength(1);
+      expect(print(calls[0][0].query)).not.toMatch(/archivedAt|replacesID|sensorsRemovedAt/);
+      expect(calls[0][0].variables).toEqual({ buildingId: "building_arch" });
       // Without the fields nothing is known to be archived, so all 3 rooms count.
       expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toHaveLength(3);
     });

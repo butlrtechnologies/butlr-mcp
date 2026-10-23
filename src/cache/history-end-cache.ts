@@ -10,10 +10,29 @@ import { debug } from "../utils/debug.js";
  * names it twice) reuse it. Only successful answers are cached, "no history"
  * included; failures are retried on the next call.
  *
- * TTL: 10 minutes (MCP_CACHE_HISTORY_END_TTL, seconds).
+ * TTL: 10 minutes by default. MCP_CACHE_HISTORY_END_TTL (seconds) overrides
+ * it; 0 turns the cache off. A value that is not a non-negative number falls
+ * back to the default with a warning (lru-cache treats a TTL of 0 or NaN as
+ * "never expires", so it must not reach the cache unchecked).
  */
-const CACHE_TTL_MS = parseInt(process.env.MCP_CACHE_HISTORY_END_TTL || "600", 10) * 1000;
+const DEFAULT_TTL_SECONDS = 600;
 const MAX_CACHE_ENTRIES = 500;
+
+/** Parse MCP_CACHE_HISTORY_END_TTL; exported for tests. */
+export function parseHistoryEndTtlSeconds(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_TTL_SECONDS;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    console.error(
+      `[history-end-cache] Ignoring invalid MCP_CACHE_HISTORY_END_TTL=${JSON.stringify(raw)}; using ${DEFAULT_TTL_SECONDS}s.`
+    );
+    return DEFAULT_TTL_SECONDS;
+  }
+  return seconds;
+}
+
+const TTL_MS = parseHistoryEndTtlSeconds(process.env.MCP_CACHE_HISTORY_END_TTL) * 1000;
+const CACHE_ENABLED = TTL_MS > 0;
 
 interface HistoryEndCacheEntry {
   endDay: string | null;
@@ -21,30 +40,32 @@ interface HistoryEndCacheEntry {
 
 const historyEndCache = new LRUCache<string, HistoryEndCacheEntry>({
   max: MAX_CACHE_ENTRIES,
-  ttl: CACHE_TTL_MS,
+  // lru-cache needs a positive TTL; when caching is off nothing is stored.
+  ttl: CACHE_ENABLED ? TTL_MS : DEFAULT_TTL_SECONDS * 1000,
   updateAgeOnGet: false, // the answer ages with the calendar, not with use
 });
 
-/** Key on the timezone too: the local day boundaries depend on it. */
-function key(assetId: string, timezone: string): string {
-  return `history-end:${assetId}:${timezone}`;
+/**
+ * `variant` carries whatever else the answer depends on: the timezone (local
+ * day boundaries) and the declared end from sensorsRemovedAt/archivedAt.
+ */
+function key(assetId: string, variant: string): string {
+  return `history-end:${assetId}:${variant}`;
 }
 
 export function getCachedHistoryEnd(
   assetId: string,
-  timezone: string
+  variant: string
 ): HistoryEndCacheEntry | undefined {
-  const hit = historyEndCache.get(key(assetId, timezone));
+  if (!CACHE_ENABLED) return undefined;
+  const hit = historyEndCache.get(key(assetId, variant));
   debug("history-end-cache", `${hit ? "HIT" : "MISS"} ${assetId}`);
   return hit;
 }
 
-export function setCachedHistoryEnd(
-  assetId: string,
-  timezone: string,
-  endDay: string | null
-): void {
-  historyEndCache.set(key(assetId, timezone), { endDay });
+export function setCachedHistoryEnd(assetId: string, variant: string, endDay: string | null): void {
+  if (!CACHE_ENABLED) return;
+  historyEndCache.set(key(assetId, variant), { endDay });
 }
 
 /** Clear all cached history ends (tests, or after a known data change). */

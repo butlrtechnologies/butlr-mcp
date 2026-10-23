@@ -761,6 +761,49 @@ describe("butlr_traffic_flow - Integration", () => {
       }
     });
 
+    it("resolves a custom range from one clock read, so exactly 2h uses 1m buckets", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_direct",
+          name: "N. Elevator",
+          mac_address: "aa:bb:cc:dd:ee:01",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+        },
+      ]);
+      const windowSpy = vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "window");
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      });
+      // A clock that ticks 1 ms on every read: separate reads for start and
+      // stop would make "-2h".."now" a millisecond over two hours.
+      const RealDate = Date;
+      let t = RealDate.parse("2026-10-23T12:00:00Z");
+      class TickingDate extends RealDate {
+        constructor(...args: ConstructorParameters<typeof Date>) {
+          if (args.length === 0) super(t++);
+          else super(...args);
+        }
+        static now() {
+          return t++;
+        }
+      }
+      vi.stubGlobal("Date", TickingDate);
+      try {
+        await executeTrafficFlow({
+          space_id_or_name: "sensor_direct",
+          time_window: "custom",
+          custom_start: "-2h",
+          custom_stop: "now",
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+
+      expect(windowSpy.mock.calls[0][0]).toBe("1m");
+    });
+
     it("works for a traffic sensor with no room assigned", async () => {
       mockGraphQLTopologyAndSensors([
         {

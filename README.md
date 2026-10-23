@@ -168,6 +168,7 @@ All tools are **read-only** — the server cannot modify any data in your Butlr 
 | `BUTLR_TIMEZONE` | No | `UTC` | Default timezone |
 | `MCP_CACHE_TOPO_TTL` | No | `600` | Topology cache TTL (whole seconds; `0` disables it) |
 | `MCP_CACHE_OCCUPANCY_TTL` | No | `60` | Current-occupancy cache TTL (whole seconds; `0` disables it) |
+| `MCP_CACHE_HISTORY_END_TTL` | No | `600` | Cache TTL (seconds) for where an archived or sensorless space's recorded history ends; `0` disables it |
 | `DEBUG` | No | - | Set to `butlr-mcp` for verbose logging |
 
 ## Getting API Credentials

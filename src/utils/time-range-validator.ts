@@ -12,10 +12,17 @@ import { parseTimeString } from "./time-resolver.js";
  * @param stop Stop time (ISO-8601 or relative like 'now')
  * @throws Error if time range exceeds limits for the given interval
  */
-export function validateTimeRange(interval: string, start: string, stop: string): void {
-  // Parse times - handle relative times by converting to absolute
-  const startTime = parseTimeString(start);
-  const stopTime = parseTimeString(stop);
+export function validateTimeRange(
+  interval: string,
+  start: string,
+  stop: string,
+  now: Date = new Date()
+): void {
+  // Parse times - handle relative times by converting to absolute. Both ends
+  // share one clock read, so "-1h".."now" is exactly one hour and can't be
+  // pushed past a limit by a millisecond tick between two reads.
+  const startTime = parseTimeString(start, now);
+  const stopTime = parseTimeString(stop, now);
 
   // Calculate duration in hours
   const durationMs = stopTime.getTime() - startTime.getTime();
