@@ -567,6 +567,65 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
     });
   });
 
+  // A room whose sensors were moved to a re-mapped copy has 0 sensors today
+  // but still holds its history under its own room_id. The old gate skipped
+  // the query, so the tool reported "No presence sensors" for past ranges
+  // that the Reporting API could answer.
+  describe("Rooms with 0 sensors today", () => {
+    it("returns room_occupancy history for a room whose sensors were moved", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 0, roomId: "room_old" });
+      setupTopologyMocks(topo);
+
+      const presenceBuilder = mockReportingBuilder({
+        data: [
+          { time: "2026-10-01T04:00:00Z", value: 3 },
+          { time: "2026-10-02T04:00:00Z", value: 5 },
+        ],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_old"],
+        interval: "1d",
+        start: "2026-09-20T00:00:00Z",
+        stop: "2026-10-16T00:00:00Z",
+      });
+
+      const asset = result.assets[0];
+      expect(presenceBuilder.measurements).toHaveBeenCalledWith(["room_occupancy"]);
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.sensor_count).toBe(0);
+      expect(asset.presence.timeseries).toHaveLength(2);
+      expect(asset.presence.coverage_note).toMatch(/assigned to it earlier/);
+      expect(asset.recommended_measurement).toBe("presence");
+    });
+
+    it("still reports no presence sensors when a 0-sensor room has no history", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 0, roomId: "room_empty" });
+      setupTopologyMocks(topo);
+
+      const presenceBuilder = mockReportingBuilder({ data: [] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_empty"],
+        interval: "1h",
+        start: "-24h",
+        stop: "now",
+      });
+
+      const asset = result.assets[0];
+      expect(presenceBuilder.execute).toHaveBeenCalledTimes(1);
+      expect(asset.presence.available).toBe(false);
+      expect(asset.presence.coverage_note).toBe("No presence sensors on this room.");
+      expect(asset.recommended_measurement).toBe("none");
+    });
+  });
+
   describe("Null site timezone fallback", () => {
     it("falls back to UTC with warnings when site timezone is null", async () => {
       const topo = buildTopologyResponse({ presenceSensors: 1, siteTimezone: null });

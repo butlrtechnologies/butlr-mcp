@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-22
+
+### Fixed
+- `butlr_get_occupancy_timeseries` now queries room and floor presence even when the asset has 0 sensors today. A room whose sensors were moved to a re-mapped copy keeps its history under its own `room_id`, but the tool skipped the query on the current sensor count and answered "No presence sensors on this room" for past ranges the Reporting API could serve. When such a room returns data, `available` is true and `coverage_note` says the history came from sensors assigned earlier; with no data, the response is unchanged. `butlr_get_current_occupancy` keeps its gate, since a room with no sensors has no live reading.
+
 ## [0.6.1] - 2026-08-28
 
 ### Fixed

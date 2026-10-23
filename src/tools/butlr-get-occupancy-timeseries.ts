@@ -100,42 +100,45 @@ export async function executeGetOccupancyTimeseries(
   for (const assetId of args.asset_ids) {
     const asset = resolveAssetContext(assetId, ctx);
 
-    // Build presence measurement data. Zones have no client-visible sensor
-    // attribution (see occupancy-helpers `resolveAssetContext`), but the
-    // server computes `zone_occupancy` independently. Always query for
-    // zones; gate on sensor count for rooms/floors where 0 sensors really
-    // does mean "no data possible".
-    const shouldQueryPresence = asset.assetType === "zone" || asset.presenceSensors.length > 0;
+    // Build presence measurement data. Always query, whatever the current
+    // sensor count: zones have no client-visible sensor attribution (see
+    // occupancy-helpers `resolveAssetContext`), and a room or floor with 0
+    // sensors today can still hold history from sensors that were moved
+    // elsewhere (e.g. a room superseded by a re-mapped "_V2" copy).
+    const sensorCount = asset.presenceSensors.length;
     const presenceData: TimeseriesMeasurementData = {
-      available: shouldQueryPresence,
-      sensor_count: asset.presenceSensors.length,
-      coverage_note: getPresenceCoverageNote(asset.assetType, asset.presenceSensors.length),
+      available: asset.assetType === "zone" || sensorCount > 0,
+      sensor_count: sensorCount,
+      coverage_note: getPresenceCoverageNote(asset.assetType, sensorCount),
       timeseries: [],
     };
 
-    if (shouldQueryPresence) {
-      const measurement = getPresenceMeasurement(asset.assetType);
-      try {
-        const points = await queryTimeseries(
-          asset.assetType,
-          assetId,
-          measurement,
-          args.start,
-          args.stop,
-          args.interval,
-          asset.timezone
-        );
-        if (points) {
-          presenceData.timeseries = points;
-        }
-      } catch (error: unknown) {
-        debug("occupancy-timeseries", "Presence query failed:", error);
-        if (error instanceof ApiError && error.statusCode >= 400) {
-          throw error;
-        }
-        presenceData.warning =
-          "Failed to retrieve presence timeseries data. Results may be incomplete.";
+    const measurement = getPresenceMeasurement(asset.assetType);
+    try {
+      const points = await queryTimeseries(
+        asset.assetType,
+        assetId,
+        measurement,
+        args.start,
+        args.stop,
+        args.interval,
+        asset.timezone
+      );
+      if (points) {
+        presenceData.timeseries = points;
       }
+    } catch (error: unknown) {
+      debug("occupancy-timeseries", "Presence query failed:", error);
+      if (error instanceof ApiError && error.statusCode >= 400) {
+        throw error;
+      }
+      presenceData.warning =
+        "Failed to retrieve presence timeseries data. Results may be incomplete.";
+    }
+
+    if (!presenceData.available && presenceData.timeseries.length > 0) {
+      presenceData.available = true;
+      presenceData.coverage_note = `No presence sensors are assigned to this ${asset.assetType} now; this history was recorded by sensors assigned to it earlier.`;
     }
 
     // Build traffic measurement data
