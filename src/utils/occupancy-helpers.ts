@@ -26,6 +26,7 @@ import { isProductionSensor, throwIfGraphQLErrors } from "./graphql-helpers.js";
 import { ApiError } from "../clients/reporting-client.js";
 import { fetchHistoryEndDay, HISTORY_LOOKBACK_MONTHS } from "./history-end.js";
 import { debug } from "./debug.js";
+import { getCachedHistoryEnd, setCachedHistoryEnd } from "../cache/history-end-cache.js";
 import { getTimezoneForAsset, buildTimezoneMetadata, isValidTimezone } from "./timezone-helpers.js";
 import { rethrowIfGraphQLError } from "./graphql-helpers.js";
 import {
@@ -185,6 +186,12 @@ export interface AssetContext {
    * sensors are all traffic-mode is not.
    */
   attributedSensorCount: number;
+  /**
+   * Whether the asset ID resolved in the fetched topology. False for a typo,
+   * a deleted space or another org's ID; such an asset is never treated as
+   * sensorless and keeps the plain "not found" handling.
+   */
+  found: boolean;
   /** RFC 3339 archive time; set only for an archived room/zone. */
   archivedAt?: string;
   /** `archivedAt` as a site-local YYYY-MM-DD; set with `archivedAt`. */
@@ -279,6 +286,8 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
     presenceSensors,
     trafficSensors,
     attributedSensorCount: assetSensors.length,
+    found:
+      typedAssetType === "floor" ? ctx.floors.some((f) => f.id === assetId) : space !== undefined,
   };
 
   // Archive state and replaced-space links (rooms and zones only). Absent
@@ -321,15 +330,35 @@ export type HistoryProbe =
 
 const SKIPPED: HistoryProbe = { status: "skipped" };
 
+/** An AssetContext narrowed to a sensorless room or zone. */
+export type SensorlessAsset = AssetContext & { assetType: "room" | "zone" };
+
 /**
- * Whether a room or zone has no production sensors attributed, of any mode.
- * Only these get the history-end probe and the "No sensors assigned" wording.
- * Archive state does not enter into it: an archived space that still has
- * sensors (the API refuses to archive one, so this is bad data) is read like
- * an active space. Floors are never sensorless here.
+ * Whether a room or zone counts as sensorless: it gets the history-end probe,
+ * `history_end`, the "No sensors assigned" wording and, for current
+ * occupancy, "no live data".
+ *
+ * - The asset must have resolved in the topology. An unknown ID (typo,
+ *   deleted space, another org) is never sensorless.
+ * - A ROOM is sensorless when no production sensor of any mode is attributed
+ *   to it. Room attribution is direct (`sensors.room_id`), so zero means zero.
+ *   A room whose only sensors are traffic-mode is not sensorless.
+ * - A ZONE is sensorless only when it is ARCHIVED and has no attributed
+ *   sensors. Zero attributed sensors is not evidence for a zone: a live zone
+ *   can get `zone_occupancy` from overlapping floor sensors, and a parked
+ *   zone keeps receiving 0-valued rows every day, so reporting data cannot
+ *   tell a live zone from a retired one either. A non-archived zone is read
+ *   like any other zone.
+ *   TODO(API #3038): once `sensorsRemovedAt` is deployed, also treat a
+ *   non-archived zone whose sensors were removed as sensorless.
+ * - Archive state alone is not enough: an archived space that still has
+ *   sensors (bad data; the API refuses to archive one) is read like an
+ *   active space. Floors are never sensorless.
  */
-export function isSensorlessSpace(asset: AssetContext): boolean {
-  return asset.assetType !== "floor" && asset.attributedSensorCount === 0;
+export function isSensorlessSpace(asset: AssetContext): asset is SensorlessAsset {
+  if (!asset.found || asset.attributedSensorCount > 0) return false;
+  if (asset.assetType === "room") return true;
+  return asset.assetType === "zone" && Boolean(asset.archivedOn);
 }
 
 /**
@@ -337,16 +366,20 @@ export function isSensorlessSpace(asset: AssetContext): boolean {
  * src/utils/history-end.ts). Best-effort, like the 0.6.2 speculative
  * lookups: auth errors still fail the call, anything else is reported as
  * `failed` so the caller can warn on that asset alone. Returns `skipped`
- * for a space that is not sensorless.
+ * for a space that is not sensorless. Successful answers are cached for a
+ * few minutes (src/cache/history-end-cache.ts).
  */
 export async function probeSensorlessHistory(
   asset: AssetContext,
   assetId: string
 ): Promise<HistoryProbe> {
-  if (!isSensorlessSpace(asset) || asset.assetType === "floor") return SKIPPED;
+  if (!isSensorlessSpace(asset)) return SKIPPED;
   if (!isValidTimezone(asset.timezone)) return { status: "failed", reason: "timezone" };
+  const cached = getCachedHistoryEnd(assetId, asset.timezone);
+  if (cached) return { status: "ok", endDay: cached.endDay };
   try {
     const endDay = await fetchHistoryEndDay(asset.assetType, assetId, asset.timezone);
+    setCachedHistoryEnd(assetId, asset.timezone, endDay);
     return { status: "ok", endDay };
   } catch (error: unknown) {
     if (error instanceof ApiError && (error.statusCode === 401 || error.statusCode === 403)) {

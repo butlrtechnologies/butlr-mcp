@@ -10,6 +10,7 @@ import { resetArchiveFieldSupport, stripArchiveFields } from "../../../clients/a
 // What the fallback sends to an API without the archive fields.
 const GET_FULL_TOPOLOGY_LEGACY = stripArchiveFields(GET_FULL_TOPOLOGY);
 
+import { clearHistoryEndCache } from "../../../cache/history-end-cache.js";
 vi.mock("../../../clients/graphql-client.js", () => ({
   apolloClient: {
     query: vi.fn(),
@@ -163,6 +164,7 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
     vi.clearAllMocks();
     resetArchiveFieldSupport();
     mockHistoryProbe({});
+    clearHistoryEndCache();
   });
 
   describe("Basic timeseries query", () => {
@@ -1261,8 +1263,32 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       expect(asset.recommended_measurement).toBe("presence");
     });
 
-    it("probes that zone only after its range comes back empty", async () => {
+    it("does not call a non-archived zone sensorless when its range is empty", async () => {
+      // An empty range on a live zone is not evidence of retirement: a parked
+      // zone and a quiet live zone look the same in reporting.
       setupTopologyMocks(zoneTopology({ id: "zone_live", name: "Lounge Zone" }) as any);
+      mockHistoryProbe({ zone_live: INDY_PROBE_DAYS });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries(args);
+
+      const asset = result.assets[0];
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
+      expect(asset.presence.coverage_note).toBe("Zones support presence measurement only.");
+      expect(asset).not.toHaveProperty("history_end");
+      expect(asset.recommendation_reason).not.toMatch(/No sensors are assigned/);
+    });
+
+    it("treats an archived zone with no sensors as sensorless", async () => {
+      setupTopologyMocks(
+        zoneTopology({
+          id: "zone_live",
+          name: "Pilot Desk Zone",
+          archivedAt: "2026-10-22T20:00:00Z",
+        }) as any
+      );
       mockHistoryProbe({ zone_live: INDY_PROBE_DAYS });
       vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
         () => mockReportingBuilder({ data: [] }) as any
@@ -1273,9 +1299,26 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       const asset = result.assets[0];
       expect(reportingClient.queryReporting).toHaveBeenCalledTimes(1);
       expect(asset.presence.coverage_note).toBe(
-        "No sensors assigned. Recorded history runs up to 2026-10-20."
+        "No sensors assigned (archived on 2026-10-22). Recorded history runs up to 2026-10-20."
       );
       expect(asset.history_end).toBe("2026-10-20");
+    });
+
+    it("does not probe a room ID that is not in the topology", async () => {
+      setupTopologyMocks(buildTopologyResponse({ presenceSensors: 1 }));
+      mockHistoryProbe({ room_typo: INDY_PROBE_DAYS });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({ ...args, asset_ids: ["room_typo"] });
+
+      const asset = result.assets[0];
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
+      expect(asset.asset_name).toBeUndefined();
+      // The pre-existing 0-sensor handling, not the sensorless wording.
+      expect(asset.presence.coverage_note).toBe("No presence sensors on this room.");
+      expect(asset).not.toHaveProperty("history_end");
     });
 
     it("does not treat a zone whose sensors are all traffic-mode as sensorless", async () => {

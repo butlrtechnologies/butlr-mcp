@@ -17,6 +17,7 @@ import {
   type HistoryProbe,
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   CurrentOccupancyResponse,
@@ -24,11 +25,14 @@ import type {
   CurrentMeasurementData,
 } from "../types/responses.js";
 
+/** History-end probes in flight at once (each is one reporting query). */
+const HISTORY_PROBE_CONCURRENCY = 5;
+
 const GET_CURRENT_OCCUPANCY_DESCRIPTION =
   "Get current occupancy for floors, rooms, or zones (last 5 minutes median). Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete current occupancy picture.\n\n" +
-  "An archived room or zone with no sensors (`archived_at` set) has no live data and is reported as such rather than queried. " +
+  "A room with no sensors, or an archived zone with none (`archived_at` set), has no live data and is reported as such rather than queried. " +
   "For a sensorless or archived room/zone, `history_end` is the last full day of its recorded history; " +
   "`history_note` points at butlr_get_occupancy_timeseries for that history and names any replacement.\n\n" +
   "When NOT to Use:\n" +
@@ -64,24 +68,38 @@ export async function executeGetCurrentOccupancy(
   const now = new Date();
   const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
 
-  for (const assetId of args.asset_ids) {
-    const asset = resolveAssetContext(assetId, ctx);
-    const archivedOn = asset.archivedOn;
+  const contexts = args.asset_ids.map((assetId) => resolveAssetContext(assetId, ctx));
+
+  // History-end probes for sensorless spaces, up to HISTORY_PROBE_CONCURRENCY
+  // at a time. A sensorless space is never read live (see below), so its
+  // probe does not depend on the live read and can run up front.
+  const probes = await mapWithConcurrency(
+    args.asset_ids.map((assetId, i) => ({ assetId, asset: contexts[i] })),
+    HISTORY_PROBE_CONCURRENCY,
+    ({ assetId, asset }) => probeSensorlessHistory(asset, assetId)
+  );
+
+  for (const [index, assetId] of args.asset_ids.entries()) {
+    const asset = contexts[index];
+    const probe: HistoryProbe = probes[index];
 
     // ---- Presence ----
     // Zones have no client-visible sensor attribution (see occupancy-helpers
     // `resolveAssetContext`), but the server computes `zone_occupancy`
     // independently. Always query for zones; gate on sensor count for
     // rooms/floors where 0 sensors really does mean "no data possible".
-    // An archived room or zone with no sensors is never queried: it is
-    // retired, and the note below says so instead of a lookup that can only
-    // come back empty (or, for a zone, fail). An archived space that still
-    // has sensors (bad data; the API refuses to archive one) is read like an
+    // A sensorless space (a room with no sensors, or an ARCHIVED zone with
+    // none; see isSensorlessSpace) is never read live: it has no live data,
+    // and the note below says so instead of a lookup that can only come back
+    // empty (or, for a zone, fail). A non-archived zone is always read live,
+    // and an empty read on it is not evidence of anything: zone occupancy can
+    // come from overlapping floor sensors. An archived space that still has
+    // sensors (bad data; the API refuses to archive one) is read like an
     // active space.
     const sensorless = isSensorlessSpace(asset);
-    const retired = sensorless && Boolean(archivedOn);
+    const retired = sensorless && Boolean(asset.archivedOn);
     const shouldQueryPresence =
-      !retired && (asset.assetType === "zone" || asset.presenceSensors.length > 0);
+      !sensorless && (asset.assetType === "zone" || asset.presenceSensors.length > 0);
     const presenceData: CurrentMeasurementData = {
       available: shouldQueryPresence,
       sensor_count: asset.presenceSensors.length,
@@ -117,14 +135,7 @@ export async function executeGetCurrentOccupancy(
       }
     }
 
-    // A sensorless room/zone gets a history-end probe so the response can say
-    // where its recorded history ends -- but only once the live read (if any)
-    // came back empty. A zone with no attributed sensors that still reads
-    // live (zone occupancy can come from overlapping floor sensors) is not
-    // retired, and the six-month probe would be wasted on it.
-    let probe: HistoryProbe = { status: "skipped" };
-    if (sensorless && !presenceHasData && !presenceData.warning) {
-      probe = await probeSensorlessHistory(asset, assetId);
+    if (sensorless) {
       presenceData.coverage_note = sensorlessCoverageNote(asset, probe);
     }
 

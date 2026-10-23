@@ -12,7 +12,7 @@ import {
 import { flattenTopology, type FlattenedAsset } from "../utils/asset-flattener.js";
 import { searchAssets, type SearchableAsset } from "../utils/fuzzy-match.js";
 import { buildAssetPath } from "../utils/path-builder.js";
-import { findReplacements, formatArchiveDate } from "../utils/archived-spaces.js";
+import { formatArchiveDate, indexReplacements } from "../utils/archived-spaces.js";
 import { resolveTimezone } from "../utils/timezone-helpers.js";
 import {
   isProductionHive,
@@ -294,7 +294,9 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
   // Replacements are looked up over the whole topology (not just the
   // matches), so an archived room found by its old name points at its
   // replacement even when the replacement's name did not match the query.
-  const floors = sites.flatMap((site) => (site.buildings ?? []).flatMap((b) => b.floors ?? []));
+  const replacementIndex = indexReplacements(
+    sites.flatMap((site) => (site.buildings ?? []).flatMap((b) => b.floors ?? []))
+  );
 
   // Format results with minimal fields. Archived rooms/zones stay searchable
   // by their plain name (users ask for old rooms by name); the label goes on
@@ -304,7 +306,7 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
     const path = buildAssetPath(asset);
     const successors =
       asset.type === "room" || asset.type === "zone"
-        ? findReplacements(floors, asset.type, asset.id).map((s) => s.id)
+        ? (replacementIndex.get(asset.id) ?? []).map((s) => s.id)
         : [];
     return {
       id: asset.id,

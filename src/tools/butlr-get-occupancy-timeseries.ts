@@ -18,6 +18,7 @@ import {
   type HistoryProbe,
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   OccupancyTimeseriesResponse,
@@ -93,26 +94,6 @@ async function queryTimeseries(
   );
 }
 
-/**
- * Map over items with at most `limit` calls in flight, preserving order.
- */
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
-
 async function buildPresenceData(
   asset: ReturnType<typeof resolveAssetContext>,
   assetId: string,
@@ -122,23 +103,21 @@ async function buildPresenceData(
   // sensors today can still hold history from sensors that were moved
   // elsewhere (e.g. a room superseded by a re-mapped "_V2" copy).
   const sensorCount = asset.presenceSensors.length;
-  const archived = Boolean(asset.archivedOn);
-  // A room or zone with no sensors of any mode gets a history-end probe, and
-  // its coverage note says where its recorded history ends.
+  // A sensorless space (a room with no sensors of any mode, or an ARCHIVED
+  // zone with none; see isSensorlessSpace) gets a history-end probe in
+  // parallel with the range query, and its coverage note says where its
+  // recorded history ends. A non-archived zone is never sensorless, whatever
+  // its attributed-sensor count or however empty its range: zone occupancy
+  // can come from overlapping floor sensors, so an empty range on a live
+  // zone just means no data in range.
   const sensorless = isSensorlessSpace(asset);
-  // A sensorless room, or an archived sensorless zone, is retired: probe in
-  // parallel with the range query. An ACTIVE zone with no attributed
-  // sensors can still be live (zone occupancy can come from overlapping
-  // floor sensors), so it is only probed once its range comes back empty.
-  const probeUpFront = sensorless && (asset.assetType === "room" || archived);
-  const probeIfEmpty = sensorless && asset.assetType === "zone" && !archived;
-  // A 0-presence floor, or a room whose only sensors are traffic-mode,
-  // keeps the 0.6.2 speculative note.
+  // A 0-presence floor, a room whose only sensors are traffic-mode, or a
+  // room ID that did not resolve keeps the 0.6.2 speculative note.
   const speculative = !sensorless && asset.assetType !== "zone" && sensorCount === 0;
   // These lookups may well find nothing, and their failure must not take
-  // down the rest of the batch. Zones with sensors (or live, unarchived
-  // zones) still fail the call on a 4xx as before.
-  const bestEffort = speculative || probeUpFront;
+  // down the rest of the batch. Non-archived zones still fail the call on a
+  // 4xx as before.
+  const bestEffort = speculative || sensorless;
   const presenceData: TimeseriesMeasurementData = {
     available: !bestEffort,
     sensor_count: sensorCount,
@@ -146,7 +125,7 @@ async function buildPresenceData(
     timeseries: [],
   };
 
-  const early = probeUpFront ? probeSensorlessHistory(asset, assetId) : undefined;
+  const early = sensorless ? probeSensorlessHistory(asset, assetId) : undefined;
   // Keep an auth rejection from going unhandled while the range query is in
   // flight; it is rethrown by the await below.
   early?.catch(() => undefined);
@@ -175,12 +154,7 @@ async function buildPresenceData(
       "Failed to retrieve presence timeseries data. Results may be incomplete.";
   }
 
-  let probe: HistoryProbe = { status: "skipped" };
-  if (early) {
-    probe = await early;
-  } else if (probeIfEmpty && presenceData.timeseries.length === 0 && !presenceData.warning) {
-    probe = await probeSensorlessHistory(asset, assetId);
-  }
+  const probe: HistoryProbe = early ? await early : { status: "skipped" };
 
   if (bestEffort && presenceData.timeseries.length > 0) {
     presenceData.available = true;

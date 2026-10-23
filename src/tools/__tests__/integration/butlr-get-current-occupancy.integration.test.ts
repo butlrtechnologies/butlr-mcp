@@ -4,6 +4,7 @@ import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
 
 // Mock the GraphQL client
+import { clearHistoryEndCache } from "../../../cache/history-end-cache.js";
 vi.mock("../../../clients/graphql-client.js", () => ({
   apolloClient: {
     query: vi.fn(),
@@ -179,6 +180,7 @@ describe("butlr_get_current_occupancy - Integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHistoryProbe({});
+    clearHistoryEndCache();
   });
 
   describe("Basic room query", () => {
@@ -897,28 +899,72 @@ describe("butlr_get_current_occupancy - Integration", () => {
       expect(asset).not.toHaveProperty("history_end");
     });
 
-    it("probes only after the live read comes back empty", async () => {
+    it("does not probe or call a non-archived zone sensorless when its live read is empty", async () => {
       setupTopologyMocks(liveZoneTopology());
-      const order: string[] = [];
-      vi.mocked(reportingClient.queryReporting).mockImplementation(async () => {
-        order.push("probe");
-        return { data: INDY_PROBE_DAYS };
-      });
-      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => {
-        const builder = mockReportingBuilder({ data: [] });
-        builder.execute.mockImplementation(async () => {
-          order.push("live");
-          return { data: [] };
-        });
-        return builder as any;
-      });
+      mockHistoryProbe({ zone_live: INDY_PROBE_DAYS });
+      const builder = mockReportingBuilder({ data: [] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => builder as any);
 
       const result = await executeGetCurrentOccupancy({ asset_ids: ["zone_live"] });
 
-      expect(order).toEqual(["live", "probe"]);
-      expect(result.assets[0].presence.coverage_note).toBe(
-        "No sensors assigned. Recorded history runs up to 2026-10-20."
-      );
+      const asset = result.assets[0];
+      expect(builder.execute).toHaveBeenCalled();
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.coverage_note).toBe("Zones support presence measurement only.");
+      expect(asset.recommendation_reason).not.toMatch(/no live data|No sensors/);
+      expect(asset).not.toHaveProperty("history_end");
+    });
+
+    it("does not probe a room ID that is not in the topology", async () => {
+      setupTopologyMocks(buildTopologyResponse({ presenceSensors: 1 }));
+      mockHistoryProbe({ room_typo: INDY_PROBE_DAYS });
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["room_typo"] });
+
+      const asset = result.assets[0];
+      expect(reportingClient.queryReporting).not.toHaveBeenCalled();
+      expect(asset.presence.coverage_note).toBe("No presence sensors on this room.");
+      expect(asset).not.toHaveProperty("history_end");
+    });
+
+    it("runs the history probes concurrently", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 0, roomId: "room_a" });
+      (topo.topology.data.sites.data[0].buildings[0].floors[0].rooms as any[]).push({
+        id: "room_b",
+        name: "Pilot - B",
+        floorID: "space_100",
+        capacity: { max: 4 },
+      });
+      setupTopologyMocks(topo);
+      let inFlight = 0;
+      let maxInFlight = 0;
+      vi.mocked(reportingClient.queryReporting).mockImplementation(async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+        return { data: INDY_PROBE_DAYS };
+      });
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["room_a", "room_b"] });
+
+      expect(maxInFlight).toBe(2);
+      expect(result.assets.map((a) => a.history_end)).toEqual(["2026-10-20", "2026-10-20"]);
+    });
+
+    it("reuses a cached history end instead of querying again", async () => {
+      const args = { asset_ids: ["room_old9"] };
+      setupTopologyMocks(buildTopologyResponse({ presenceSensors: 0, roomId: "room_old9" }));
+      mockHistoryProbe({ room_old9: INDY_PROBE_DAYS });
+      const first = await executeGetCurrentOccupancy(args);
+
+      setupTopologyMocks(buildTopologyResponse({ presenceSensors: 0, roomId: "room_old9" }));
+      const second = await executeGetCurrentOccupancy(args);
+
+      expect(reportingClient.queryReporting).toHaveBeenCalledTimes(1);
+      expect(first.assets[0].history_end).toBe("2026-10-20");
+      expect(second.assets[0].history_end).toBe("2026-10-20");
     });
 
     it("queries an archived room that still has sensors live, with the archive noted", async () => {

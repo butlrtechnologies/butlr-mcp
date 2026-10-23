@@ -121,7 +121,12 @@ export interface SpaceBusynessResponse {
     name: string;
     type: "room" | "zone";
     path: string;
+    /** Set when the space is archived (and was not redirected to a replacement). */
+    archived_at?: string;
+    /** Successors of an archived space. */
+    replaced_by?: SpaceRef[];
   };
+  /** Null for an archived space: it has no live busyness. */
   current: {
     occupancy: number;
     capacity: Capacity;
@@ -129,7 +134,9 @@ export interface SpaceBusynessResponse {
     label: "quiet" | "moderate" | "busy" | null;
     capacity_configured: boolean;
     as_of: string;
-  };
+  } | null;
+  /** For an archived space: where its history lives (see `history_end`). */
+  history_note?: string;
   trend?: {
     typical_for_time: number;
     vs_typical_percent: number;

@@ -80,6 +80,24 @@ export function findReplacements(
   return out;
 }
 
+/**
+ * Every room and zone that replaced another, keyed by the replaced space's
+ * ID (`replacesID`). Build it once when many spaces need their successors;
+ * room and zone IDs carry their kind as a prefix, so one map serves both.
+ */
+export function indexReplacements(floors: Floor[]): Map<string, Array<Room | Zone>> {
+  const index = new Map<string, Array<Room | Zone>>();
+  for (const floor of floors) {
+    for (const s of [...(floor.rooms ?? []), ...(floor.zones ?? [])]) {
+      if (!s.replacesID) continue;
+      const list = index.get(s.replacesID) ?? [];
+      list.push(s);
+      index.set(s.replacesID, list);
+    }
+  }
+  return index;
+}
+
 /** Project a space (or a bare ID that did not resolve) to a SpaceRef. */
 export function toSpaceRef(id: string, space: (Room | Zone) | undefined): SpaceRef {
   return {
