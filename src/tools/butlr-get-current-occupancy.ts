@@ -9,6 +9,8 @@ import {
   getPresenceCoverageNote,
   getTrafficCoverageNote,
   buildRecommendation,
+  buildSpaceLifecycle,
+  archivedRecommendationReason,
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
@@ -22,6 +24,8 @@ const GET_CURRENT_OCCUPANCY_DESCRIPTION =
   "Get current occupancy for floors, rooms, or zones (last 5 minutes median). Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete current occupancy picture.\n\n" +
+  "An archived room or zone (`archived_at` set) has no live data and is reported as such rather than queried; " +
+  "`history_note` points at butlr_get_occupancy_timeseries for its history and names any replacement.\n\n" +
   "When NOT to Use:\n" +
   "- Historical occupancy trends or time-range analysis → use butlr_get_occupancy_timeseries instead\n" +
   "- Qualitative busyness labels (quiet/moderate/busy) with trend comparison → use butlr_space_busyness instead\n" +
@@ -57,17 +61,26 @@ export async function executeGetCurrentOccupancy(
 
   for (const assetId of args.asset_ids) {
     const asset = resolveAssetContext(assetId, ctx);
+    const archivedOn = asset.archivedOn;
 
     // ---- Presence ----
     // Zones have no client-visible sensor attribution (see occupancy-helpers
     // `resolveAssetContext`), but the server computes `zone_occupancy`
     // independently. Always query for zones; gate on sensor count for
     // rooms/floors where 0 sensors really does mean "no data possible".
-    const shouldQueryPresence = asset.assetType === "zone" || asset.presenceSensors.length > 0;
+    // An archived room or zone is never queried: it has no live data by
+    // definition, and the note below says so instead of a lookup that can
+    // only come back empty (or, for a zone, fail).
+    const shouldQueryPresence =
+      !archivedOn && (asset.assetType === "zone" || asset.presenceSensors.length > 0);
+    const archivedNote = archivedOn
+      ? `This ${asset.assetType} was archived on ${archivedOn}; archived spaces have no live data.`
+      : undefined;
     const presenceData: CurrentMeasurementData = {
       available: shouldQueryPresence,
       sensor_count: asset.presenceSensors.length,
-      coverage_note: getPresenceCoverageNote(asset.assetType, asset.presenceSensors.length),
+      coverage_note:
+        archivedNote ?? getPresenceCoverageNote(asset.assetType, asset.presenceSensors.length),
     };
 
     let presenceHasData = false;
@@ -100,16 +113,20 @@ export async function executeGetCurrentOccupancy(
     }
 
     // ---- Traffic ----
+    const shouldQueryTraffic = !archivedOn && asset.trafficSensors.length > 0;
     const trafficData: CurrentMeasurementData = {
-      available: asset.trafficSensors.length > 0,
+      available: shouldQueryTraffic,
       entrance_sensor_count: asset.assetType === "floor" ? asset.trafficSensors.length : undefined,
       sensor_count: asset.assetType === "room" ? asset.trafficSensors.length : undefined,
-      coverage_note: getTrafficCoverageNote(asset.assetType, asset.trafficSensors.length),
+      coverage_note:
+        archivedNote && asset.assetType === "room"
+          ? archivedNote
+          : getTrafficCoverageNote(asset.assetType, asset.trafficSensors.length),
     };
 
     let trafficHasData = false;
 
-    if (asset.trafficSensors.length > 0) {
+    if (shouldQueryTraffic) {
       const measurement = getTrafficMeasurement(asset.assetType as "floor" | "room");
 
       try {
@@ -142,13 +159,18 @@ export async function executeGetCurrentOccupancy(
       trafficData,
       presenceHasData,
       trafficHasData,
-      { assetType: asset.assetType, windowLabel: "the last 5 minutes" }
+      {
+        assetType: asset.assetType,
+        windowLabel: "the last 5 minutes",
+        archivedReason: archivedRecommendationReason(asset, "current"),
+      }
     );
 
     const assetEntry: AssetCurrentOccupancy = {
       asset_id: assetId,
       asset_type: asset.assetType,
       asset_name: asset.assetName,
+      ...buildSpaceLifecycle(asset, assetId, "current"),
       ...asset.tzMetadata,
       presence: presenceData,
       traffic: trafficData,

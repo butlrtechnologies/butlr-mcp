@@ -726,4 +726,91 @@ describe("butlr_get_current_occupancy - Integration", () => {
       expect(result.timezone_note).not.toContain("WARNING");
     });
   });
+
+  describe("Archived and replaced spaces", () => {
+    // 01:30 UTC on Oct 21 is 21:30 on Oct 20 in New York (the site tz).
+    const ARCHIVED_AT = "2026-10-21T01:30:00Z";
+
+    function setupArchivedFloor() {
+      const topo = buildTopologyResponse({ presenceSensors: 1, roomId: "room_v2" });
+      const floor = topo.topology.data.sites.data[0].buildings[0].floors[0] as Record<string, any>;
+      floor.rooms[0].name = "Drop In_V2";
+      floor.rooms[0].replacesID = "room_old";
+      floor.rooms.push({
+        id: "room_old",
+        name: "Pilot - Drop In",
+        floorID: "space_100",
+        capacity: { max: 4 },
+        archivedAt: ARCHIVED_AT,
+      });
+      floor.zones.push({
+        id: "zone_old",
+        name: "Pilot Desk Zone",
+        floor_id: "space_100",
+        archivedAt: ARCHIVED_AT,
+      });
+      setupTopologyMocks(topo);
+    }
+
+    it("reports an archived room as having no live data instead of querying it", async () => {
+      setupArchivedFloor();
+      const builder = mockReportingBuilder({ data: [] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => builder as any);
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["room_old"] });
+
+      expect(reportingClient.ReportingRequestBuilder).not.toHaveBeenCalled();
+      const asset = result.assets[0];
+      expect(asset.presence.available).toBe(false);
+      expect(asset.presence.coverage_note).toBe(
+        "This room was archived on 2026-10-20; archived spaces have no live data."
+      );
+      expect(asset.traffic.coverage_note).toBe(asset.presence.coverage_note);
+      expect(asset.recommended_measurement).toBe("none");
+      expect(asset.recommendation_reason).toBe(
+        'This room was archived on 2026-10-20 and has no live data. Its replacement is "Drop In_V2" (room_v2).'
+      );
+      expect(asset.archived_at).toBe(ARCHIVED_AT);
+      expect(asset.replaced_by).toEqual([{ id: "room_v2", name: "Drop In_V2" }]);
+      expect(asset.history_note).toContain("butlr_get_occupancy_timeseries");
+      expect(asset.history_note).toContain('query its replacement: "Drop In_V2" (room_v2)');
+    });
+
+    it("does not query an archived zone, so a reporting error cannot fail the call", async () => {
+      setupArchivedFloor();
+      const failing = mockReportingBuilder(null);
+      failing.execute.mockRejectedValue(new reportingClient.ApiError(400, "Invalid zone"));
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => failing as any);
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["zone_old"] });
+
+      expect(failing.execute).not.toHaveBeenCalled();
+      const asset = result.assets[0];
+      expect(asset.asset_type).toBe("zone");
+      expect(asset.presence.available).toBe(false);
+      expect(asset.presence.coverage_note).toMatch(/zone was archived on 2026-10-20/);
+      expect(asset.traffic.coverage_note).toBe("Zones do not support traffic.");
+      expect(asset.recommendation_reason).toBe(
+        "This zone was archived on 2026-10-20 and has no live data."
+      );
+    });
+
+    it("still reads the live replacement, and points at its predecessor's history", async () => {
+      setupArchivedFloor();
+      const builder = mockReportingBuilder({ data: [{ time: "2026-10-23T15:04:00Z", value: 2 }] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => builder as any);
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["room_v2"] });
+
+      const asset = result.assets[0];
+      expect(asset.presence.current_occupancy).toBe(2);
+      expect(asset.archived_at).toBeUndefined();
+      expect(asset.replaces).toEqual({
+        id: "room_old",
+        name: "Pilot - Drop In",
+        archived_at: ARCHIVED_AT,
+      });
+      expect(asset.history_note).toMatch(/query room_old with butlr_get_occupancy_timeseries/);
+    });
+  });
 });

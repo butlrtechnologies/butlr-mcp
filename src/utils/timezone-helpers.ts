@@ -13,7 +13,7 @@ export interface ResolvedTimezone {
 
 const UTC_FALLBACK = "UTC";
 
-function resolveTimezone(siteTimezone: string | null | undefined): ResolvedTimezone {
+export function resolveTimezone(siteTimezone: string | null | undefined): ResolvedTimezone {
   if (siteTimezone) {
     return { timezone: siteTimezone, isFallback: false };
   }

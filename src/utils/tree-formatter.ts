@@ -10,6 +10,13 @@
 
 import type { Site, Building, Floor, Room, Zone, Sensor, Hive } from "../clients/types.js";
 import type { TopologyNode } from "../types/responses.js";
+import { archivedDisplayName } from "./archived-spaces.js";
+import { resolveTimezone } from "./timezone-helpers.js";
+
+/** Timezone used to date archived spaces under a site (same fallback as the occupancy tools). */
+function siteTimezone(site: Site): string {
+  return resolveTimezone(site.timezone).timezone;
+}
 
 /**
  * Depth level mappings
@@ -71,16 +78,19 @@ function collectAssetsAtDepth(
   const results: TopologyNode[] = [];
 
   for (const site of sites) {
+    const tz = siteTimezone(site);
     if (targetDepth === DEPTH_LEVELS.BUILDING) {
       // Collect buildings
       site.buildings?.forEach((building: Building) => {
-        results.push(formatBuilding(building, DEPTH_LEVELS.BUILDING, targetDepth, traversalDepth));
+        results.push(
+          formatBuilding(building, DEPTH_LEVELS.BUILDING, targetDepth, traversalDepth, tz)
+        );
       });
     } else if (targetDepth === DEPTH_LEVELS.FLOOR) {
       // Collect floors
       site.buildings?.forEach((building: Building) => {
         building.floors?.forEach((floor: Floor) => {
-          results.push(formatFloor(floor, DEPTH_LEVELS.FLOOR, targetDepth, traversalDepth));
+          results.push(formatFloor(floor, DEPTH_LEVELS.FLOOR, targetDepth, traversalDepth, tz));
         });
       });
     } else if (targetDepth === DEPTH_LEVELS.ROOM_ZONE) {
@@ -89,11 +99,11 @@ function collectAssetsAtDepth(
         building.floors?.forEach((floor: Floor) => {
           floor.rooms?.forEach((room: Room) => {
             results.push(
-              formatRoom(room, floor, DEPTH_LEVELS.ROOM_ZONE, targetDepth, traversalDepth)
+              formatRoom(room, floor, DEPTH_LEVELS.ROOM_ZONE, targetDepth, traversalDepth, tz)
             );
           });
           floor.zones?.forEach((zone: Zone) => {
-            results.push(formatZone(zone));
+            results.push(formatZone(zone, tz));
           });
         });
       });
@@ -134,8 +144,9 @@ function formatSite(
   const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
 
   if (includeChildren && site.buildings && site.buildings.length > 0) {
+    const tz = siteTimezone(site);
     const children = site.buildings.map((building: Building) =>
-      formatBuilding(building, DEPTH_LEVELS.BUILDING, startingDepth, traversalDepth)
+      formatBuilding(building, DEPTH_LEVELS.BUILDING, startingDepth, traversalDepth, tz)
     );
     return [site.id, site.name, children];
   }
@@ -151,13 +162,14 @@ function formatBuilding(
   building: Building,
   currentDepth: number,
   startingDepth: number,
-  traversalDepth: number
+  traversalDepth: number,
+  timezone: string
 ): TopologyNode {
   const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
 
   if (includeChildren && building.floors && building.floors.length > 0) {
     const children = building.floors.map((floor: Floor) =>
-      formatFloor(floor, DEPTH_LEVELS.FLOOR, startingDepth, traversalDepth)
+      formatFloor(floor, DEPTH_LEVELS.FLOOR, startingDepth, traversalDepth, timezone)
     );
     return [building.id, building.name, children];
   }
@@ -173,7 +185,8 @@ function formatFloor(
   floor: Floor,
   currentDepth: number,
   startingDepth: number,
-  traversalDepth: number
+  traversalDepth: number,
+  timezone: string
 ): TopologyNode {
   const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
 
@@ -187,7 +200,7 @@ function formatFloor(
   if (floor.rooms && floor.rooms.length > 0) {
     children.push(
       ...floor.rooms.map((room: Room) =>
-        formatRoom(room, floor, DEPTH_LEVELS.ROOM_ZONE, startingDepth, traversalDepth)
+        formatRoom(room, floor, DEPTH_LEVELS.ROOM_ZONE, startingDepth, traversalDepth, timezone)
       )
     );
   }
@@ -195,7 +208,7 @@ function formatFloor(
   // Add floor-level zones (no room assignment)
   if (floor.zones && floor.zones.length > 0) {
     const floorLevelZones = floor.zones.filter((zone: Zone) => !(zone.roomID || zone.room_id));
-    children.push(...floorLevelZones.map((zone: Zone) => formatZone(zone)));
+    children.push(...floorLevelZones.map((zone: Zone) => formatZone(zone, timezone)));
   }
 
   // Add floor-level hives (no room assignment)
@@ -238,12 +251,16 @@ function formatRoom(
   floor: Floor,
   currentDepth: number,
   startingDepth: number,
-  traversalDepth: number
+  traversalDepth: number,
+  timezone: string
 ): TopologyNode {
   const includeChildren = shouldTraverse(currentDepth, startingDepth, traversalDepth);
+  // Archived rooms stay in the tree (users look up old rooms by name) but
+  // carry an "(archived YYYY-MM-DD)" suffix so they aren't read as live.
+  const name = archivedDisplayName(room.name, room, timezone);
 
   if (!includeChildren) {
-    return [room.id, room.name];
+    return [room.id, name];
   }
 
   const children: TopologyNode[] = [];
@@ -251,7 +268,7 @@ function formatRoom(
   // Add zones belonging to this room (zones at room level, not separate depth)
   if (floor.zones && floor.zones.length > 0) {
     const roomZones = floor.zones.filter((zone: Zone) => (zone.roomID || zone.room_id) === room.id);
-    children.push(...roomZones.map((zone: Zone) => formatZone(zone)));
+    children.push(...roomZones.map((zone: Zone) => formatZone(zone, timezone)));
   }
 
   // Add hives belonging to this room
@@ -279,18 +296,18 @@ function formatRoom(
   }
 
   if (children.length > 0) {
-    return [room.id, room.name, children];
+    return [room.id, name, children];
   }
 
-  return [room.id, room.name];
+  return [room.id, name];
 }
 
 /**
  * Format a single zone
- * Returns: [id, name]
+ * Returns: [id, name], with an "(archived YYYY-MM-DD)" suffix when archived
  */
-function formatZone(zone: Zone): TopologyNode {
-  return [zone.id, zone.name];
+function formatZone(zone: Zone, timezone: string): TopologyNode {
+  return [zone.id, archivedDisplayName(zone.name, zone, timezone)];
 }
 
 /**

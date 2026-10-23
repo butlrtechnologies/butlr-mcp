@@ -10,16 +10,30 @@ import { apolloClient } from "../clients/graphql-client.js";
 import {
   GET_ALL_SENSORS,
   GET_FULL_TOPOLOGY,
+  GET_FULL_TOPOLOGY_LEGACY,
   GET_SENSORS_BY_IDS,
   GET_SENSORS_BY_ROOM_IDS,
 } from "../clients/queries/topology.js";
+import { queryWithArchiveFallback } from "../clients/archive-fallback.js";
 import type { Sensor, Site, Floor, Building, Room, Zone } from "../clients/types.js";
 import type { TimezoneMetadata } from "./timezone-helpers.js";
-import type { MeasurementRecommendation, BaseMeasurementData } from "../types/responses.js";
+import type {
+  MeasurementRecommendation,
+  BaseMeasurementData,
+  SpaceLifecycle,
+} from "../types/responses.js";
 import { detectAssetType } from "./asset-helpers.js";
 import { isProductionSensor, throwIfGraphQLErrors } from "./graphql-helpers.js";
 import { getTimezoneForAsset, buildTimezoneMetadata } from "./timezone-helpers.js";
 import { rethrowIfGraphQLError } from "./graphql-helpers.js";
+import {
+  describeSpaceRef,
+  findReplacements,
+  findSpace,
+  formatArchiveDate,
+  toSpaceRef,
+  type SpaceRef,
+} from "./archived-spaces.js";
 
 /**
  * The spatial hierarchy on its own, flattened for lookup.
@@ -47,9 +61,9 @@ export async function fetchTopology(): Promise<TopologyOnly> {
   let topoResult;
 
   try {
-    topoResult = await apolloClient.query<{ sites: { data: Site[] } }>({
-      query: GET_FULL_TOPOLOGY,
-      fetchPolicy: "network-only",
+    topoResult = await queryWithArchiveFallback<{ sites: { data: Site[] } }>({
+      extended: GET_FULL_TOPOLOGY,
+      legacy: GET_FULL_TOPOLOGY_LEGACY,
     });
     throwIfGraphQLErrors(topoResult);
   } catch (error: unknown) {
@@ -166,6 +180,14 @@ export interface AssetContext {
   timezoneWarning?: string;
   presenceSensors: Sensor[];
   trafficSensors: Sensor[];
+  /** RFC 3339 archive time; set only for an archived room/zone. */
+  archivedAt?: string;
+  /** `archivedAt` as a site-local YYYY-MM-DD; set with `archivedAt`. */
+  archivedOn?: string;
+  /** The space this one replaced, when `replacesID` is set. */
+  replaces?: SpaceRef;
+  /** Spaces that replaced this one (several after a split). */
+  replacedBy?: SpaceRef[];
 }
 
 /**
@@ -239,7 +261,7 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
       trafficSensors = [];
   }
 
-  return {
+  const context: AssetContext = {
     assetType: typedAssetType,
     assetName,
     timezone,
@@ -249,6 +271,103 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
     presenceSensors,
     trafficSensors,
   };
+
+  // Archive state and replaced-space links (rooms and zones only). Absent
+  // fields — including every space when the API predates them — leave the
+  // context as an active space that replaces nothing.
+  if (typedAssetType !== "floor") {
+    const space = findSpace(ctx.floors, typedAssetType, assetId);
+    if (space?.archivedAt) {
+      context.archivedAt = space.archivedAt;
+      context.archivedOn = formatArchiveDate(space.archivedAt, timezone);
+    }
+    if (space?.replacesID) {
+      context.replaces = toSpaceRef(
+        space.replacesID,
+        findSpace(ctx.floors, typedAssetType, space.replacesID)
+      );
+    }
+    const successors = findReplacements(ctx.floors, typedAssetType, assetId);
+    if (successors.length > 0) {
+      context.replacedBy = successors.map((s) => toSpaceRef(s.id, s));
+    }
+  }
+
+  return context;
+}
+
+/**
+ * Lifecycle fields for an occupancy response: archive state, replaced-space
+ * links, and a `history_note` telling the caller where the rest of the
+ * history lives. Series are never merged across a replacement; the note
+ * names the other ID so the caller can fetch it.
+ *
+ * `tool` picks the wording: a timeseries covers a range, while current
+ * occupancy is a live reading an archived space can never have.
+ */
+export function buildSpaceLifecycle(
+  asset: AssetContext,
+  assetId: string,
+  tool: "timeseries" | "current"
+): SpaceLifecycle {
+  const lifecycle: SpaceLifecycle = {};
+  const notes: string[] = [];
+  const kind = asset.assetType;
+
+  if (asset.archivedAt && asset.archivedOn) {
+    lifecycle.archived_at = asset.archivedAt;
+    notes.push(
+      tool === "timeseries"
+        ? `This ${kind} was archived on ${asset.archivedOn}; history recorded until then.`
+        : `This ${kind} was archived on ${asset.archivedOn}; archived spaces have no live data. Use butlr_get_occupancy_timeseries for its history up to then.`
+    );
+  }
+
+  if (asset.replacedBy && asset.replacedBy.length > 0) {
+    lifecycle.replaced_by = asset.replacedBy;
+    const list = asset.replacedBy.map(describeSpaceRef).join(", ");
+    notes.push(
+      tool === "timeseries"
+        ? `Replaced by ${list}; query ${asset.replacedBy.length === 1 ? "it" : "them"} for data after the switch-over.`
+        : `For current occupancy, query its replacement${asset.replacedBy.length === 1 ? "" : "s"}: ${list}.`
+    );
+  }
+
+  if (asset.replaces) {
+    lifecycle.replaces = asset.replaces;
+    const predecessorArchived = asset.replaces.archived_at
+      ? `, archived on ${formatArchiveDate(asset.replaces.archived_at, asset.timezone)}`
+      : "";
+    notes.push(
+      `This ${kind} replaces ${describeSpaceRef(asset.replaces)}${predecessorArchived}. ` +
+        (tool === "timeseries"
+          ? `This series covers ${assetId} only; for history before the switch-over, query ${asset.replaces.id} separately.`
+          : `For history before the switch-over, query ${asset.replaces.id} with butlr_get_occupancy_timeseries.`)
+    );
+  }
+
+  if (notes.length > 0) lifecycle.history_note = notes.join(" ");
+  return lifecycle;
+}
+
+/**
+ * Recommendation reason for an archived space with no usable reading, or
+ * undefined for an active one. See RecommendationContext.archivedReason.
+ */
+export function archivedRecommendationReason(
+  asset: AssetContext,
+  tool: "timeseries" | "current"
+): string | undefined {
+  if (!asset.archivedOn) return undefined;
+  const base =
+    tool === "timeseries"
+      ? `This ${asset.assetType} was archived on ${asset.archivedOn} and has no occupancy data in the requested time range. History is available up to ${asset.archivedOn}.`
+      : `This ${asset.assetType} was archived on ${asset.archivedOn} and has no live data.`;
+  const successors = asset.replacedBy ?? [];
+  if (successors.length === 0) return base;
+  return `${base} Its replacement${successors.length === 1 ? " is" : "s are"} ${successors
+    .map(describeSpaceRef)
+    .join(", ")}.`;
 }
 
 /**
@@ -425,6 +544,12 @@ export function getTrafficCoverageNote(
 export interface RecommendationContext {
   assetType: "floor" | "room" | "zone";
   windowLabel: string;
+  /**
+   * Reason to give when an archived space yielded no usable reading. Without
+   * it the generic copy says "no sensors configured ... contact facilities to
+   * instrument it", which is wrong for a space that was retired on purpose.
+   */
+  archivedReason?: string;
 }
 
 /**
@@ -495,6 +620,12 @@ function buildFailureReason(
   traffic: BaseMeasurementData,
   ctx: RecommendationContext
 ): string {
+  // An archived space has no sensors by design. Unless a lookup failed (the
+  // warning is more useful then), say so instead of "instrument it".
+  if (ctx.archivedReason && !presence.warning && !traffic.warning) {
+    return ctx.archivedReason;
+  }
+
   const presenceReason = describeMeasurementFailure("presence", presence, ctx);
   const trafficReason = describeMeasurementFailure("traffic", traffic, ctx);
 

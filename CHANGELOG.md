@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-23
+
+Archived spaces and replaced-space links. When a floor is re-drawn (Salesforce Indy Tower Floor 7: the "Pilot - *" rooms were archived and "_V2" copies took over their sensors), the old rooms are now marked archived and the new ones point back at them, instead of the tools guessing from a 0-sensor count. Needs the API fields `archivedAt` and `replacesID` on `Room` and `Zone`; until the API ships them, every tool behaves as in 0.6.2 (see Compatibility).
+
+### Added
+- The topology queries (`GET_FULL_TOPOLOGY`, `GET_TOPOLOGY_NO_DEVICES`) select `archivedAt` and `replacesID` on rooms and zones. The `Room`/`Zone` client types and the occupancy tools' asset context carry them, along with the predecessor and successors resolved from the topology.
+- `butlr_list_topology` keeps archived rooms and zones in the tree and appends "(archived YYYY-MM-DD)" to their display name. The date is in the site's timezone.
+- `butlr_search_assets` still matches archived rooms and zones by name, since users ask for old rooms by name. Their `path` ends in "(archived YYYY-MM-DD)" and they carry `archived_at`. `name` is left plain so it can be passed to tools that accept names. Rooms and zones also return `replaces_id` and `replaced_by`. `replaced_by` is computed over the whole org, so an old room found by name points at its replacement even when the replacement's name did not match the query.
+- `butlr_get_occupancy_timeseries` and `butlr_get_current_occupancy` return `archived_at`, `replaces`, `replaced_by` and a `history_note` for rooms and zones. A space that replaced another names its predecessor, its archive date, and the ID to query for history before the switch-over. Series are not merged.
+
+### Changed
+- `butlr_get_occupancy_timeseries`: for an archived room or zone, the presence `coverage_note` reads "archived on <date>; history recorded until then" instead of the 0.6.2 guess that the history came from earlier sensors. When the range has no data, `recommendation_reason` says the space was archived and names any replacement, instead of telling the caller to instrument it. The lookup is best-effort like 0.6.2's 0-sensor lookups: a 429, 5xx or timeout warns on that asset, while auth errors still fail the call. Rooms and floors with 0 sensors that are not archived keep the 0.6.2 behaviour.
+- `butlr_get_current_occupancy` does not query an archived room or zone. It reports no live data, with a note that points at the timeseries tool for history and names any replacement. Before this, an archived zone was still queried, so a reporting error on it could fail the whole call.
+- `butlr_available_rooms` drops archived rooms before it reads occupancy. They are never listed as available and no longer count toward `building_context.total_rooms` or `occupancy_percent`, where their missing live reading made them count as occupied.
+
+### Compatibility
+- A GraphQL server rejects the whole query when it selects a field its schema lacks, and this release may ship before the API. Queries that select the new fields first try the extended query. If the API rejects it with `Cannot query field "archivedAt"` or `"replacesID"`, they send the same query without those fields once, and later calls go straight to the legacy query for an hour. After that the extended query is tried again, so a running server picks the fields up after the API deploys without a restart. The rejection is recognised as a parsed GraphQL error, in the raw body of a non-2xx response, or in an error message. Any other error behaves as before. On the legacy path no space is known to be archived, so the output matches 0.6.2.
+
 ## [0.6.2] - 2026-10-22
 
 ### Fixed

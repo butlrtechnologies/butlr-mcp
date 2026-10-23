@@ -4,6 +4,7 @@ import { executeAvailableRooms, GET_ROOMS_BY_TAG } from "../../butlr-available-r
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
 import { loadGraphQLFixture } from "../../../__mocks__/apollo-client.js";
+import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
 
 // Mock the clients
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -629,6 +630,99 @@ describe("butlr_available_rooms - Integration", () => {
         expect(room.capacity).toBeDefined();
         expect(room.data_window_minutes).toBe(5);
       }
+    });
+  });
+
+  describe("archived rooms", () => {
+    beforeEach(() => {
+      resetArchiveFieldSupport();
+    });
+
+    function buildingWithArchivedRoom(opts?: { withArchiveFields?: boolean }) {
+      const withArchiveFields = opts?.withArchiveFields ?? true;
+      return {
+        building: {
+          id: "building_arch",
+          name: "Indy Tower",
+          site_id: "site_arch",
+          floors: [
+            {
+              id: "floor_arch",
+              name: "Floor 07",
+              building_id: "building_arch",
+              rooms: [
+                {
+                  id: "room_arch_free",
+                  name: "Huddle_V2",
+                  floorID: "floor_arch",
+                  capacity: { max: 4 },
+                },
+                {
+                  id: "room_arch_busy",
+                  name: "Focus_V2",
+                  floorID: "floor_arch",
+                  capacity: { max: 2 },
+                },
+                {
+                  id: "room_arch_old",
+                  name: "Pilot - Huddle",
+                  floorID: "floor_arch",
+                  capacity: { max: 4 },
+                  ...(withArchiveFields ? { archivedAt: "2026-10-21T01:30:00Z" } : {}),
+                },
+              ],
+            },
+          ],
+        },
+      };
+    }
+
+    it("never lists an archived room and leaves it out of the building's room count", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({ data: buildingWithArchivedRoom() } as any);
+      vi.mocked(reportingClient.getCurrentOccupancy).mockImplementation(async (_type, ids) =>
+        ids.map((id) => ({
+          start: "2026-10-23T00:00:00Z",
+          measurement: "room_occupancy",
+          value: id === "room_arch_busy" ? 2 : 0,
+          asset_id: id,
+        }))
+      );
+
+      const result = await executeAvailableRooms({ building_id: "building_arch" });
+
+      expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toEqual([
+        "room_arch_free",
+        "room_arch_busy",
+      ]);
+      expect(result.available_rooms.map((r) => r.id)).toEqual(["room_arch_free"]);
+      expect(result.building_context).toMatchObject({
+        total_rooms: 2,
+        available_rooms: 1,
+        occupancy_percent: 50,
+      });
+    });
+
+    it("falls back to the legacy query when the API lacks the archive fields", async () => {
+      vi.mocked(apolloClient.query)
+        .mockResolvedValueOnce({
+          data: undefined,
+          error: new CombinedGraphQLErrors({
+            errors: [{ message: 'Cannot query field "archivedAt" on type "Room".' }],
+          }),
+        } as any)
+        .mockResolvedValueOnce({
+          data: buildingWithArchivedRoom({ withArchiveFields: false }),
+        } as any);
+      vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([]);
+
+      await executeAvailableRooms({ building_id: "building_arch" });
+
+      const calls = vi.mocked(apolloClient.query).mock.calls;
+      expect(calls).toHaveLength(2);
+      expect(calls[1][0].query).not.toBe(calls[0][0].query);
+      expect(calls[1][0].variables).toEqual({ buildingId: "building_arch" });
+      // Without the fields nothing is known to be archived, so all 3 rooms count.
+      expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toHaveLength(3);
     });
   });
 });

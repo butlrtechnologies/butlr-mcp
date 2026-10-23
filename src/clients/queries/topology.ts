@@ -1,4 +1,5 @@
 import { gql } from "@apollo/client";
+import { SPACE_ARCHIVE_FIELDS } from "./archive-fields.js";
 
 /**
  * GraphQL queries for topology retrieval
@@ -66,8 +67,13 @@ export const GET_SITE_STRUCTURE = gql`
  * shows no pagination args on the nested `sensors` field).
  * Still use GET_ALL_SENSORS and GET_ALL_HIVES for full device detail (model,
  * battery, heartbeat, ...), merged by floor_id/room_id.
+ *
+ * Rooms and zones select `archivedAt`/`replacesID` (see archive-fields.ts).
+ * An API that predates those fields rejects the whole query, so fetch this
+ * through `queryWithArchiveFallback`, which retries with the legacy variant.
  */
-export const GET_FULL_TOPOLOGY = gql`
+function buildFullTopologyQuery(withArchiveFields: boolean) {
+  return gql`
   query GetFullTopology {
     sites {
       data {
@@ -118,6 +124,7 @@ export const GET_FULL_TOPOLOGY = gql`
                 mid
               }
               coordinates
+              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
             }
             zones {
               id
@@ -126,6 +133,7 @@ export const GET_FULL_TOPOLOGY = gql`
               room_id
               customID
               coordinates
+              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
               sensors {
                 id
                 name
@@ -144,6 +152,16 @@ export const GET_FULL_TOPOLOGY = gql`
     }
   }
 `;
+}
+
+/** Full topology, including the archive fields on rooms and zones. */
+export const GET_FULL_TOPOLOGY = buildFullTopologyQuery(true);
+
+/**
+ * GET_FULL_TOPOLOGY without the archive fields, for an API that predates
+ * them. Use through `queryWithArchiveFallback`, never directly.
+ */
+export const GET_FULL_TOPOLOGY_LEGACY = buildFullTopologyQuery(false);
 
 /**
  * Get all sensors for the organization
@@ -258,7 +276,8 @@ export const GET_ALL_HIVES = gql`
  * Lightweight topology without devices
  * Faster when sensor/hive data isn't needed
  */
-export const GET_TOPOLOGY_NO_DEVICES = gql`
+function buildTopologyNoDevicesQuery(withArchiveFields: boolean) {
+  return gql`
   query GetTopologyNoDevices {
     sites {
       data {
@@ -308,6 +327,7 @@ export const GET_TOPOLOGY_NO_DEVICES = gql`
                 mid
               }
               coordinates
+              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
             }
             zones {
               id
@@ -316,6 +336,7 @@ export const GET_TOPOLOGY_NO_DEVICES = gql`
               room_id
               customID
               coordinates
+              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
             }
           }
         }
@@ -323,3 +344,10 @@ export const GET_TOPOLOGY_NO_DEVICES = gql`
     }
   }
 `;
+}
+
+/** Lightweight topology, including the archive fields on rooms and zones. */
+export const GET_TOPOLOGY_NO_DEVICES = buildTopologyNoDevicesQuery(true);
+
+/** GET_TOPOLOGY_NO_DEVICES without the archive fields (see GET_FULL_TOPOLOGY_LEGACY). */
+export const GET_TOPOLOGY_NO_DEVICES_LEGACY = buildTopologyNoDevicesQuery(false);

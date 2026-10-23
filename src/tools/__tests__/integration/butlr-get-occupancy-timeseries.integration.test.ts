@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeGetOccupancyTimeseries } from "../../butlr-get-occupancy-timeseries.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
+import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import {
+  GET_ALL_SENSORS,
+  GET_FULL_TOPOLOGY,
+  GET_FULL_TOPOLOGY_LEGACY,
+} from "../../../clients/queries/topology.js";
+import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
 
 // Mock the GraphQL client
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -131,6 +138,7 @@ function setupTopologyMocks(topo: ReturnType<typeof buildTopologyResponse>) {
 describe("butlr_get_occupancy_timeseries - Integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetArchiveFieldSupport();
   });
 
   describe("Basic timeseries query", () => {
@@ -788,6 +796,254 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
 
       // Verify .window() was called with the site timezone
       expect(builder.window).toHaveBeenCalledWith("1h", "median", "Asia/Tokyo");
+    });
+  });
+
+  // Salesforce Indy Tower Floor 7: the old "Pilot - *" room was archived
+  // when the floor was re-drawn, and its "_V2" copy took over its sensors
+  // with `replacesID` pointing back at it.
+  describe("Archived and replaced spaces", () => {
+    // 01:30 UTC on Oct 21 is 18:30 on Oct 20 in Los Angeles (the site tz).
+    const ARCHIVED_AT = "2026-10-21T01:30:00Z";
+
+    function setupFloor7(opts?: { successorName?: string }) {
+      const topo = buildTopologyResponse({ presenceSensors: 1, roomId: "room_v2" });
+      const rooms = topo.topology.data.sites.data[0].buildings[0].floors[0].rooms as Array<
+        Record<string, unknown>
+      >;
+      rooms[0].name = opts?.successorName ?? "Drop In_V2";
+      rooms[0].replacesID = "room_old";
+      rooms.push({
+        id: "room_old",
+        name: "Pilot - Drop In",
+        floorID: "space_100",
+        capacity: { max: 4 },
+        archivedAt: ARCHIVED_AT,
+      });
+      setupTopologyMocks(topo);
+    }
+
+    it("an archived room returns its history with an archive note instead of the 0-sensor guess", async () => {
+      setupFloor7();
+      const presenceBuilder = mockReportingBuilder({
+        data: [
+          { time: "2026-10-19T04:00:00Z", value: 3 },
+          { time: "2026-10-20T04:00:00Z", value: 2 },
+        ],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_old"],
+        interval: "1d",
+        start: "2026-10-01T00:00:00Z",
+        stop: "2026-10-23T00:00:00Z",
+      });
+
+      const asset = result.assets[0];
+      expect(presenceBuilder.measurements).toHaveBeenCalledWith(["room_occupancy"]);
+      expect(asset.presence.available).toBe(true);
+      expect(asset.presence.timeseries).toHaveLength(2);
+      expect(asset.presence.coverage_note).toBe(
+        "This room was archived on 2026-10-20; history recorded until then."
+      );
+      expect(asset.presence.coverage_note).not.toMatch(/assigned to it earlier/);
+      expect(asset.archived_at).toBe(ARCHIVED_AT);
+      expect(asset.replaced_by).toEqual([{ id: "room_v2", name: "Drop In_V2" }]);
+      expect(asset.history_note).toContain("archived on 2026-10-20; history recorded until then");
+      expect(asset.history_note).toContain('Replaced by "Drop In_V2" (room_v2)');
+      expect(asset.recommended_measurement).toBe("presence");
+    });
+
+    it("an archived room with no data in range explains the archive, not 'instrument it'", async () => {
+      setupFloor7();
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_old"],
+        interval: "1h",
+        start: "2026-10-22T00:00:00Z",
+        stop: "2026-10-23T00:00:00Z",
+      });
+
+      const asset = result.assets[0];
+      expect(asset.presence.available).toBe(false);
+      expect(asset.recommended_measurement).toBe("none");
+      expect(asset.recommendation_reason).toMatch(/archived on 2026-10-20/);
+      expect(asset.recommendation_reason).toContain('"Drop In_V2" (room_v2)');
+      expect(asset.recommendation_reason).not.toMatch(/Contact facilities/);
+    });
+
+    it("a failed lookup on an archived room warns on that asset without failing the batch", async () => {
+      setupFloor7();
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => {
+        let roomId = "";
+        const builder = mockReportingBuilder(null);
+        builder.assets.mockImplementation((_type: string, ids: string[]) => {
+          roomId = ids[0];
+          return builder;
+        });
+        builder.execute.mockImplementation(async () => {
+          if (roomId === "room_old") throw new reportingClient.ApiError(503, "Unavailable");
+          return { data: [{ time: "2026-10-22T04:00:00Z", value: 1 }] };
+        });
+        return builder as any;
+      });
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_old", "room_v2"],
+        interval: "1d",
+        start: "2026-10-01T00:00:00Z",
+        stop: "2026-10-23T00:00:00Z",
+      });
+
+      const [old, v2] = result.assets;
+      expect(v2.presence.timeseries).toHaveLength(1);
+      expect(old.presence.warning).toContain("Failed to retrieve");
+      expect(old.presence.coverage_note).toMatch(/archived on 2026-10-20, and the lookup/);
+      expect(old.recommendation_reason).toContain("Failed");
+    });
+
+    it("a replacement names its predecessor so the caller can fetch the earlier history", async () => {
+      setupFloor7();
+      const presenceBuilder = mockReportingBuilder({
+        data: [{ time: "2026-10-22T04:00:00Z", value: 5 }],
+      });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => presenceBuilder as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_v2"],
+        interval: "1d",
+        start: "2026-10-01T00:00:00Z",
+        stop: "2026-10-23T00:00:00Z",
+      });
+
+      const asset = result.assets[0];
+      // v1 does not merge series: one query, for this room only.
+      expect(presenceBuilder.execute).toHaveBeenCalledTimes(1);
+      expect(presenceBuilder.assets).toHaveBeenCalledWith("room", ["room_v2"]);
+      expect(asset.presence.timeseries).toHaveLength(1);
+      expect(asset.archived_at).toBeUndefined();
+      expect(asset.replaces).toEqual({
+        id: "room_old",
+        name: "Pilot - Drop In",
+        archived_at: ARCHIVED_AT,
+      });
+      expect(asset.history_note).toBe(
+        'This room replaces "Pilot - Drop In" (room_old), archived on 2026-10-20. ' +
+          "This series covers room_v2 only; for history before the switch-over, query room_old separately."
+      );
+    });
+
+    it("an active space that replaces nothing carries no lifecycle fields", async () => {
+      setupTopologyMocks(buildTopologyResponse({ presenceSensors: 1 }));
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+        () => mockReportingBuilder({ data: [] }) as any
+      );
+
+      const result = await executeGetOccupancyTimeseries({
+        asset_ids: ["room_100"],
+        interval: "1h",
+        start: "-24h",
+        stop: "now",
+      });
+
+      const asset = result.assets[0];
+      for (const key of ["archived_at", "replaces", "replaced_by", "history_note"]) {
+        expect(asset).not.toHaveProperty(key);
+      }
+    });
+
+    describe("against an API without the archive fields", () => {
+      // What the API's validator answers when the extended topology query
+      // selects fields its schema does not have yet.
+      const rejected = {
+        data: undefined,
+        error: new CombinedGraphQLErrors({
+          errors: [{ message: 'Cannot query field "archivedAt" on type "Room".' }],
+        }),
+      };
+
+      function mockApiWithoutArchiveFields(topo: ReturnType<typeof buildTopologyResponse>) {
+        vi.mocked(apolloClient.query).mockImplementation((async (opts: { query: unknown }) => {
+          if (opts.query === GET_FULL_TOPOLOGY) return rejected;
+          if (opts.query === GET_FULL_TOPOLOGY_LEGACY) return topo.topology;
+          if (opts.query === GET_ALL_SENSORS) return topo.sensors;
+          throw new Error("unexpected query");
+        }) as never);
+      }
+
+      it("falls back to the legacy topology query and keeps the v0.6.2 behaviour", async () => {
+        const topo = buildTopologyResponse({ presenceSensors: 0, roomId: "room_old" });
+        mockApiWithoutArchiveFields(topo);
+        vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+          () => mockReportingBuilder({ data: [{ time: "2026-10-01T04:00:00Z", value: 3 }] }) as any
+        );
+
+        const result = await executeGetOccupancyTimeseries({
+          asset_ids: ["room_old"],
+          interval: "1d",
+          start: "2026-09-20T00:00:00Z",
+          stop: "2026-10-16T00:00:00Z",
+        });
+
+        const sent = vi.mocked(apolloClient.query).mock.calls.map((c) => c[0].query);
+        expect(sent).toEqual([GET_FULL_TOPOLOGY, GET_ALL_SENSORS, GET_FULL_TOPOLOGY_LEGACY]);
+        const asset = result.assets[0];
+        expect(asset.presence.available).toBe(true);
+        expect(asset.presence.coverage_note).toMatch(/assigned to it earlier/);
+        expect(asset).not.toHaveProperty("archived_at");
+      });
+
+      it("goes straight to the legacy query on the next call", async () => {
+        const topo = buildTopologyResponse({ presenceSensors: 1 });
+        mockApiWithoutArchiveFields(topo);
+        vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+          () => mockReportingBuilder({ data: [] }) as any
+        );
+        const args = {
+          asset_ids: ["room_100"],
+          interval: "1h" as const,
+          start: "-24h",
+          stop: "now",
+        };
+
+        await executeGetOccupancyTimeseries(args);
+        vi.mocked(apolloClient.query).mockClear();
+        await executeGetOccupancyTimeseries(args);
+
+        const sent = vi.mocked(apolloClient.query).mock.calls.map((c) => c[0].query);
+        expect(sent).toEqual([GET_FULL_TOPOLOGY_LEGACY, GET_ALL_SENSORS]);
+      });
+
+      it("still fails on an unrelated topology error", async () => {
+        vi.mocked(apolloClient.query).mockImplementation((async (opts: { query: unknown }) => {
+          if (opts.query === GET_FULL_TOPOLOGY) {
+            return {
+              data: undefined,
+              error: new CombinedGraphQLErrors({ errors: [{ message: "Internal server error" }] }),
+            };
+          }
+          return buildTopologyResponse().sensors;
+        }) as never);
+
+        await expect(
+          executeGetOccupancyTimeseries({
+            asset_ids: ["room_100"],
+            interval: "1h",
+            start: "-24h",
+            stop: "now",
+          })
+        ).rejects.toThrow(/Internal server error/);
+        const sent = vi.mocked(apolloClient.query).mock.calls.map((c) => c[0].query);
+        expect(sent).not.toContain(GET_FULL_TOPOLOGY_LEGACY);
+      });
     });
   });
 });

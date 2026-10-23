@@ -8,6 +8,7 @@
 import type { Capacity, Area } from "../clients/types.js";
 import type { TagMatch, TagName } from "../clients/queries/tags.js";
 import type { TimezoneMetadata } from "../utils/timezone-helpers.js";
+import type { SpaceRef } from "../utils/archived-spaces.js";
 
 // ---------------------------------------------------------------------------
 // Shared primitives
@@ -50,6 +51,22 @@ export interface AssetIdentifier {
   asset_id: string;
   asset_type: string;
   asset_name?: string;
+}
+
+/**
+ * Archive state and replaced-space links for a room or zone in occupancy
+ * responses. Every field is omitted for an active space that replaces
+ * nothing (and for every space when the API predates these fields).
+ */
+export interface SpaceLifecycle {
+  /** RFC 3339 time the space was archived. */
+  archived_at?: string;
+  /** The space this one replaced. Its own ID holds the history before the switch-over. */
+  replaces?: SpaceRef;
+  /** Spaces that replaced this one. */
+  replaced_by?: SpaceRef[];
+  /** Plain-language guidance on where the rest of this space's history lives. */
+  history_note?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +305,7 @@ export interface FetchEntityDetailsResponse {
 // ---------------------------------------------------------------------------
 
 export type AssetOccupancyTimeseries = AssetIdentifier &
+  SpaceLifecycle &
   TimezoneMetadata &
   MeasurementRecommendation & {
     presence: TimeseriesMeasurementData;
@@ -309,6 +327,7 @@ export interface OccupancyTimeseriesResponse {
 // ---------------------------------------------------------------------------
 
 export type AssetCurrentOccupancy = AssetIdentifier &
+  SpaceLifecycle &
   TimezoneMetadata &
   MeasurementRecommendation & {
     presence: CurrentMeasurementData;

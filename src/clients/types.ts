@@ -12,6 +12,18 @@ import type { TagRef } from "./queries/tags.js";
  * widen this without confirming the upstream schema.
  */
 
+/**
+ * Archive state shared by Room and Zone. Both fields are absent when the API
+ * predates them (see src/clients/archive-fallback.ts); absent and null both
+ * mean "active, replaces nothing".
+ */
+export interface ArchivableSpace {
+  /** RFC 3339 time the space was archived; null/absent = active. */
+  archivedAt?: string | null;
+  /** ID of the same-kind space this one replaced (one level deep). */
+  replacesID?: string | null;
+}
+
 export interface Capacity {
   max?: number;
   mid?: number;
@@ -93,7 +105,7 @@ export interface Floor {
 /**
  * Room - Defined space within a floor
  */
-export interface Room {
+export interface Room extends ArchivableSpace {
   id: string;
   name: string;
   floorID?: string; // camelCase (legacy)
@@ -117,7 +129,7 @@ export interface Room {
 /**
  * Zone - Sub-area within a floor or room
  */
-export interface Zone {
+export interface Zone extends ArchivableSpace {
   id: string;
   name: string;
   floorID?: string; // camelCase (legacy)

@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeSearchAssets } from "../../butlr-search-assets.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import { topologyCache } from "../../../cache/topology-cache.js";
+import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import { GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY } from "../../../clients/queries/topology.js";
+import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
 
 vi.mock("../../../clients/graphql-client.js", () => ({
   apolloClient: {
@@ -252,5 +255,134 @@ describe("butlr_search_assets - device coverage", () => {
       max_results: 5,
     });
     expect(second.matches.map((m) => m.id)).toContain("sensor_elevator");
+  });
+});
+
+// Indy Tower Floor 7 after the re-layout: the old pilot room is archived and
+// its "_V2" copy replaces it.
+const FLOOR7_TOPOLOGY = {
+  sites: {
+    data: [
+      {
+        id: "site_indy",
+        name: "Indy",
+        timezone: "America/Indiana/Indianapolis",
+        buildings: [
+          {
+            id: "building_tower",
+            name: "Tower",
+            site_id: "site_indy",
+            floors: [
+              {
+                id: "floor_7",
+                name: "Floor 07",
+                building_id: "building_tower",
+                rooms: [
+                  {
+                    id: "room_old",
+                    name: "Pilot - Drop In",
+                    // 01:30 UTC on Oct 21 = evening of Oct 20 in Indianapolis
+                    archivedAt: "2026-10-21T01:30:00Z",
+                  },
+                  { id: "room_v2", name: "Huddle_V2", replacesID: "room_old" },
+                ],
+                zones: [
+                  {
+                    id: "zone_old",
+                    name: "Pilot Desk Zone",
+                    archivedAt: "2026-10-21T01:30:00Z",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+};
+
+function mockFloor7(opts?: { apiHasArchiveFields?: boolean }) {
+  const apiHasArchiveFields = opts?.apiHasArchiveFields ?? true;
+  vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+    if (options.query === GET_FULL_TOPOLOGY) {
+      if (!apiHasArchiveFields) {
+        return Promise.resolve({
+          data: undefined,
+          error: new CombinedGraphQLErrors({
+            errors: [{ message: 'Cannot query field "archivedAt" on type "Room".' }],
+          }),
+        } as any);
+      }
+      return Promise.resolve({ data: structuredClone(FLOOR7_TOPOLOGY) } as any);
+    }
+    if (options.query === GET_FULL_TOPOLOGY_LEGACY) {
+      // What the old API returns: the same tree without the new fields.
+      const legacy = structuredClone(FLOOR7_TOPOLOGY);
+      const floor = legacy.sites.data[0].buildings[0].floors[0] as any;
+      for (const space of [...floor.rooms, ...floor.zones]) {
+        delete space.archivedAt;
+        delete space.replacesID;
+      }
+      return Promise.resolve({ data: legacy } as any);
+    }
+    const queryString = options.query.loc?.source?.body || "";
+    if (queryString.includes("GetAllSensors")) {
+      return Promise.resolve({ data: { sensors: { data: [] } } } as any);
+    }
+    if (queryString.includes("GetAllHives")) {
+      return Promise.resolve({ data: { hives: { data: [] } } } as any);
+    }
+    return Promise.reject(new Error(`Unexpected query: ${queryString}`));
+  });
+}
+
+describe("butlr_search_assets - archived spaces", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    topologyCache.clear();
+    resetArchiveFieldSupport();
+  });
+
+  it("finds an archived room by its old name and labels it", async () => {
+    mockFloor7();
+
+    const result = await executeSearchAssets({ query: "Pilot - Drop In", max_results: 5 });
+
+    const match = result.matches.find((m) => m.id === "room_old");
+    expect(match).toBeDefined();
+    // `name` stays plain so it can be passed to name-accepting tools.
+    expect(match?.name).toBe("Pilot - Drop In");
+    expect(match?.path).toBe("Indy / Tower / Floor 07 / Pilot - Drop In (archived 2026-10-20)");
+    expect(match?.archived_at).toBe("2026-10-21T01:30:00Z");
+    // The replacement is linked even though its name did not match.
+    expect(match?.replaced_by).toEqual(["room_v2"]);
+  });
+
+  it("labels archived zones and links a replacement to its predecessor", async () => {
+    mockFloor7();
+
+    const zones = await executeSearchAssets({ query: "Pilot Desk Zone", max_results: 5 });
+    expect(zones.matches.find((m) => m.id === "zone_old")?.path).toMatch(
+      /\(archived 2026-10-20\)$/
+    );
+
+    const v2 = await executeSearchAssets({ query: "Huddle_V2", max_results: 5 });
+    const match = v2.matches.find((m) => m.id === "room_v2");
+    expect(match?.replaces_id).toBe("room_old");
+    expect(match?.path).not.toMatch(/archived/);
+    expect(match).not.toHaveProperty("archived_at");
+  });
+
+  it("falls back to the legacy query when the API lacks the fields", async () => {
+    mockFloor7({ apiHasArchiveFields: false });
+
+    const result = await executeSearchAssets({ query: "Pilot - Drop In", max_results: 5 });
+
+    const sent = vi.mocked(apolloClient.query).mock.calls.map((c) => c[0].query);
+    expect(sent).toContain(GET_FULL_TOPOLOGY_LEGACY);
+    const match = result.matches.find((m) => m.id === "room_old");
+    expect(match?.path).toBe("Indy / Tower / Floor 07 / Pilot - Drop In");
+    expect(match).not.toHaveProperty("archived_at");
   });
 });

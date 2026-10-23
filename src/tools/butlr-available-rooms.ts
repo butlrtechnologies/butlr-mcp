@@ -1,5 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
+import { queryWithArchiveFallback } from "../clients/archive-fallback.js";
+import { SPACE_ARCHIVE_FIELDS } from "../clients/queries/archive-fields.js";
+import { isArchived } from "../utils/archived-spaces.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
 import type { Room, Building, Floor } from "../clients/types.js";
@@ -122,7 +125,8 @@ const AVAILABLE_ROOMS_DESCRIPTION =
 
 export type AvailableRoomsArgs = z.output<typeof AvailableRoomsArgsSchema>;
 
-const GET_ROOMS_BY_FLOOR = gql`
+function buildRoomsByFloorQuery(withArchiveFields: boolean) {
+  return gql`
   query GetRoomsByFloor($floorId: ID!) {
     floor(id: $floorId) {
       id
@@ -143,6 +147,7 @@ const GET_ROOMS_BY_FLOOR = gql`
         }
         coordinates
         customID
+        ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
       }
       building {
         id
@@ -152,8 +157,12 @@ const GET_ROOMS_BY_FLOOR = gql`
     }
   }
 `;
+}
+const GET_ROOMS_BY_FLOOR = buildRoomsByFloorQuery(true);
+const GET_ROOMS_BY_FLOOR_LEGACY = buildRoomsByFloorQuery(false);
 
-const GET_ROOMS_BY_BUILDING = gql`
+function buildRoomsByBuildingQuery(withArchiveFields: boolean) {
+  return gql`
   query GetRoomsByBuilding($buildingId: ID!) {
     building(id: $buildingId) {
       id
@@ -178,13 +187,18 @@ const GET_ROOMS_BY_BUILDING = gql`
           }
           coordinates
           customID
+          ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
         }
       }
     }
   }
 `;
+}
+const GET_ROOMS_BY_BUILDING = buildRoomsByBuildingQuery(true);
+const GET_ROOMS_BY_BUILDING_LEGACY = buildRoomsByBuildingQuery(false);
 
-export const GET_ROOMS_BY_TAG = gql`
+function buildRoomsByTagQuery(withArchiveFields: boolean) {
+  return gql`
   query GetRoomsByTag($tagIDs: [String!]!, $useOR: Boolean) {
     roomsByTag(tagIDs: $tagIDs, useOR: $useOR) {
       data {
@@ -202,6 +216,7 @@ export const GET_ROOMS_BY_TAG = gql`
         }
         coordinates
         customID
+        ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
         floor {
           id
           name
@@ -216,8 +231,12 @@ export const GET_ROOMS_BY_TAG = gql`
     }
   }
 `;
+}
+export const GET_ROOMS_BY_TAG = buildRoomsByTagQuery(true);
+const GET_ROOMS_BY_TAG_LEGACY = buildRoomsByTagQuery(false);
 
-const GET_ALL_ROOMS = gql`
+function buildAllRoomsQuery(withArchiveFields: boolean) {
+  return gql`
   query GetAllRooms {
     sites {
       data {
@@ -246,6 +265,7 @@ const GET_ALL_ROOMS = gql`
               }
               coordinates
               customID
+              ${withArchiveFields ? SPACE_ARCHIVE_FIELDS : ""}
             }
           }
         }
@@ -253,6 +273,9 @@ const GET_ALL_ROOMS = gql`
     }
   }
 `;
+}
+const GET_ALL_ROOMS = buildAllRoomsQuery(true);
+const GET_ALL_ROOMS_LEGACY = buildAllRoomsQuery(false);
 
 /**
  * Execute available rooms tool
@@ -297,11 +320,10 @@ export async function executeAvailableRooms(
 
   try {
     if (args.floor_id) {
-      const result = await apolloClient.query<{ floor: Floor }>({
-        query: GET_ROOMS_BY_FLOOR,
-        variables: { floorId: args.floor_id },
-        fetchPolicy: "network-only",
-      });
+      const result = await queryWithArchiveFallback<{ floor: Floor }>(
+        { extended: GET_ROOMS_BY_FLOOR, legacy: GET_ROOMS_BY_FLOOR_LEGACY },
+        { floorId: args.floor_id }
+      );
       throwIfGraphQLErrors(result);
 
       if (!result.data?.floor) {
@@ -312,11 +334,10 @@ export async function executeAvailableRooms(
       floors = [result.data.floor];
       buildings = result.data.floor.building ? [result.data.floor.building] : [];
     } else if (args.building_id) {
-      const result = await apolloClient.query<{ building: Building }>({
-        query: GET_ROOMS_BY_BUILDING,
-        variables: { buildingId: args.building_id },
-        fetchPolicy: "network-only",
-      });
+      const result = await queryWithArchiveFallback<{ building: Building }>(
+        { extended: GET_ROOMS_BY_BUILDING, legacy: GET_ROOMS_BY_BUILDING_LEGACY },
+        { buildingId: args.building_id }
+      );
       throwIfGraphQLErrors(result);
 
       if (!result.data?.building) {
@@ -420,11 +441,10 @@ export async function executeAvailableRooms(
 
       const useOR = tagMatch === "any";
 
-      const result = await apolloClient.query<{ roomsByTag: { data: Room[] } | null }>({
-        query: GET_ROOMS_BY_TAG,
-        variables: { tagIDs: resolvedIds, useOR },
-        fetchPolicy: "network-only",
-      });
+      const result = await queryWithArchiveFallback<{ roomsByTag: { data: Room[] } | null }>(
+        { extended: GET_ROOMS_BY_TAG, legacy: GET_ROOMS_BY_TAG_LEGACY },
+        { tagIDs: resolvedIds, useOR }
+      );
       throwIfGraphQLErrors(result);
 
       if (!result.data?.roomsByTag?.data) {
@@ -445,12 +465,9 @@ export async function executeAvailableRooms(
         }
       }
     } else {
-      const result = await apolloClient.query<{
+      const result = await queryWithArchiveFallback<{
         sites: { data: { buildings: Building[] }[] };
-      }>({
-        query: GET_ALL_ROOMS,
-        fetchPolicy: "network-only",
-      });
+      }>({ extended: GET_ALL_ROOMS, legacy: GET_ALL_ROOMS_LEGACY });
       throwIfGraphQLErrors(result);
 
       if (!result.data?.sites?.data) {
@@ -471,6 +488,11 @@ export async function executeAvailableRooms(
     rethrowIfGraphQLError(error);
     throw error;
   }
+
+  // Archived rooms are retired: never "available", and out of the room
+  // counts below (building_context.total_rooms / occupancy_percent), where
+  // their missing live reading would otherwise count them as occupied.
+  rooms = rooms.filter((r) => !isArchived(r));
 
   debug("available-rooms", `Found ${rooms.length} rooms before filtering`);
 
