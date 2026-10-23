@@ -9,7 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [0.6.2] - 2026-10-22
 
 ### Fixed
-- `butlr_get_occupancy_timeseries` now queries room and floor presence even when the asset has 0 sensors today. A room whose sensors were moved to a re-mapped copy keeps its history under its own `room_id`, but the tool skipped the query on the current sensor count and answered "No presence sensors on this room" for past ranges the Reporting API could serve. When such a room returns data, `available` is true and `coverage_note` says the history came from sensors assigned earlier; with no data, the response is unchanged. `butlr_get_current_occupancy` keeps its gate, since a room with no sensors has no live reading.
+- `butlr_get_occupancy_timeseries` now queries room and floor presence even when the asset has 0 sensors today. A room whose sensors were moved to a re-mapped copy keeps its history under its own `room_id`, but the tool skipped the query on the current sensor count and answered "No presence sensors on this room" for past ranges the Reporting API could serve. When such an asset returns data, `available` is true and `coverage_note` says the history came from sensors assigned earlier. With no data, the response is unchanged; v3 does not zero-fill empty windows (checked against prod), so a dataless room returns an empty series rather than a flat one.
+- The lookup for a 0-sensor room or floor is best-effort. A 429, 5xx or timeout on it sets a warning on that asset instead of failing the whole batch, and its `coverage_note` says the lookup failed rather than that there is no history. Auth errors still fail the call, as do 4xx errors on assets that have sensors.
+- Assets are processed up to 5 at a time (presence and traffic in parallel per asset) instead of serially, so a large batch of mostly sensorless rooms doesn't stack up dozens of serial round trips. Output order still follows `asset_ids`.
+- `butlr_get_current_occupancy` keeps its gate, since a room with no sensors has no live reading.
+
+### Known limitation
+- Traffic is still gated on the current sensor assignment, in this tool and in `butlr_traffic_flow` (which rejects a room with no traffic sensors). A room whose traffic sensors were moved away still reports no traffic history. Tracked in #40.
 
 ## [0.6.1] - 2026-08-28
 

@@ -49,8 +49,14 @@ export const GetOccupancyTimeseriesArgsSchema = z.object(getOccupancyTimeseriesI
 type GetOccupancyTimeseriesArgs = z.output<typeof GetOccupancyTimeseriesArgsSchema>;
 
 /**
+ * Assets processed at once. The reporting path has no client-side rate
+ * limiter, so this stays small: enough to stop a 50-asset batch from paying
+ * 50+ serial round trips, without bursting the API into 429s.
+ */
+const ASSET_CONCURRENCY = 5;
+
+/**
  * Query a single measurement type and map to TimeseriesPoint[].
- * Returns the array on success, or undefined on failure (with warning set on data).
  */
 async function queryTimeseries(
   assetType: string,
@@ -60,7 +66,7 @@ async function queryTimeseries(
   stop: string,
   interval: string,
   timezone: string
-): Promise<TimeseriesPoint[] | undefined> {
+): Promise<TimeseriesPoint[]> {
   const response = await new ReportingRequestBuilder()
     .assets(assetType, [assetId])
     .measurements([measurement])
@@ -68,15 +74,132 @@ async function queryTimeseries(
     .window(interval, "median", timezone)
     .execute();
 
-  if (response.data && Array.isArray(response.data)) {
-    return response.data.map(
-      (d): TimeseriesPoint => ({
-        timestamp: new Date(d.time).toISOString(),
-        value: d.value,
-      })
+  if (!Array.isArray(response.data)) return [];
+  return response.data.map(
+    (d): TimeseriesPoint => ({
+      timestamp: new Date(d.time).toISOString(),
+      value: d.value,
+    })
+  );
+}
+
+/**
+ * Map over items with at most `limit` calls in flight, preserving order.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+async function buildPresenceData(
+  asset: ReturnType<typeof resolveAssetContext>,
+  assetId: string,
+  args: GetOccupancyTimeseriesArgs
+): Promise<TimeseriesMeasurementData> {
+  // Always query, whatever the current sensor count: zones have no
+  // client-visible sensor attribution (see occupancy-helpers
+  // `resolveAssetContext`), and a room or floor with 0 sensors today can
+  // still hold history from sensors that were moved elsewhere (e.g. a room
+  // superseded by a re-mapped "_V2" copy).
+  const sensorCount = asset.presenceSensors.length;
+  // For a 0-sensor room/floor the query is speculative: it may well find
+  // nothing, and its failure must not take down the rest of the batch.
+  const speculative = asset.assetType !== "zone" && sensorCount === 0;
+  const presenceData: TimeseriesMeasurementData = {
+    available: !speculative,
+    sensor_count: sensorCount,
+    coverage_note: getPresenceCoverageNote(asset.assetType, sensorCount),
+    timeseries: [],
+  };
+
+  try {
+    presenceData.timeseries = await queryTimeseries(
+      asset.assetType,
+      assetId,
+      getPresenceMeasurement(asset.assetType),
+      args.start,
+      args.stop,
+      args.interval,
+      asset.timezone
     );
+  } catch (error: unknown) {
+    debug("occupancy-timeseries", "Presence query failed:", error);
+    // Auth failures are not asset-specific, so they still fail the call.
+    // Anything else on a speculative lookup (429, 5xx, timeout) is reported
+    // on this asset only.
+    const isAuthError =
+      error instanceof ApiError && (error.statusCode === 401 || error.statusCode === 403);
+    if (error instanceof ApiError && error.statusCode >= 400 && (!speculative || isAuthError)) {
+      throw error;
+    }
+    presenceData.warning =
+      "Failed to retrieve presence timeseries data. Results may be incomplete.";
   }
-  return [];
+
+  if (speculative) {
+    if (presenceData.timeseries.length > 0) {
+      presenceData.available = true;
+      presenceData.coverage_note = `No presence sensors are assigned to this ${asset.assetType} now; this history was recorded by sensors assigned to it earlier.`;
+    } else if (presenceData.warning) {
+      // Don't claim "no sensors, no data" when we never found out.
+      presenceData.coverage_note = `No presence sensors are assigned to this ${asset.assetType} now, and the lookup for history from earlier sensors failed. It may still have data for this range; retry to check.`;
+    }
+  }
+
+  return presenceData;
+}
+
+async function buildTrafficData(
+  asset: ReturnType<typeof resolveAssetContext>,
+  assetId: string,
+  args: GetOccupancyTimeseriesArgs
+): Promise<TimeseriesMeasurementData> {
+  // Still gated on current traffic sensors: querying traffic for every
+  // presence-only room would add a call per room for data that almost never
+  // exists. A room whose traffic sensors were moved away loses its traffic
+  // history here (see CHANGELOG 0.6.2).
+  const trafficData: TimeseriesMeasurementData = {
+    available: asset.trafficSensors.length > 0,
+    entrance_sensor_count: asset.assetType === "floor" ? asset.trafficSensors.length : undefined,
+    sensor_count: asset.assetType === "room" ? asset.trafficSensors.length : undefined,
+    coverage_note: getTrafficCoverageNote(asset.assetType, asset.trafficSensors.length),
+    timeseries: [],
+  };
+
+  if (asset.trafficSensors.length > 0 && asset.assetType !== "zone") {
+    try {
+      trafficData.timeseries = await queryTimeseries(
+        asset.assetType,
+        assetId,
+        getTrafficMeasurement(asset.assetType as "floor" | "room"),
+        args.start,
+        args.stop,
+        args.interval,
+        asset.timezone
+      );
+    } catch (error: unknown) {
+      debug("occupancy-timeseries", "Traffic query failed:", error);
+      if (error instanceof ApiError && error.statusCode >= 400) {
+        throw error;
+      }
+      trafficData.warning =
+        "Failed to retrieve traffic timeseries data. Results may be incomplete.";
+    }
+  }
+
+  return trafficData;
 }
 
 /**
@@ -93,87 +216,12 @@ export async function executeGetOccupancyTimeseries(
   // Fetch topology and sensors in parallel
   const ctx = await fetchTopologyAndSensors();
 
-  // Process each asset
-  const assets: AssetOccupancyTimeseries[] = [];
-  let hasAnyFallback = false;
-
-  for (const assetId of args.asset_ids) {
+  const resolved = await mapWithConcurrency(args.asset_ids, ASSET_CONCURRENCY, async (assetId) => {
     const asset = resolveAssetContext(assetId, ctx);
-
-    // Build presence measurement data. Always query, whatever the current
-    // sensor count: zones have no client-visible sensor attribution (see
-    // occupancy-helpers `resolveAssetContext`), and a room or floor with 0
-    // sensors today can still hold history from sensors that were moved
-    // elsewhere (e.g. a room superseded by a re-mapped "_V2" copy).
-    const sensorCount = asset.presenceSensors.length;
-    const presenceData: TimeseriesMeasurementData = {
-      available: asset.assetType === "zone" || sensorCount > 0,
-      sensor_count: sensorCount,
-      coverage_note: getPresenceCoverageNote(asset.assetType, sensorCount),
-      timeseries: [],
-    };
-
-    const measurement = getPresenceMeasurement(asset.assetType);
-    try {
-      const points = await queryTimeseries(
-        asset.assetType,
-        assetId,
-        measurement,
-        args.start,
-        args.stop,
-        args.interval,
-        asset.timezone
-      );
-      if (points) {
-        presenceData.timeseries = points;
-      }
-    } catch (error: unknown) {
-      debug("occupancy-timeseries", "Presence query failed:", error);
-      if (error instanceof ApiError && error.statusCode >= 400) {
-        throw error;
-      }
-      presenceData.warning =
-        "Failed to retrieve presence timeseries data. Results may be incomplete.";
-    }
-
-    if (!presenceData.available && presenceData.timeseries.length > 0) {
-      presenceData.available = true;
-      presenceData.coverage_note = `No presence sensors are assigned to this ${asset.assetType} now; this history was recorded by sensors assigned to it earlier.`;
-    }
-
-    // Build traffic measurement data
-    const trafficData: TimeseriesMeasurementData = {
-      available: asset.trafficSensors.length > 0,
-      entrance_sensor_count: asset.assetType === "floor" ? asset.trafficSensors.length : undefined,
-      sensor_count: asset.assetType === "room" ? asset.trafficSensors.length : undefined,
-      coverage_note: getTrafficCoverageNote(asset.assetType, asset.trafficSensors.length),
-      timeseries: [],
-    };
-
-    if (asset.trafficSensors.length > 0 && asset.assetType !== "zone") {
-      const measurement = getTrafficMeasurement(asset.assetType as "floor" | "room");
-      try {
-        const points = await queryTimeseries(
-          asset.assetType,
-          assetId,
-          measurement,
-          args.start,
-          args.stop,
-          args.interval,
-          asset.timezone
-        );
-        if (points) {
-          trafficData.timeseries = points;
-        }
-      } catch (error: unknown) {
-        debug("occupancy-timeseries", "Traffic query failed:", error);
-        if (error instanceof ApiError && error.statusCode >= 400) {
-          throw error;
-        }
-        trafficData.warning =
-          "Failed to retrieve traffic timeseries data. Results may be incomplete.";
-      }
-    }
+    const [presenceData, trafficData] = await Promise.all([
+      buildPresenceData(asset, assetId, args),
+      buildTrafficData(asset, assetId, args),
+    ]);
 
     // Recommendation checks data success, not just sensor count
     const recommendation = buildRecommendation(
@@ -196,11 +244,11 @@ export async function executeGetOccupancyTimeseries(
     if (asset.timezoneWarning) {
       assetEntry.timezone_warning = asset.timezoneWarning;
     }
-    if (asset.timezoneFallback) {
-      hasAnyFallback = true;
-    }
-    assets.push(assetEntry);
-  }
+    return { assetEntry, timezoneFallback: asset.timezoneFallback };
+  });
+
+  const assets = resolved.map((r) => r.assetEntry);
+  const hasAnyFallback = resolved.some((r) => r.timezoneFallback);
 
   return {
     assets,
