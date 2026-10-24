@@ -142,6 +142,14 @@ export function getUTCOffset(timezone: string, date: Date = new Date()): string 
 /**
  * Check if daylight saving time is currently active for a timezone
  */
+/** Minutes east of UTC for an offset string from getUTCOffset ("UTC", "UTC-05:00", "UTC+5:30"). */
+function offsetMinutes(offset: string): number {
+  const match = offset.match(/([+-])(\d{1,2})(?::?(\d{2}))?/);
+  if (!match) return 0;
+  const minutes = parseInt(match[2], 10) * 60 + (match[3] ? parseInt(match[3], 10) : 0);
+  return match[1] === "-" ? -minutes : minutes;
+}
+
 export function isDSTActive(timezone: string, date: Date = new Date()): boolean {
   try {
     const jan = new Date(date.getFullYear(), 0, 1);
@@ -154,12 +162,13 @@ export function isDSTActive(timezone: string, date: Date = new Date()): boolean 
     // If Jan and Jul offsets are the same, timezone has no DST
     if (janOffset === julOffset) return false;
 
-    // Standard time has the smaller (more negative) UTC offset string.
-    // This works for both hemispheres:
-    // - Northern: Jan is standard (e.g., "-08:00"), Jul is DST ("-07:00")
-    // - Southern: Jul is standard (e.g., "+10:00"), Jan is DST ("+11:00")
-    const standardOffset = janOffset < julOffset ? janOffset : julOffset;
-    return currentOffset !== standardOffset;
+    // Standard time has the smaller UTC offset, compared as NUMBERS: the
+    // offset strings ("UTC-08:00" vs "UTC-07:00") sort the wrong way for
+    // zones west of UTC, which inverted the answer there.
+    // - Northern: Jan is standard (e.g., -8h), Jul is DST (-7h)
+    // - Southern: Jul is standard (e.g., +10h), Jan is DST (+11h)
+    const standardMinutes = Math.min(offsetMinutes(janOffset), offsetMinutes(julOffset));
+    return offsetMinutes(currentOffset) !== standardMinutes;
   } catch (error) {
     return false;
   }

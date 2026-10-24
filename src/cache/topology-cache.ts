@@ -1,10 +1,14 @@
 import { LRUCache } from "lru-cache";
 import { debug } from "../utils/debug.js";
+import { parseTtlSeconds } from "./ttl.js";
 
 /**
  * Topology cache configuration
  */
-const CACHE_TTL_SECONDS = parseInt(process.env.MCP_CACHE_TOPO_TTL || "600", 10) * 1000; // Convert to milliseconds
+const TTL_SECONDS = parseTtlSeconds("MCP_CACHE_TOPO_TTL", process.env.MCP_CACHE_TOPO_TTL, 600);
+/** TTL in milliseconds; 0 disables this cache (nothing is stored). */
+const CACHE_TTL_SECONDS = TTL_SECONDS * 1000; // (milliseconds, despite the name)
+const CACHE_ENABLED = CACHE_TTL_SECONDS > 0;
 const MAX_CACHE_ENTRIES = 100;
 
 interface CacheEntry {
@@ -18,7 +22,8 @@ interface CacheEntry {
  */
 export const topologyCache = new LRUCache<string, CacheEntry>({
   max: MAX_CACHE_ENTRIES,
-  ttl: CACHE_TTL_SECONDS,
+  // Never handed 0 (lru-cache reads that as "never expires"); unused when disabled.
+  ttl: CACHE_ENABLED ? CACHE_TTL_SECONDS : 600000,
   updateAgeOnGet: true, // Reset TTL on cache hit
   updateAgeOnHas: false,
 });
@@ -80,6 +85,7 @@ export function getCachedTopology(key: string): CacheEntry | undefined {
  * must do the same.
  */
 export function setCachedTopology(key: string, data: Record<string, unknown>): void {
+  if (!CACHE_ENABLED) return;
   const entry: CacheEntry = {
     data,
     timestamp: new Date().toISOString(),

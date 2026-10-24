@@ -5,7 +5,7 @@
  * across tool implementations.
  */
 
-import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import { CombinedGraphQLErrors, ServerError } from "@apollo/client/errors";
 import type { Sensor, Hive } from "../clients/types.js";
 import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
 
@@ -20,6 +20,26 @@ import { translateGraphQLError, formatMCPError } from "../errors/mcp-errors.js";
  *   }
  */
 export function rethrowIfGraphQLError(error: unknown): void {
+  // Apollo 4 reports an HTTP failure as a ServerError (no `networkError`
+  // wrapper), so map its status here: a GraphQL 429 or 401 must reach the
+  // caller as RATE_LIMITED / AUTH_EXPIRED, not INTERNAL_ERROR.
+  if (ServerError.is(error)) {
+    let body: unknown;
+    try {
+      body = JSON.parse(error.bodyText);
+    } catch {
+      body = undefined;
+    }
+    const mcpError = translateGraphQLError({
+      networkError: {
+        statusCode: error.statusCode,
+        message: error.message,
+        result: body,
+        response: error.response,
+      },
+    });
+    throw new Error(formatMCPError(mcpError));
+  }
   if (error && typeof error === "object" && ("graphQLErrors" in error || "networkError" in error)) {
     const mcpError = translateGraphQLError(error as Parameters<typeof translateGraphQLError>[0]);
     throw new Error(formatMCPError(mcpError));
@@ -48,7 +68,9 @@ export function throwIfGraphQLErrors(result: { error?: unknown }): void {
     });
   }
 
-  // Surface other ErrorLike shapes (e.g. ServerError) for the outer catch.
+  // A ServerError (HTTP failure) is mapped by status; anything else is
+  // surfaced for the outer catch.
+  rethrowIfGraphQLError(result.error);
   throw result.error;
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { getLocalMidnight, getTimezoneForAsset } from "../timezone-helpers.js";
+import { getLocalMidnight, getTimezoneForAsset, isDSTActive } from "../timezone-helpers.js";
 import type { Site, Building, Floor } from "../../clients/types.js";
 
 function makeSite(timezone: string | null): Site {
@@ -185,5 +185,22 @@ describe("getLocalMidnight", () => {
     expect(
       getLocalMidnight(new Date("2026-03-08T20:00:00Z"), "America/Los_Angeles").toISOString()
     ).toBe("2026-03-08T08:00:00.000Z");
+  });
+});
+
+describe("isDSTActive", () => {
+  it("is true in summer and false in winter west of UTC", () => {
+    expect(isDSTActive("America/New_York", new Date("2026-07-15T12:00:00Z"))).toBe(true);
+    expect(isDSTActive("America/New_York", new Date("2026-01-15T12:00:00Z"))).toBe(false);
+    expect(isDSTActive("America/Los_Angeles", new Date("2026-07-15T12:00:00Z"))).toBe(true);
+    expect(isDSTActive("America/St_Johns", new Date("2026-07-15T12:00:00Z"))).toBe(true);
+  });
+
+  it("handles the southern hemisphere and zones without DST", () => {
+    expect(isDSTActive("Australia/Sydney", new Date("2026-01-15T12:00:00Z"))).toBe(true);
+    expect(isDSTActive("Australia/Sydney", new Date("2026-07-15T12:00:00Z"))).toBe(false);
+    expect(isDSTActive("Europe/London", new Date("2026-07-15T12:00:00Z"))).toBe(true);
+    expect(isDSTActive("Asia/Tokyo", new Date("2026-07-15T12:00:00Z"))).toBe(false);
+    expect(isDSTActive("UTC", new Date("2026-07-15T12:00:00Z"))).toBe(false);
   });
 });

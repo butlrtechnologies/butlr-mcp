@@ -775,6 +775,16 @@ describe("butlr_get_current_occupancy - Integration", () => {
       setupTopologyMocks(topo);
     }
 
+    it("sends one history lookup when a batch names the same archived room twice", async () => {
+      setupArchivedFloor();
+      mockHistoryProbe({ room_old: INDY_PROBE_DAYS });
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["room_old", "room_old"] });
+
+      expect(reportingClient.queryReporting).toHaveBeenCalledTimes(1);
+      expect(result.assets.map((a) => a.history_end)).toEqual(["2026-10-20", "2026-10-20"]);
+    });
+
     it("reports an archived room as having no live data instead of querying it", async () => {
       setupArchivedFloor();
       mockHistoryProbe({ room_old: INDY_PROBE_DAYS });

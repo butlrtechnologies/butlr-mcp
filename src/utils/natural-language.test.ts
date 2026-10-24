@@ -297,9 +297,10 @@ describe("formatDayAndTime", () => {
   });
 
   it("handles noon correctly", () => {
-    const date = new Date(Date.UTC(2025, 0, 15, 12, 0, 0)); // January 15 2025, noon UTC
-    const formatted = formatDayAndTime(date);
-    expect(formatted).toMatch(/(Tuesday|Wednesday) \d{1,2}(am|pm)/);
+    // Pinned to UTC: in the process timezone, noon UTC is already Thursday
+    // 1am in Pacific/Auckland, which made this fail there.
+    const date = new Date(Date.UTC(2025, 0, 15, 12, 0, 0)); // Wednesday, January 15 2025, noon UTC
+    expect(formatDayAndTime(date, "UTC")).toBe("Wednesday 12pm");
   });
 
   it("uses current date when no date provided", () => {

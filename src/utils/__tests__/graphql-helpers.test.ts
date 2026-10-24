@@ -1,6 +1,8 @@
+import { ServerError } from "@apollo/client/errors";
 import { describe, it, expect } from "vitest";
 import {
   rethrowIfGraphQLError,
+  throwIfGraphQLErrors,
   isProductionSensor,
   isKnownTestSensor,
   isProductionHive,
@@ -187,5 +189,22 @@ describe("isProductionHive", () => {
 
   it("returns false for a hive with whitespace-only serialNumber", () => {
     expect(isProductionHive(makeHive({ serialNumber: "   " }))).toBe(false);
+  });
+});
+
+describe("GraphQL HTTP failures (Apollo ServerError)", () => {
+  function serverError(status: number, headers: Record<string, string> = {}) {
+    return new ServerError(`Response not successful: Received status code ${status}`, {
+      response: new Response("", { status, headers }),
+      bodyText: "",
+    });
+  }
+
+  it("maps 429 to RATE_LIMITED and 401 to AUTH_EXPIRED", () => {
+    expect(() =>
+      throwIfGraphQLErrors({ error: serverError(429, { "retry-after": "30" }) })
+    ).toThrow(/^\[RATE_LIMITED\].*30 seconds/);
+    expect(() => throwIfGraphQLErrors({ error: serverError(401) })).toThrow(/^\[AUTH_EXPIRED\]/);
+    expect(() => rethrowIfGraphQLError(serverError(403))).toThrow(/^\[AUTH_EXPIRED\]/);
   });
 });

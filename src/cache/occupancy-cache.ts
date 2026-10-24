@@ -1,11 +1,19 @@
 import { LRUCache } from "lru-cache";
 import { debug } from "../utils/debug.js";
+import { parseTtlSeconds } from "./ttl.js";
 
 /**
  * Occupancy cache configuration
  * TTL: 60 seconds (fast-changing data)
  */
-const CACHE_TTL_SECONDS = parseInt(process.env.MCP_CACHE_OCCUPANCY_TTL || "60", 10) * 1000; // Convert to milliseconds
+const TTL_SECONDS = parseTtlSeconds(
+  "MCP_CACHE_OCCUPANCY_TTL",
+  process.env.MCP_CACHE_OCCUPANCY_TTL,
+  60
+);
+/** TTL in milliseconds; 0 disables this cache (nothing is stored). */
+const CACHE_TTL_SECONDS = TTL_SECONDS * 1000; // (milliseconds, despite the name)
+const CACHE_ENABLED = CACHE_TTL_SECONDS > 0;
 const MAX_CACHE_ENTRIES = 500; // More entries than topology (many rooms)
 
 interface OccupancyCacheEntry {
@@ -24,7 +32,8 @@ interface OccupancyCacheEntry {
  */
 export const occupancyCache = new LRUCache<string, OccupancyCacheEntry>({
   max: MAX_CACHE_ENTRIES,
-  ttl: CACHE_TTL_SECONDS,
+  // Never handed 0 (lru-cache reads that as "never expires"); unused when disabled.
+  ttl: CACHE_ENABLED ? CACHE_TTL_SECONDS : 60000,
   updateAgeOnGet: true, // Reset TTL on cache hit
   updateAgeOnHas: false,
 });
@@ -107,6 +116,7 @@ export function setCachedOccupancy(
   assetType: string,
   timestamp?: Date
 ): void {
+  if (!CACHE_ENABLED) return;
   const now = timestamp || new Date();
   const key = generateOccupancyCacheKey(assetId, now);
 

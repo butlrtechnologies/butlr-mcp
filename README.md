@@ -166,7 +166,8 @@ All tools are **read-only** — the server cannot modify any data in your Butlr 
 | `BUTLR_CLIENT_SECRET` | **Yes** | - | API token client secret |
 | `BUTLR_BASE_URL` | No | `https://api.butlr.io` | API base URL |
 | `BUTLR_TIMEZONE` | No | `UTC` | Default timezone |
-| `MCP_CACHE_TOPO_TTL` | No | `600` | Topology cache TTL (seconds) |
+| `MCP_CACHE_TOPO_TTL` | No | `600` | Topology cache TTL (whole seconds; `0` disables it) |
+| `MCP_CACHE_OCCUPANCY_TTL` | No | `60` | Current-occupancy cache TTL (whole seconds; `0` disables it) |
 | `DEBUG` | No | - | Set to `butlr-mcp` for verbose logging |
 
 ## Getting API Credentials
