@@ -347,7 +347,8 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
 
 /**
  * Outcome of the history-end probe (see probeHistory).
- * - skipped: no probe was sent (see needsHistoryProbe).
+ * - skipped: no probe was sent. Current occupancy probes retired spaces;
+ *   the timeseries tool also probes sensorless rooms.
  * - ok: `endDay` is the last full day of recorded history, or null when
  *   none was found since `windowStart` (older history may still exist).
  *   `outsideWindow` marks a declared end older than the window, returned
@@ -399,25 +400,17 @@ export function isSensorlessSpace(asset: AssetContext): asset is SpaceAsset {
 }
 
 /**
- * Whether `tool` sends the history-end probe for this asset. Current
- * occupancy probes retired spaces only (a floor of rooms that have no
- * sensors yet would otherwise cost one query per room); the timeseries tool
- * also probes a sensorless room, where the end comes from the data.
- */
-export function needsHistoryProbe(
-  asset: AssetContext,
-  tool: "timeseries" | "current"
-): asset is SpaceAsset {
-  return isRetiredSpace(asset) || (tool === "timeseries" && isSensorlessSpace(asset));
-}
-
-/**
- * Whether a reporting failure is transient (429, 5xx, or a non-HTTP error
- * such as a timeout), and so reported on its asset alone rather than
+ * Whether a reporting failure is transient (408, 429, 5xx, or a non-HTTP
+ * error such as a timeout), and so reported on its asset alone rather than
  * failing the call. Auth and other 4xx errors are not.
  */
 export function isTransientReportingError(error: unknown): boolean {
-  return !(error instanceof ApiError) || error.statusCode === 429 || error.statusCode >= 500;
+  return (
+    !(error instanceof ApiError) ||
+    error.statusCode === 408 ||
+    error.statusCode === 429 ||
+    error.statusCode >= 500
+  );
 }
 
 /**
@@ -426,8 +419,8 @@ export function isTransientReportingError(error: unknown): boolean {
  * that asset alone; any other error (auth, a 400) fails the call, the same
  * as on the range query. Successful answers are cached for a few minutes
  * (src/cache/history-end-cache.ts), and concurrent lookups for the same
- * space (a batch naming it twice) share one query. Callers decide eligibility with
- * `needsHistoryProbe`.
+ * space (a batch naming it twice) share one query. Callers decide which
+ * assets to probe (see SKIPPED_PROBE's notes on HistoryProbe).
  */
 export async function probeHistory(asset: SpaceAsset, assetId: string): Promise<HistoryProbe> {
   if (!isValidTimezone(asset.timezone)) return { status: "failed", reason: "timezone" };
@@ -531,7 +524,10 @@ export function buildSpaceLifecycle(
   const notes: string[] = [];
   const kind = asset.assetType;
 
-  if (probe.status === "ok" && probe.endDay) lifecycle.history_end = probe.endDay;
+  if (probe.status === "ok" && probe.endDay) {
+    lifecycle.history_end = probe.endDay;
+    if (probe.outsideWindow) lifecycle.history_end_unverified = true;
+  }
   const warning = historyProbeWarning(asset, probe);
   if (warning) lifecycle.history_warning = warning;
   if (asset.archivedAt) lifecycle.archived_at = asset.archivedAt;

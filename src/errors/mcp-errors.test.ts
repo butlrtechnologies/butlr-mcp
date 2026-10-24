@@ -167,6 +167,7 @@ describe("withToolErrorHandling: reporting HTTP statuses", () => {
       [400, "VALIDATION_FAILED"],
       [401, "AUTH_EXPIRED"],
       [404, "NOT_FOUND"],
+      [408, "NETWORK_ERROR"],
       [429, "RATE_LIMITED"],
       [503, "NETWORK_ERROR"],
     ];

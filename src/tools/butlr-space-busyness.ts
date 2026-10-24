@@ -234,7 +234,10 @@ function attributedCount(space: RoomWithFloor | ZoneWithFloor): number {
  * least one successor: a source that predates the re-draw would otherwise
  * turn "no successor info yet" into "no successor". Otherwise the topology
  * is fetched; if that fails, `known` is false and the caller still answers
- * (a retired response without successors beats an error).
+ * (a retired response without successors beats an error). This refetches
+ * the whole topology for a retired space with no successor even when the
+ * cache is warm: a deliberate freshness-over-cost tradeoff, since a stale
+ * cache cannot tell "no successor" from "re-drawn since".
  */
 async function findSuccessors(
   spaceId: string,
@@ -277,7 +280,12 @@ function buildRetiredResponse(
   fetched: FetchedSpace,
   spaceType: "room" | "zone",
   successors: SpaceRef[],
-  warnings: string[]
+  warnings: string[],
+  /**
+   * What is known about a single successor: "live" (fetched, not retired),
+   * "retired" (fetched, retired too), or "unknown" (not fetched or failed).
+   */
+  singleSuccessor: "retired" | "unknown" = "unknown"
 ): SpaceBusynessResponse {
   const { space } = fetched;
   const archivedOn = space.archivedAt
@@ -289,10 +297,17 @@ function buildRetiredResponse(
   const when = archivedOn
     ? `was archived on ${archivedOn}`
     : `had its sensors removed on ${removedOn}`;
+  // Only point at a successor for live busyness when it is not known to be
+  // retired itself (shared rule `isRetired`, not its archive flag alone).
+  const list = successors.map(describeSpaceRef).join(", ");
   const successorText =
-    successors.length > 0
-      ? ` It was replaced by ${successors.map(describeSpaceRef).join(", ")}; query ${successors.length === 1 ? "that space" : "one of those"} for live busyness.`
-      : "";
+    successors.length === 0
+      ? ""
+      : successors.length === 1 && singleSuccessor === "retired"
+        ? ` It was replaced by ${list}, which has no sensors and is retired too.`
+        : successors.length === 1
+          ? ` It was replaced by ${list}.`
+          : ` It was replaced by ${list}; query one of those for live busyness.`;
   const response: SpaceBusynessResponse = {
     space: {
       id: space.id,
@@ -371,7 +386,10 @@ export async function executeSpaceBusyness(
     if (!known) {
       warnings.push("Could not look up this space's replacements; it may have been replaced.");
     }
-    if (refs.length === 1 && !refs[0].archived_at) {
+    // Follow a single successor whenever it is live by the shared rule
+    // (`isRetired`): an archived successor that still has sensors is live.
+    let singleSuccessor: "retired" | "unknown" = "unknown";
+    if (refs.length === 1) {
       let successor: FetchedSpace | undefined;
       try {
         successor = await fetchSpace(spaceType, refs[0].id);
@@ -388,8 +406,8 @@ export async function executeSpaceBusyness(
           `"${retired.space.name}" (${retired.space.id}) is ${retired.space.archivedAt ? "archived" : "retired"}; showing its replacement ${describeSpaceRef(toSpaceRef(successor.space.id, successor.space))}.`
         );
       } else if (successor) {
-        // The search/topology said the successor was active, but it is
-        // retired now: list it as such, don't follow it.
+        // The successor is retired too: list it as such, don't follow it.
+        singleSuccessor = "retired";
         refs[0] = {
           ...refs[0],
           ...(successor.space.archivedAt ? { archived_at: successor.space.archivedAt } : {}),
@@ -402,7 +420,7 @@ export async function executeSpaceBusyness(
           `Could not determine site timezone for this space. Using ${retired.timezone} as fallback for dates.`
         );
       }
-      return buildRetiredResponse(retired, spaceType, refs, warnings);
+      return buildRetiredResponse(retired, spaceType, refs, warnings, singleSuccessor);
     }
   } else if (fetched.space.archivedAt) {
     const n = attributedCount(fetched.space);

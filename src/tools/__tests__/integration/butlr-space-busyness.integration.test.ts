@@ -576,6 +576,68 @@ describe("butlr_space_busyness - Integration", () => {
         expect(reportingClient.getCurrentOccupancy).not.toHaveBeenCalled();
       });
 
+      it("does not offer a successor retired by sensorsRemovedAt as a live replacement", async () => {
+        mockFloor7([
+          OLD,
+          {
+            id: "room_v2",
+            name: "Huddle_V2",
+            replacesID: "room_old",
+            sensorsRemovedAt: ARCHIVED_AT,
+          },
+        ]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "room_old",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_old");
+        expect(result.recommendation).toContain(
+          'It was replaced by "Huddle_V2" (room_v2), which has no sensors and is retired too.'
+        );
+        expect(result.recommendation).not.toMatch(/for live busyness/);
+      });
+
+      it("follows an archived successor that still has sensors (live under E4)", async () => {
+        mockFloor7([
+          OLD,
+          {
+            id: "room_v2",
+            name: "Huddle_V2",
+            replacesID: "room_old",
+            archivedAt: ARCHIVED_AT,
+            sensors: [{ id: "sensor_9" }],
+          },
+        ]);
+        searchReturns([
+          {
+            ...OLD,
+            archived_at: ARCHIVED_AT,
+            replaced_by: [{ id: "room_v2", name: "Huddle_V2", archived_at: ARCHIVED_AT }],
+          },
+        ]);
+
+        const result = await executeSpaceBusyness({
+          space_id_or_name: "Pilot - Huddle",
+          include_trend: false,
+        });
+
+        expect(result.space.id).toBe("room_v2");
+        expect(result.current?.occupancy).toBe(1);
+      });
+
+      it("fails with the reporting status instead of answering 'Quiet (0 people)'", async () => {
+        mockFloor7([{ id: "room_live", name: "Huddle", sensors: [{ id: "s1" }] }]);
+        vi.mocked(reportingClient.getCurrentOccupancy).mockRejectedValue(
+          new reportingClient.ApiError(429, "Rate limit exceeded.")
+        );
+
+        await expect(
+          executeSpaceBusyness({ space_id_or_name: "room_live", include_trend: false })
+        ).rejects.toMatchObject({ statusCode: 429 });
+      });
+
       it("gives an archived room passed by ID the same treatment", async () => {
         mockFloor7([OLD]);
 

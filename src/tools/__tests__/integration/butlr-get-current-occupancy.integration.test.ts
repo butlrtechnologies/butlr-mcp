@@ -1080,6 +1080,7 @@ describe("butlr_get_current_occupancy - Integration", () => {
       const asset = result.assets[0];
       expect(reportingClient.queryReporting).not.toHaveBeenCalled();
       expect(asset.history_end).toBe("2026-02-09");
+      expect(asset.history_end_unverified).toBe(true);
       expect(asset.presence.coverage_note).toBe(
         "No sensors assigned (archived on 2026-02-10). Recorded history runs up to 2026-02-09 " +
           "(before the lookup window, so not checked against the data)."
@@ -1125,6 +1126,29 @@ describe("butlr_get_current_occupancy - Integration", () => {
         "No sensors assigned (sensors removed on 2026-10-21). Recorded history runs up to 2026-10-20."
       );
       expect(asset.history_note).toMatch(/sensors were removed on 2026-10-21; it has no live data/);
+    });
+
+    it("does not read a zone retired only by sensorsRemovedAt live", async () => {
+      const topo = buildTopologyResponse({ presenceSensors: 1 });
+      (topo.topology.data.sites.data[0].buildings[0].floors[0] as any).zones.push({
+        id: "zone_rm",
+        name: "Moved Zone",
+        floor_id: "space_100",
+        sensorsRemovedAt: "2026-10-21T15:00:00Z",
+      });
+      setupTopologyMocks(topo);
+      mockHistoryProbe({ zone_rm: INDY_PROBE_DAYS });
+      const builder = mockReportingBuilder({ data: [{ time: "2026-10-23T15:04:00Z", value: 4 }] });
+      vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(() => builder as any);
+
+      const result = await executeGetCurrentOccupancy({ asset_ids: ["zone_rm"] });
+
+      const asset = result.assets[0];
+      expect(builder.execute).not.toHaveBeenCalled();
+      expect(asset.presence.current_occupancy).toBeUndefined();
+      expect(asset.presence.coverage_note).toMatch(
+        /^No sensors assigned \(sensors removed on 2026-10-21\)/
+      );
     });
 
     it("keys the history-end cache on the declared end", async () => {

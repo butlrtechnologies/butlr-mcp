@@ -437,6 +437,20 @@ export async function getCurrentOccupancy(
     queryReporting(trafficRequest),
   ]);
 
+  // A failed presence query must not read as "0 people": unless the traffic
+  // query returned readings to fall back on, surface the presence failure
+  // (with its status, so a 401/429/500 maps to the right MCP error) instead
+  // of normalizing an empty result.
+  if (presenceResult.status === "rejected") {
+    const trafficData = trafficResult.status === "fulfilled" ? trafficResult.value.data : undefined;
+    const trafficHasRows =
+      Boolean(trafficData) &&
+      typeof trafficData === "object" &&
+      Object.keys(trafficData as object).length > 0;
+    if (!trafficHasRows) throw presenceResult.reason;
+    debug("reporting-client", "Presence query failed; using traffic only:", presenceResult.reason);
+  }
+
   const presenceResponse =
     presenceResult.status === "fulfilled" ? presenceResult.value : { data: [] };
   const trafficResponse = trafficResult.status === "fulfilled" ? trafficResult.value : { data: [] };

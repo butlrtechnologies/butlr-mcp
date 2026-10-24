@@ -6,7 +6,8 @@ import { isRetired } from "../utils/archived-spaces.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
 import type { Room, Building, Floor } from "../clients/types.js";
-import { getCurrentOccupancy } from "../clients/reporting-client.js";
+import { ApiError, getCurrentOccupancy } from "../clients/reporting-client.js";
+import { isTransientReportingError } from "../utils/occupancy-helpers.js";
 import { buildAvailableRoomsSummary } from "../utils/natural-language.js";
 import { getCachedOccupancy, setBulkCachedOccupancy } from "../cache/occupancy-cache.js";
 import { rethrowIfGraphQLError, throwIfGraphQLErrors } from "../utils/graphql-helpers.js";
@@ -560,6 +561,7 @@ export async function executeAvailableRooms(
   // Query uncached rooms
   const uncachedRoomIds = roomIds.filter((id) => !(id in occupancyMap));
   let occupancyFetchFailed = false;
+  let occupancyError: unknown;
 
   if (uncachedRoomIds.length > 0) {
     debug("available-rooms", `Cache miss for ${uncachedRoomIds.length} rooms, querying API`);
@@ -589,6 +591,11 @@ export async function executeAvailableRooms(
       // Only unknown / non-translatable errors fall through to the
       // cache-only degraded path below.
       rethrowIfGraphQLError(error);
+      // Reporting auth / rate-limit / validation failures fail the call with
+      // their MCP code (see withToolErrorHandling); only transient ones (5xx,
+      // timeouts) fall through to the degraded path.
+      if (error instanceof ApiError && !isTransientReportingError(error)) throw error;
+      occupancyError = error;
       const msg = error instanceof Error ? error.message : String(error);
       debug("available-rooms", "Failed to get occupancy data:", msg);
       // Include the upstream message in the user-visible warning so an
@@ -603,10 +610,14 @@ export async function executeAvailableRooms(
 
   // When occupancy fetch failed and we have no cached data, we cannot determine availability
   if (occupancyFetchFailed && Object.keys(occupancyMap).length === 0) {
-    throw new Error(
+    const message =
       "Unable to determine room availability: occupancy data fetch failed and no cached data is available. " +
-        "Please retry or check the Butlr reporting API status."
-    );
+      "Please retry or check the Butlr reporting API status.";
+    // Keep the reporting status (429 -> RATE_LIMITED, 5xx -> NETWORK_ERROR).
+    if (occupancyError instanceof ApiError) {
+      throw new ApiError(occupancyError.statusCode, `${message} (${occupancyError.message})`);
+    }
+    throw new Error(message);
   }
 
   // Filter to available rooms — only include rooms with confirmed zero occupancy
@@ -636,8 +647,17 @@ export async function executeAvailableRooms(
         capacity: room.capacity,
         area: room.area,
         data_window_minutes: 5,
+        // Archived but still has sensors (bad data; E4 reads it live): flag it.
+        ...(room.archivedAt ? { archived_at: room.archivedAt } : {}),
       });
     }
+  }
+
+  const archivedListed = availableRooms.filter((r) => r.archived_at).length;
+  if (archivedListed > 0) {
+    warnings.push(
+      `${archivedListed} listed room(s) are archived but still have sensors attributed (a data-integrity issue); they are read live and marked with archived_at.`
+    );
   }
 
   // If occupancy fetch partially failed, note how many rooms have no data

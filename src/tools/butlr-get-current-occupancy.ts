@@ -12,7 +12,6 @@ import {
   buildSpaceLifecycle,
   isRetiredSpace,
   isSensorlessSpace,
-  needsHistoryProbe,
   probeHistory,
   SKIPPED_PROBE,
   sensorlessCoverageNote,
@@ -84,9 +83,7 @@ export async function executeGetCurrentOccupancy(
     contexts.map((asset, i) => ({ asset, assetId: args.asset_ids[i] })),
     HISTORY_PROBE_CONCURRENCY,
     ({ asset, assetId }) =>
-      needsHistoryProbe(asset, "current")
-        ? probeHistory(asset, assetId)
-        : Promise.resolve(SKIPPED_PROBE)
+      isRetiredSpace(asset) ? probeHistory(asset, assetId) : Promise.resolve(SKIPPED_PROBE)
   );
   // An auth rejection is rethrown when awaited below; until then, keep it
   // from surfacing as an unhandled rejection.

@@ -55,6 +55,10 @@ export function mcpErrorForStatus(statusCode: number, message: string): MCPError
   if (statusCode === 429) {
     return { code: MCPErrorCode.RATE_LIMITED, message, retryable: true };
   }
+  if (statusCode === 408) {
+    // Request timeout: transient, worth a retry.
+    return { code: MCPErrorCode.NETWORK_ERROR, message, retryable: true };
+  }
   if (statusCode === 404) {
     return { code: MCPErrorCode.NOT_FOUND, message, retryable: false };
   }

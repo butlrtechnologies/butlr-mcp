@@ -3,7 +3,7 @@ import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
 import type { Room, Sensor } from "../clients/types.js";
-import { ReportingRequestBuilder } from "../clients/reporting-client.js";
+import { ApiError, ReportingRequestBuilder } from "../clients/reporting-client.js";
 import { executeSearchAssets } from "./butlr-search-assets.js";
 import {
   getTimezoneForAsset,
@@ -487,6 +487,12 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     rethrowIfGraphQLError(error);
     debug("traffic-flow", "Failed to get traffic data:", error);
     const msg = error instanceof Error ? error.message : String(error);
+    // Keep the reporting status, so a 401/429/400 reaches the caller as
+    // AUTH_EXPIRED / RATE_LIMITED / VALIDATION_FAILED (see
+    // withToolErrorHandling) rather than INTERNAL_ERROR.
+    if (error instanceof ApiError) {
+      throw new ApiError(error.statusCode, `Failed to get traffic data for ${displayName}. ${msg}`);
+    }
     throw new Error(`Failed to get traffic data for ${displayName}. ${msg}`);
   }
 

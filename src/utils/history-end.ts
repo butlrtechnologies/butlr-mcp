@@ -29,8 +29,9 @@ import { formatLocalDate, localDayStart, shiftDay } from "./timezone-helpers.js"
  * cold tier is slow Trino. Tiered reporting widens a `1d` window's start by
  * 24h, then compares it with `truncateToDay(now.AddDate(0, -6, 0))` in UTC,
  * which is 181 to 184 days back. Starting at local midnight 177 days back
- * leaves at least 48h of slack, so no timezone, month end or few seconds of
- * clock skew between this server and the API's reaches the cold tier
+ * leaves at least 46h of slack (the minimum, in zones such as
+ * Antarctica/Troll with any positive skew), so no timezone, month end or few
+ * seconds of clock skew between this server and the API's reaches the cold tier
  * (tested against a port of the router with a separate server clock).
  */
 export const HISTORY_LOOKBACK_DAYS = 177;

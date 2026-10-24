@@ -200,6 +200,45 @@ describe("butlr_traffic_flow - Integration", () => {
       expect(Array.isArray(result.hourly_breakdown)).toBe(true);
     });
 
+    it("keeps the reporting status when the traffic query fails (401 -> AUTH_EXPIRED)", async () => {
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: MOCK_TOPOLOGY } as any);
+        }
+        if (queryString.includes("GetSensorsByIds")) {
+          return Promise.resolve({
+            data: {
+              sensors: {
+                data: [
+                  {
+                    id: "sensor_direct",
+                    name: "N. Elevator",
+                    mac_address: "aa:bb:cc:dd:ee:01",
+                    mode: "traffic",
+                    room_id: "room_test",
+                    floor_id: "floor_test",
+                  },
+                ],
+              },
+            },
+          } as any);
+        }
+        return Promise.reject(new Error("Unknown query"));
+      });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockRejectedValue(
+        new reportingClient.ApiError(401, "Authentication failed.")
+      );
+
+      const error = await executeTrafficFlow({
+        space_id_or_name: "sensor_direct",
+        time_window: "1h",
+      }).catch((e) => e);
+      expect(error).toBeInstanceOf(reportingClient.ApiError);
+      expect(error.statusCode).toBe(401);
+      expect(error.message).toMatch(/Failed to get traffic data for N\. Elevator/);
+    });
+
     it("explains that a retired room has no live traffic", async () => {
       const topology = structuredClone(MOCK_TOPOLOGY) as any;
       topology.sites.data[0].buildings[0].floors[0].rooms[2].archivedAt = "2026-10-22T20:00:00Z";

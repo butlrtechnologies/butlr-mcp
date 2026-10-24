@@ -26,8 +26,8 @@ interface SupportState {
 let state: SupportState | null = null;
 
 /** The supported field set while it is fresh, else undefined. */
-export function freshSpaceFieldSupport(now: number = Date.now()): ReadonlySet<string> | undefined {
-  return state && now < state.expiresAt ? state.supported : undefined;
+export function freshSpaceFieldSupport(): ReadonlySet<string> | undefined {
+  return state && Date.now() < state.expiresAt ? state.supported : undefined;
 }
 
 /**
@@ -45,9 +45,9 @@ export function lastConfirmedSpaceFieldSupport(): ReadonlySet<string> | undefine
  * only with nothing confirmed yet does it fall back to "no optional fields".
  */
 export function recordSpaceFieldSupport(
-  outcome: { supported: Iterable<string> } | { failed: true },
-  now: number = Date.now()
+  outcome: { supported: Iterable<string> } | { failed: true }
 ): ReadonlySet<string> {
+  const now = Date.now();
   if ("failed" in outcome) {
     const kept = lastConfirmedSpaceFieldSupport();
     state = {

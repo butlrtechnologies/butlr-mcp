@@ -693,6 +693,12 @@ describe("butlr_available_rooms - Integration", () => {
 
       expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toHaveLength(3);
       expect(result.building_context?.total_rooms).toBe(3);
+      // Listed, but marked: archived with sensors still attributed.
+      const archived = result.available_rooms.find((r) => r.id === "room_arch_old");
+      expect(archived?.archived_at).toBe("2026-10-21T01:30:00Z");
+      expect(result.warning).toMatch(
+        /1 listed room\(s\) are archived but still have sensors attributed/
+      );
     });
 
     it("leaves out a room retired by sensorsRemovedAt alone", async () => {
@@ -707,6 +713,20 @@ describe("butlr_available_rooms - Integration", () => {
         "room_arch_free",
         "room_arch_busy",
       ]);
+    });
+
+    it("fails with the reporting status on a 401/429 instead of degrading to a warning", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({ data: buildingWithArchivedRoom() } as any);
+      for (const status of [401, 429]) {
+        vi.mocked(reportingClient.getCurrentOccupancy).mockRejectedValueOnce(
+          new reportingClient.ApiError(status, "nope")
+        );
+        await expect(executeAvailableRooms({ building_id: "building_arch" })).rejects.toMatchObject(
+          {
+            statusCode: status,
+          }
+        );
+      }
     });
 
     it("never lists an archived room and leaves it out of the building's room count", async () => {

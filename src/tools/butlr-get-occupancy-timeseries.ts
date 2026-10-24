@@ -13,7 +13,7 @@ import {
   buildSpaceLifecycle,
   isRetiredSpace,
   isTransientReportingError,
-  needsHistoryProbe,
+  isSensorlessSpace,
   probeHistory,
   sensorlessCoverageNote,
   sensorlessRecommendationReason,
@@ -21,7 +21,7 @@ import {
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
-import { formatLocalDate } from "../utils/timezone-helpers.js";
+import { formatLocalDate, localDayStart } from "../utils/timezone-helpers.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   OccupancyTimeseriesResponse,
@@ -36,7 +36,8 @@ const GET_OCCUPANCY_TIMESERIES_DESCRIPTION =
   "Single tool call provides complete occupancy picture without guessing measurement types.\n\n" +
   "Retired, sensorless and replaced spaces: a retired room or zone (no sensors, and archived (`archived_at`) or with its sensors removed) or a room with no sensors still returns the history it recorded. " +
   "For those, `history_end` is the last full day of recorded history: the recorded day before its newest (always partial) day, and no later than the day before its sensor removal or archive date. " +
-  "Points after `history_end` for a retired space are dropped (a parked space can keep receiving 0-valued rows). " +
+  "When that removal or archive date is older than the 177-day lookup window, `history_end` is the day before it, not checked against the data, and `history_end_unverified` is true. " +
+  "For a retired space, points from buckets that start at or after its sensor removal (else archive) instant are dropped, since a parked space can keep receiving 0-valued rows; the removal day's earlier readings are kept. " +
   "A zone that is not retired is treated like any other zone, even with no attributed sensors (zone occupancy can come from overlapping floor sensors), so an empty range just means no data. An archived space that still has sensors is read like an active one. " +
   "A space that replaced another carries `replaces`, and `history_note` names the predecessor's ID: series are not merged, " +
   "so query the predecessor separately for history before the switch-over.\n\n" +
@@ -99,6 +100,35 @@ async function queryTimeseries(
   );
 }
 
+/** The removal instant of a retired space: `sensorsRemovedAt`, else `archivedAt`. */
+function retiredCutoff(
+  asset: ReturnType<typeof resolveAssetContext>
+): { ms: number; iso: string; what: string } | undefined {
+  const candidates: Array<[string | undefined, string]> = [
+    [asset.sensorsRemovedAt, "its sensors were removed"],
+    [asset.archivedAt, "it was archived"],
+  ];
+  for (const [at, what] of candidates) {
+    if (!at) continue;
+    const ms = Date.parse(at);
+    if (!Number.isNaN(ms)) return { ms, iso: new Date(ms).toISOString(), what };
+  }
+  return undefined;
+}
+
+/**
+ * Start of the bucket a reporting point covers. Points are labelled with
+ * their bucket's END, so a daily bucket's local day is read 1 ms before the
+ * label, and its start is that day's local midnight; hourly and minute
+ * buckets start one interval before the label.
+ */
+function bucketStartMs(timestamp: string, interval: string, timezone: string): number {
+  const end = Date.parse(timestamp);
+  if (interval === "1d")
+    return localDayStart(formatLocalDate(end - 1, timezone), timezone).getTime();
+  return end - (interval === "1h" ? 3_600_000 : 60_000);
+}
+
 async function buildPresenceData(
   asset: ReturnType<typeof resolveAssetContext>,
   assetId: string,
@@ -112,11 +142,11 @@ async function buildPresenceData(
   // A retired space (no sensors, and archived or with sensors removed) or a
   // sensorless room gets a history-end probe in parallel with the range
   // query, and its coverage note says where its recorded history ends (see
-  // needsHistoryProbe). A zone that is not retired is never probed, whatever
+  // isRetiredSpace / isSensorlessSpace). A zone that is not retired is never probed, whatever
   // its attributed-sensor count or however empty its range: zone occupancy
   // can come from overlapping floor sensors, so an empty range on it just
   // means no data.
-  const probed = needsHistoryProbe(asset, "timeseries");
+  const probed = isRetiredSpace(asset) || isSensorlessSpace(asset);
   // A 0-presence floor, a room whose only sensors are traffic-mode, or a
   // room ID that did not resolve keeps the 0.6.2 speculative note.
   const speculative = !probed && asset.assetType !== "zone" && sensorCount === 0;
@@ -166,19 +196,27 @@ async function buildPresenceData(
 
   const probe: HistoryProbe = early ? await early : { status: "skipped" };
 
-  // A retired space can keep receiving 0-valued rows after its sensors left
-  // (the algo still evaluates its geometry). Points after its history end
-  // are not history: drop them, and say how many.
-  if (isRetiredSpace(asset) && probe.status === "ok" && probe.endDay) {
-    const end = probe.endDay;
-    const kept = presenceData.timeseries.filter(
-      // Buckets are labelled with their end, so step back 1 ms for the day.
-      (p) => formatLocalDate(Date.parse(p.timestamp) - 1, asset.timezone) <= end
-    );
-    const dropped = presenceData.timeseries.length - kept.length;
-    presenceData.timeseries = kept;
-    if (dropped > 0) {
-      droppedNote = ` Dropped ${dropped} point${dropped === 1 ? "" : "s"} after ${end}, recorded after its sensors left.`;
+  // A parked space can keep receiving 0-valued rows after its sensors left
+  // (the algo still evaluates its geometry). For a retired space, drop the
+  // points from buckets that START at or after the removal instant
+  // (`sensorsRemovedAt`, else `archivedAt`): those hold no readings from
+  // while the sensors were there. A bucket that straddles the instant keeps
+  // its pre-removal readings. This uses the declared instant, not
+  // `history_end` (the last FULL day, which would also drop real readings
+  // from the partial removal day), so it applies whatever the history
+  // lookup returned, including no end or a failed lookup. A space that is
+  // not retired is never cut; a data-derived end is not a removal time.
+  if (isRetiredSpace(asset)) {
+    const cut = retiredCutoff(asset);
+    if (cut) {
+      const kept = presenceData.timeseries.filter(
+        (p) => bucketStartMs(p.timestamp, args.interval, asset.timezone) < cut.ms
+      );
+      const dropped = presenceData.timeseries.length - kept.length;
+      presenceData.timeseries = kept;
+      if (dropped > 0) {
+        droppedNote = ` Dropped ${dropped} point${dropped === 1 ? "" : "s"} from after ${cut.what} (${cut.iso}); a parked space can keep receiving 0-valued rows.`;
+      }
     }
   }
 

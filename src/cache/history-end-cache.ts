@@ -1,6 +1,7 @@
 import { LRUCache } from "lru-cache";
 import { debug } from "../utils/debug.js";
 import type { HistoryEnd } from "../utils/history-end.js";
+import { parseTtlSeconds } from "./ttl.js";
 
 /**
  * Cache for the history-end probe (src/utils/history-end.ts).
@@ -20,20 +21,12 @@ import type { HistoryEnd } from "../utils/history-end.js";
 const DEFAULT_TTL_SECONDS = 600;
 const MAX_CACHE_ENTRIES = 500;
 
-/** Parse MCP_CACHE_HISTORY_END_TTL; exported for tests. */
-export function parseHistoryEndTtlSeconds(raw: string | undefined): number {
-  if (raw === undefined || raw.trim() === "") return DEFAULT_TTL_SECONDS;
-  const seconds = Number(raw);
-  if (!Number.isSafeInteger(seconds) || seconds < 0) {
-    console.error(
-      `[history-end-cache] Ignoring invalid MCP_CACHE_HISTORY_END_TTL=${JSON.stringify(raw)} (expected whole seconds >= 0); using ${DEFAULT_TTL_SECONDS}s.`
-    );
-    return DEFAULT_TTL_SECONDS;
-  }
-  return seconds;
-}
-
-const TTL_MS = parseHistoryEndTtlSeconds(process.env.MCP_CACHE_HISTORY_END_TTL) * 1000;
+const TTL_MS =
+  parseTtlSeconds(
+    "MCP_CACHE_HISTORY_END_TTL",
+    process.env.MCP_CACHE_HISTORY_END_TTL,
+    DEFAULT_TTL_SECONDS
+  ) * 1000;
 const CACHE_ENABLED = TTL_MS > 0;
 
 const historyEndCache = new LRUCache<string, HistoryEnd>({

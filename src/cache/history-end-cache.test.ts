@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { parseHistoryEndTtlSeconds } from "./history-end-cache.js";
+import { parseTtlSeconds } from "./ttl.js";
+
+const parseHistoryEndTtlSeconds = (raw: string | undefined) =>
+  parseTtlSeconds("MCP_CACHE_HISTORY_END_TTL", raw, 600);
 
 const END = { endDay: "2026-10-20", windowStart: "2026-04-29" };
 

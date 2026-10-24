@@ -107,7 +107,7 @@ const SEARCH_ASSETS_DESCRIPTION =
   "- Want to browse full organizational hierarchy → use butlr_list_topology instead\n" +
   "- Need to analyze occupancy or sensor data → use this tool first to find IDs, then use data tools\n\n" +
   'Archived spaces: archived rooms and zones are still matched by name. Their `path` ends in "(archived YYYY-MM-DD)" and they carry `archived_at` ' +
-  "(no live data). The last full day of recorded history comes back as `history_end` from butlr_get_occupancy_timeseries and butlr_get_current_occupancy; it is no later than the day before the archive date, and can be much earlier. " +
+  "(with no sensors, it has no live data; an archived space that still has sensors, which is bad data, is read live). The last full day of recorded history comes back as `history_end` from butlr_get_occupancy_timeseries and butlr_get_current_occupancy; it is no later than the day before the archive date, and can be much earlier. " +
   "`replaces` and `replaced_by` (`{ id, name }` objects, `archived_at` set on an archived one) link a re-drawn space to the one it superseded.\n\n" +
   "Search Features: Fuzzy matching (handles typos), multi-field search (name, MAC, serial), score threshold (≥70), type filtering, result limiting (default 20, max 100)\n\n" +
   "Example Workflow: butlr_search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +

@@ -1549,9 +1549,212 @@ describe("butlr_get_occupancy_timeseries - Integration", () => {
       expect(asset.presence.available).toBe(false);
       expect(asset.presence.coverage_note).toBe(
         "No sensors assigned (archived on 2026-10-16). Recorded history runs up to 2026-10-15. " +
-          "Dropped 5 points after 2026-10-15, recorded after its sensors left."
+          "Dropped 5 points from after it was archived (2026-10-16T20:00:00.000Z); a parked space can keep receiving 0-valued rows."
       );
       expect(asset.recommended_measurement).toBe("none");
+    });
+
+    describe("cutting a retired space's series at the removal instant", () => {
+      /** Hourly rows ending at each of `hoursUtc` on `day` (UTC labels). */
+      const hourly = (day: string, hoursUtc: number[]) =>
+        hoursUtc.map((h) => ({ time: `${day}T${String(h).padStart(2, "0")}:00:00Z`, value: 2 }));
+
+      function retiredRoom(fields: Record<string, string>, roomId = "room_cut") {
+        const topo = buildTopologyResponse({
+          presenceSensors: 0,
+          roomId,
+          siteTimezone: "America/New_York",
+        });
+        Object.assign(
+          topo.topology.data.sites.data[0].buildings[0].floors[0].rooms[0] as any,
+          fields
+        );
+        setupTopologyMocks(topo);
+      }
+
+      function seriesReturns(rows: Array<{ time: string; value: number }>) {
+        vi.mocked(reportingClient.ReportingRequestBuilder).mockImplementation(
+          () => mockReportingBuilder({ data: rows }) as any
+        );
+      }
+
+      it("keeps a partial removal day's readings (1h): archived Oct 22, rows to 10:00 EDT May 14", async () => {
+        retiredRoom({ archivedAt: "2026-10-22T15:00:00Z" });
+        mockHistoryProbe({
+          room_cut: [
+            { time: "2026-05-14T04:00:00Z", value: 1 },
+            { time: "2026-05-15T04:00:00Z", value: 1 },
+          ],
+        });
+        // 01:00 to 10:00 EDT = 05:00Z to 14:00Z
+        seriesReturns(hourly("2026-05-14", [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]));
+
+        const result = await executeGetOccupancyTimeseries({
+          asset_ids: ["room_cut"],
+          interval: "1h",
+          start: "2026-05-14T04:00:00Z",
+          stop: "2026-05-15T04:00:00Z",
+        });
+
+        const asset = result.assets[0];
+        expect(asset.presence.timeseries).toHaveLength(10);
+        expect(asset.presence.available).toBe(true);
+        expect(asset.presence.coverage_note).not.toMatch(/Dropped/);
+        expect(asset.recommended_measurement).toBe("presence");
+      });
+
+      it("keeps the partial day's bucket (1d), May 1 to 20, archived Oct 22", async () => {
+        retiredRoom({ archivedAt: "2026-10-22T15:00:00Z" });
+        mockHistoryProbe({ room_cut: [{ time: "2026-05-15T04:00:00Z", value: 1 }] });
+        const days = Array.from({ length: 14 }, (_, i) => ({
+          // Bucket for May (i+1), labelled with the next local midnight (EDT).
+          time: new Date(Date.UTC(2026, 4, i + 2, 4)).toISOString(),
+          value: 1,
+        }));
+        seriesReturns(days);
+
+        const result = await executeGetOccupancyTimeseries({
+          asset_ids: ["room_cut"],
+          interval: "1d",
+          start: "2026-05-01T04:00:00Z",
+          stop: "2026-05-21T04:00:00Z",
+        });
+
+        expect(result.assets[0].presence.timeseries).toHaveLength(14);
+      });
+
+      it("cuts at sensorsRemovedAt (1h): keeps the 11 hours before 11:00 EDT, drops the rest", async () => {
+        // Not archived: the cut must apply to any retired space.
+        retiredRoom({ sensorsRemovedAt: "2026-10-21T15:00:00Z" });
+        mockHistoryProbe({ room_cut: [{ time: "2026-10-21T04:00:00Z", value: 1 }] });
+        // Buckets ending 05:00Z..20:00Z; the one ending 15:00Z (14:00-15:00Z)
+        // is the last before the removal; the one ending 16:00Z starts at it.
+        seriesReturns(
+          hourly("2026-10-21", [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+        );
+
+        const result = await executeGetOccupancyTimeseries({
+          asset_ids: ["room_cut"],
+          interval: "1h",
+          start: "2026-10-21T04:00:00Z",
+          stop: "2026-10-22T04:00:00Z",
+        });
+
+        const asset = result.assets[0];
+        expect(asset.presence.timeseries.map((p) => p.timestamp)).toEqual(
+          hourly("2026-10-21", [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]).map((r) =>
+            new Date(r.time).toISOString()
+          )
+        );
+        expect(asset.presence.coverage_note).toContain(
+          "Dropped 5 points from after its sensors were removed (2026-10-21T15:00:00.000Z)"
+        );
+      });
+
+      it("keeps the daily bucket that straddles sensorsRemovedAt (1d) and drops the next", async () => {
+        retiredRoom({ sensorsRemovedAt: "2026-10-21T15:00:00Z" });
+        mockHistoryProbe({ room_cut: [{ time: "2026-10-21T04:00:00Z", value: 1 }] });
+        // Buckets for Oct 18..22 (EDT), each labelled with the next local midnight.
+        seriesReturns(
+          ["19", "20", "21", "22", "23"].map((d) => ({ time: `2026-10-${d}T04:00:00Z`, value: 1 }))
+        );
+
+        const result = await executeGetOccupancyTimeseries({
+          asset_ids: ["room_cut"],
+          interval: "1d",
+          start: "2026-10-18T04:00:00Z",
+          stop: "2026-10-23T04:00:00Z",
+        });
+
+        expect(result.assets[0].presence.timeseries.map((p) => p.timestamp)).toEqual([
+          "2026-10-19T04:00:00.000Z",
+          "2026-10-20T04:00:00.000Z",
+          "2026-10-21T04:00:00.000Z",
+          "2026-10-22T04:00:00.000Z",
+        ]);
+      });
+
+      it("still cuts when the history lookup fails (503)", async () => {
+        setupTopologyMocks(
+          zoneTopology({
+            id: "zone_live",
+            name: "Pilot Desk Zone",
+            archivedAt: "2026-10-16T20:00:00Z",
+          }) as any
+        );
+        mockHistoryProbe({ zone_live: new reportingClient.ApiError(503, "Unavailable") });
+        seriesReturns(
+          ["19", "20", "21", "22", "23"].map((d) => ({ time: `2026-10-${d}T07:00:00Z`, value: 0 }))
+        );
+
+        const result = await executeGetOccupancyTimeseries({
+          ...args,
+          start: "2026-10-18T07:00:00Z",
+          stop: "2026-10-23T07:00:00Z",
+        });
+
+        const asset = result.assets[0];
+        expect(asset.history_warning).toMatch(/lookup failed/);
+        expect(asset.presence.timeseries).toEqual([]);
+        expect(asset.presence.available).toBe(false);
+        expect(asset.recommendation_reason).not.toMatch(/Presence available/);
+      });
+
+      it("still cuts when the lookup finds no history (the fixture's null case)", async () => {
+        setupTopologyMocks(
+          zoneTopology({
+            id: "zone_live",
+            name: "Pilot Desk Zone",
+            archivedAt: "2026-10-10T15:00:00Z",
+          }) as any
+        );
+        mockHistoryProbe({
+          zone_live: [
+            { time: "2026-10-16T07:00:00Z", value: 0 },
+            { time: "2026-10-17T07:00:00Z", value: 0 },
+          ],
+        });
+        seriesReturns([
+          { time: "2026-10-16T07:00:00Z", value: 0 },
+          { time: "2026-10-17T07:00:00Z", value: 0 },
+        ]);
+
+        const result = await executeGetOccupancyTimeseries({
+          ...args,
+          start: "2026-10-15T07:00:00Z",
+          stop: "2026-10-18T07:00:00Z",
+        });
+
+        const asset = result.assets[0];
+        expect(asset.presence.coverage_note).toMatch(
+          /^No sensors assigned \(archived on 2026-10-10\)\. No recorded history since/
+        );
+        expect(asset.presence.timeseries).toEqual([]);
+        expect(asset.presence.available).toBe(false);
+      });
+
+      it("never cuts a space that is not retired", async () => {
+        // A room with no sensors and no archive/removal date: data-derived end only.
+        retiredRoom({});
+        mockHistoryProbe({
+          room_cut: [
+            { time: "2026-10-20T04:00:00Z", value: 1 },
+            { time: "2026-10-21T04:00:00Z", value: 1 },
+          ],
+        });
+        seriesReturns(
+          ["19", "20", "21", "22", "23"].map((d) => ({ time: `2026-10-${d}T04:00:00Z`, value: 1 }))
+        );
+
+        const result = await executeGetOccupancyTimeseries({
+          asset_ids: ["room_cut"],
+          interval: "1d",
+          start: "2026-10-18T04:00:00Z",
+          stop: "2026-10-23T04:00:00Z",
+        });
+
+        expect(result.assets[0].presence.timeseries).toHaveLength(5);
+      });
     });
 
     it("reports an unrecognized site timezone as a non-retryable warning", async () => {
