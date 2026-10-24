@@ -27,6 +27,7 @@ import { ApiError } from "../clients/reporting-client.js";
 import { fetchHistoryEndDay, HISTORY_LOOKBACK_MONTHS } from "./history-end.js";
 import { debug } from "./debug.js";
 import { getCachedHistoryEnd, setCachedHistoryEnd } from "../cache/history-end-cache.js";
+import { shareInFlight } from "./in-flight.js";
 import { getTimezoneForAsset, buildTimezoneMetadata, isValidTimezone } from "./timezone-helpers.js";
 import { rethrowIfGraphQLError } from "./graphql-helpers.js";
 import {
@@ -378,7 +379,10 @@ export async function probeSensorlessHistory(
   const cached = getCachedHistoryEnd(assetId, asset.timezone);
   if (cached) return { status: "ok", endDay: cached.endDay };
   try {
-    const endDay = await fetchHistoryEndDay(asset.assetType, assetId, asset.timezone);
+    // A batch that names the same space twice shares one lookup.
+    const endDay = await shareInFlight(`history-end:${assetId}:${asset.timezone}`, () =>
+      fetchHistoryEndDay(asset.assetType, assetId, asset.timezone)
+    );
     setCachedHistoryEnd(assetId, asset.timezone, endDay);
     return { status: "ok", endDay };
   } catch (error: unknown) {

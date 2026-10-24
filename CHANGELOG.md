@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- `isDSTActive` compared UTC offset strings, which sort the wrong way west of UTC, so New York in EDT reported `dst_active: false` (and every US site had DST inverted). Offsets are now compared as numbers.
+- `MCP_CACHE_TOPO_TTL` and `MCP_CACHE_OCCUPANCY_TTL` are validated as whole seconds. Before, `0` or a non-number made entries never expire, and a negative value or a fraction crashed the server at import. `0` now disables the cache. Anything else that isn't whole seconds falls back to the default with a warning on stderr.
+- A GraphQL HTTP failure (Apollo 4 `ServerError`) is now mapped by status: 429 to `RATE_LIMITED` (with `retry-after`), 401/403 to `AUTH_EXPIRED`, 400 to `VALIDATION_FAILED`. It used to surface as `INTERNAL_ERROR`, because only the Apollo 3 `networkError` shape was read.
+- A batch that names the same sensorless or archived space twice now sends one history-end lookup, not two, as the history-end cache's header already promised.
+- `formatDayAndTime`'s "handles noon correctly" test failed under `TZ=Pacific/Auckland`/`Pacific/Kiritimati` (noon UTC is already Thursday there); it now pins its timezone.
+
 ## [0.7.0] - 2026-10-23
 
 Archived spaces and replaced-space links. When a floor is re-drawn (Salesforce Indy Tower Floor 7: the "Pilot - *" rooms were archived and "_V2" copies took over their sensors), the old rooms are now marked archived and the new ones point back at them, instead of the tools guessing from a 0-sensor count. Needs the API fields `archivedAt` and `replacesID` on `Room` and `Zone`. Until the API ships them, nothing shows as archived (see Compatibility).

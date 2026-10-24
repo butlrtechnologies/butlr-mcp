@@ -67,7 +67,8 @@ npm run format       # Prettier
 | `BUTLR_ORG_ID` | No | Organization ID (optional as of v0.1.1) |
 | `BUTLR_BASE_URL` | No | API base URL (default: `https://api.butlr.io`) |
 | `BUTLR_TIMEZONE` | No | Default timezone (default: `UTC`) |
-| `MCP_CACHE_TOPO_TTL` | No | Topology cache TTL in seconds (default: 600) |
+| `MCP_CACHE_TOPO_TTL` | No | Topology cache TTL in whole seconds (default: 600; `0` disables) |
+| `MCP_CACHE_OCCUPANCY_TTL` | No | Current-occupancy cache TTL in whole seconds (default: 60; `0` disables) |
 | `DEBUG` | No | Set to `butlr-mcp` for verbose logging |
 
 ## Testing
