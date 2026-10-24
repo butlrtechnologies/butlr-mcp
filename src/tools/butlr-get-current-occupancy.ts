@@ -17,10 +17,9 @@ import {
   SKIPPED_PROBE,
   sensorlessCoverageNote,
   sensorlessRecommendationReason,
-  type HistoryProbe,
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
-import { createLimiter } from "../utils/concurrency.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   CurrentOccupancyResponse,
@@ -35,10 +34,11 @@ const GET_CURRENT_OCCUPANCY_DESCRIPTION =
   "Get current occupancy for floors, rooms, or zones (last 5 minutes median). Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete current occupancy picture.\n\n" +
-  "An archived room or zone (`archived_at` set), or one whose sensors were removed, has no live data and is reported as such rather than queried; " +
-  "for it, `history_end` is the last full day of its recorded history (the day before its sensors were removed, else before it was archived). " +
-  "A room with no sensors is reported as having no live data and points at butlr_get_occupancy_timeseries. " +
-  "`history_note` points at butlr_get_occupancy_timeseries for that history and names any replacement.\n\n" +
+  "A retired room or zone (no sensors, and archived (`archived_at`) or with its sensors removed) has no live data and is reported as such rather than queried; " +
+  "for it, `history_end` is the last full day of its recorded history (no later than the day before its sensor removal or archive date), " +
+  "and `history_note` points at butlr_get_occupancy_timeseries for that history and names any replacement. " +
+  "A room with no sensors that is not retired is reported as having no live data, and its coverage note points at butlr_get_occupancy_timeseries. " +
+  "An archived space that still has sensors is read live, with a note.\n\n" +
   "When NOT to Use:\n" +
   "- Historical occupancy trends or time-range analysis → use butlr_get_occupancy_timeseries instead\n" +
   "- Qualitative busyness labels (quiet/moderate/busy) with trend comparison → use butlr_space_busyness instead\n" +
@@ -74,21 +74,23 @@ export async function executeGetCurrentOccupancy(
 
   const contexts = args.asset_ids.map((assetId) => resolveAssetContext(assetId, ctx));
 
-  // History-end probes, only for RETIRED spaces (archived, or sensors
-  // removed): a room that simply has no sensors yet costs no query here (the
-  // timeseries tool probes those). They start now, up to
+  // History-end probes, only for RETIRED spaces (no sensors, and archived or
+  // with sensors removed): a room that simply has no sensors yet costs no
+  // query here (the timeseries tool probes those). They start now, up to
   // HISTORY_PROBE_CONCURRENCY at a time, and run alongside the live reads
-  // below; they are awaited only once every live read is done.
-  // A retired space is never read live, so its probe does not depend on it.
-  const limit = createLimiter(HISTORY_PROBE_CONCURRENCY);
-  const probes: Array<Promise<HistoryProbe>> = contexts.map((asset, i) =>
-    needsHistoryProbe(asset, "current")
-      ? limit(() => probeHistory(asset, args.asset_ids[i]))
-      : Promise.resolve(SKIPPED_PROBE)
+  // below; they are awaited only once every live read is done. A retired
+  // space is never read live, so its probe does not depend on it.
+  const probesPromise = mapWithConcurrency(
+    contexts.map((asset, i) => ({ asset, assetId: args.asset_ids[i] })),
+    HISTORY_PROBE_CONCURRENCY,
+    ({ asset, assetId }) =>
+      needsHistoryProbe(asset, "current")
+        ? probeHistory(asset, assetId)
+        : Promise.resolve(SKIPPED_PROBE)
   );
-  // An auth rejection is rethrown when its asset awaits it; until then, keep
-  // it from surfacing as an unhandled rejection.
-  for (const p of probes) p.catch(() => undefined);
+  // An auth rejection is rethrown when awaited below; until then, keep it
+  // from surfacing as an unhandled rejection.
+  probesPromise.catch(() => undefined);
 
   const live: Array<{
     assetId: string;
@@ -109,12 +111,11 @@ export async function executeGetCurrentOccupancy(
     // `resolveAssetContext`), but the server computes `zone_occupancy`
     // independently. Always query for zones; gate on sensor count for
     // rooms/floors where 0 sensors really does mean "no data possible".
-    // A retired space (archived or sensors removed; see isRetiredSpace) is
-    // never read live, even if sensors are somehow still attributed (bad
-    // data; the API refuses to archive a space with sensors). A zone that is
-    // not retired is always read live: an empty read on it is not evidence
-    // of anything, since zone occupancy can come from overlapping floor
-    // sensors.
+    // A retired space (no sensors, and archived or with sensors removed; see
+    // isRetiredSpace) is never read live. A space that still has sensors is
+    // read live whatever its archive fields say, and a zone that is not
+    // retired is always read live: an empty read on it is not evidence of
+    // anything, since zone occupancy can come from overlapping floor sensors.
     const retired = isRetiredSpace(asset);
     const sensorless = isSensorlessSpace(asset);
     const shouldQueryPresence =
@@ -204,14 +205,16 @@ export async function executeGetCurrentOccupancy(
     });
   }
 
+  const probes = await probesPromise;
+
   // Every live read is done; now the history-end probes (which ran
   // alongside them) finish each retired/sensorless asset's notes.
   for (const [index, entry] of live.entries()) {
     const { assetId, asset, retired, sensorless, presenceData, trafficData } = entry;
     const { presenceHasData, trafficHasData } = entry;
-    const probe = await probes[index];
+    const probe = probes[index];
     if (retired || sensorless) {
-      presenceData.coverage_note = sensorlessCoverageNote(asset, probe);
+      presenceData.coverage_note = sensorlessCoverageNote(asset, probe, "current");
       if (retired && asset.assetType === "room") {
         trafficData.coverage_note = presenceData.coverage_note;
       }

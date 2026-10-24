@@ -24,7 +24,7 @@ import type {
 import { detectAssetType } from "./asset-helpers.js";
 import { isProductionSensor, throwIfGraphQLErrors } from "./graphql-helpers.js";
 import { ApiError } from "../clients/reporting-client.js";
-import { declaredHistoryEnd, fetchHistoryEnd, HISTORY_LOOKBACK_MONTHS } from "./history-end.js";
+import { declaredHistoryEnd, fetchHistoryEnd } from "./history-end.js";
 import { debug } from "./debug.js";
 import { getCachedHistoryEnd, setCachedHistoryEnd } from "../cache/history-end-cache.js";
 import { shareInFlight } from "./in-flight.js";
@@ -34,6 +34,7 @@ import {
   describeSpaceRef,
   findSpace,
   indexReplacements,
+  isRetired,
   formatArchiveDate,
   toSpaceRef,
   type SpaceRef,
@@ -192,9 +193,9 @@ export interface AssetContext {
   presenceSensors: Sensor[];
   trafficSensors: Sensor[];
   /**
-   * Production sensors attributed to the asset, of any mode. Zero for a room
-   * or zone means it is sensorless (see isSensorlessSpace); a zone whose
-   * sensors are all traffic-mode is not.
+   * Every sensor row attributed to the asset, of any mode, test/mirror and
+   * MAC-less rows included. Zero is required for a space to be retired or
+   * sensorless (see isRetiredSpace / isSensorlessSpace).
    */
   attributedSensorCount: number;
   /**
@@ -209,6 +210,8 @@ export interface AssetContext {
   sensorsRemovedAt?: string;
   /** `archivedAt` as a site-local YYYY-MM-DD; set with `archivedAt`. */
   archivedOn?: string;
+  /** `sensorsRemovedAt` as a site-local YYYY-MM-DD; set with `sensorsRemovedAt`. */
+  sensorsRemovedOn?: string;
   /** The space this one replaced, when `replacesID` is set. */
   replaces?: SpaceRef;
   /** Spaces that replaced this one (several after a split). */
@@ -325,6 +328,7 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
     }
     if (space?.sensorsRemovedAt) {
       context.sensorsRemovedAt = space.sensorsRemovedAt;
+      context.sensorsRemovedOn = formatArchiveDate(space.sensorsRemovedAt, timezone);
     }
     if (space?.replacesID) {
       context.replaces = toSpaceRef(
@@ -343,19 +347,18 @@ export function resolveAssetContext(assetId: string, ctx: TopologyContext): Asse
 
 /**
  * Outcome of the history-end probe (see probeHistory).
- * - skipped: no probe was sent. The space is not retired/sensorless, is a
- *   floor or did not resolve, or the tool does not probe it (current
- *   occupancy only probes retired spaces).
- * - ok: `endDay` is the last full day of recorded history within the
- *   lookback window, or null if the window holds none (older history may
- *   still exist).
+ * - skipped: no probe was sent (see needsHistoryProbe).
+ * - ok: `endDay` is the last full day of recorded history, or null when
+ *   none was found since `windowStart` (older history may still exist).
+ *   `outsideWindow` marks a declared end older than the window, returned
+ *   without a query.
  * - failed: the history end is unknown. `reason` is "lookup" for a
  *   transient failure (worth a retry) or "timezone" when the site timezone
  *   is not recognized (a retry cannot help).
  */
 export type HistoryProbe =
   | { status: "skipped" }
-  | { status: "ok"; endDay: string | null }
+  | { status: "ok"; endDay: string | null; windowStart: string; outsideWindow?: boolean }
   | { status: "failed"; reason: "lookup" | "timezone" };
 
 export const SKIPPED_PROBE: HistoryProbe = { status: "skipped" };
@@ -364,50 +367,42 @@ export const SKIPPED_PROBE: HistoryProbe = { status: "skipped" };
 export type SpaceAsset = AssetContext & { assetType: "room" | "zone" };
 
 /**
- * Whether a room or zone is RETIRED: archived, or its sensors were removed
- * (`sensorsRemovedAt`, API #3038). A retired space is never read live, by
- * any tool, and its history end comes from those dates (history-end.ts,
- * D2). An archived space that still has sensors attributed (bad data; the
- * API refuses to archive one) is retired too, with a note saying so. The
- * asset must have resolved in the topology.
+ * Whether a room or zone is RETIRED (shared rule: archived-spaces.ts
+ * `isRetired`): no sensor of any kind attributed AND archived or with its
+ * sensors removed. A retired space is never read live by any tool, and its
+ * history end comes from those dates and the data (history-end.ts). A
+ * space that still has sensors is live, whatever its archive fields say.
+ * The asset must have resolved in the topology.
  */
 export function isRetiredSpace(asset: AssetContext): asset is SpaceAsset {
   return (
     asset.found &&
     asset.assetType !== "floor" &&
-    (Boolean(asset.archivedOn) || Boolean(asset.sensorsRemovedAt))
+    isRetired(
+      { archivedAt: asset.archivedAt, sensorsRemovedAt: asset.sensorsRemovedAt },
+      asset.attributedSensorCount
+    )
   );
 }
 
 /**
- * Whether a room or zone counts as sensorless: no sensor of any kind
- * attributed, and either a ROOM or a RETIRED zone.
- *
- * - The asset must have resolved in the topology. An unknown ID (typo,
- *   deleted space, another org) is never sensorless.
- * - Room attribution is direct (`sensors.room_id`), so zero means zero. A
- *   room whose only sensors are traffic-mode, test/mirror or MAC-less is
- *   not sensorless.
- * - For a zone, zero attributed sensors is not evidence: a live zone can get
- *   `zone_occupancy` from overlapping floor sensors, and a parked zone keeps
- *   receiving 0-valued rows every day, so reporting data cannot tell a live
- *   zone from a retired one either. A zone is sensorless only once it is
- *   archived or has `sensorsRemovedAt` set; otherwise it is read like any
- *   other zone.
+ * Whether a ROOM has no sensor of any kind attributed (the 0.6.2
+ * "speculative" case, retired or not). Room attribution is direct
+ * (`sensors.room_id`), so zero means zero; a room whose only sensors are
+ * traffic-mode, test/mirror or MAC-less is not sensorless. Zones never count:
+ * a live zone can get `zone_occupancy` from overlapping floor sensors, so
+ * zero attributed sensors is no evidence for a zone; only `isRetiredSpace`
+ * retires one. The asset must have resolved in the topology.
  */
 export function isSensorlessSpace(asset: AssetContext): asset is SpaceAsset {
-  if (!asset.found || asset.assetType === "floor" || asset.attributedSensorCount > 0) {
-    return false;
-  }
-  return asset.assetType === "room" || isRetiredSpace(asset);
+  return asset.found && asset.assetType === "room" && asset.attributedSensorCount === 0;
 }
 
 /**
- * Whether `tool` sends the history-end probe for this asset. Both tools
- * probe retired spaces. The timeseries tool also probes a non-retired
- * sensorless room (the 0.6.2 "speculative" case), where the end comes from
- * the data. Current occupancy does not: a floor of rooms that have no
- * sensors yet would otherwise cost one six-month query per room.
+ * Whether `tool` sends the history-end probe for this asset. Current
+ * occupancy probes retired spaces only (a floor of rooms that have no
+ * sensors yet would otherwise cost one query per room); the timeseries tool
+ * also probes a sensorless room, where the end comes from the data.
  */
 export function needsHistoryProbe(
   asset: AssetContext,
@@ -417,12 +412,21 @@ export function needsHistoryProbe(
 }
 
 /**
- * Find where a room's or zone's recorded history ends (history-end.ts:
- * `sensorsRemovedAt`, then `archivedAt`, then the data). Best-effort, like
- * the 0.6.2 speculative lookups: auth errors still fail the call, anything
- * else is reported as `failed` so the caller can warn on that asset alone.
- * Successful answers are cached for a few minutes
- * (src/cache/history-end-cache.ts). Callers decide eligibility with
+ * Whether a reporting failure is transient (429, 5xx, or a non-HTTP error
+ * such as a timeout), and so reported on its asset alone rather than
+ * failing the call. Auth and other 4xx errors are not.
+ */
+export function isTransientReportingError(error: unknown): boolean {
+  return !(error instanceof ApiError) || error.statusCode === 429 || error.statusCode >= 500;
+}
+
+/**
+ * Find where a room's or zone's recorded history ends (history-end.ts).
+ * A transient failure is reported as `failed` so the caller can warn on
+ * that asset alone; any other error (auth, a 400) fails the call, the same
+ * as on the range query. Successful answers are cached for a few minutes
+ * (src/cache/history-end-cache.ts), and concurrent lookups for the same
+ * space (a batch naming it twice) share one query. Callers decide eligibility with
  * `needsHistoryProbe`.
  */
 export async function probeHistory(asset: SpaceAsset, assetId: string): Promise<HistoryProbe> {
@@ -430,36 +434,37 @@ export async function probeHistory(asset: SpaceAsset, assetId: string): Promise<
   const declared = declaredHistoryEnd(asset, asset.timezone);
   const cacheKey = `${asset.timezone}|${declared ?? ""}`;
   const cached = getCachedHistoryEnd(assetId, cacheKey);
-  if (cached) return { status: "ok", endDay: cached.endDay };
+  if (cached) return { status: "ok", ...cached };
   try {
     // A batch that names the same space twice shares one lookup.
-    const endDay = await shareInFlight(`history-end:${assetId}:${cacheKey}`, () =>
+    const end = await shareInFlight(`history-end:${assetId}:${cacheKey}`, () =>
       fetchHistoryEnd(asset.assetType, assetId, asset.timezone, declared)
     );
-    setCachedHistoryEnd(assetId, cacheKey, endDay);
-    return { status: "ok", endDay };
+    setCachedHistoryEnd(assetId, cacheKey, end);
+    return { status: "ok", ...end };
   } catch (error: unknown) {
-    if (error instanceof ApiError && (error.statusCode === 401 || error.statusCode === 403)) {
-      throw error;
-    }
+    if (!isTransientReportingError(error)) throw error;
     debug("occupancy-helpers", `History-end probe failed for ${assetId}:`, error);
     return { status: "failed", reason: "lookup" };
   }
 }
 
 /**
- * The lookback window in words, for "no history" copy. The probe only sees
- * HISTORY_LOOKBACK_MONTHS back, so "none" means none in that window, not
- * none ever.
+ * "Recorded history runs up to <day>." / "No recorded history since
+ * <window start>." / "" when unknown. A declared end older than the window
+ * says it was not checked against the data.
  */
-const LOOKBACK_PHRASE = `the last ${HISTORY_LOOKBACK_MONTHS === 6 ? "six" : HISTORY_LOOKBACK_MONTHS} months`;
-
-/** "Recorded history runs up to <day>." / "No recorded history in <window>." / "" when unknown. */
 function historyClause(probe: HistoryProbe): string {
   if (probe.status !== "ok") return "";
-  return probe.endDay
-    ? `Recorded history runs up to ${probe.endDay}.`
-    : `No recorded history in ${LOOKBACK_PHRASE}.`;
+  if (!probe.endDay) return `No recorded history since ${probe.windowStart}.`;
+  return `Recorded history runs up to ${historyEndPhrase(probe)}.`;
+}
+
+/** The end day, flagged when it is a declared end older than the lookup window. */
+function historyEndPhrase(probe: HistoryProbe & { status: "ok" }): string {
+  return probe.outsideWindow
+    ? `${probe.endDay} (before the lookup window, so not checked against the data)`
+    : `${probe.endDay}`;
 }
 
 /** "N sensor(s)" */
@@ -467,24 +472,34 @@ function sensorsPhrase(n: number): string {
   return `${n} sensor${n === 1 ? "" : "s"}`;
 }
 
+/** " (archived on D)" / " (sensors removed on D)" / "". */
+function retiredParenthetical(asset: AssetContext): string {
+  if (asset.archivedOn) return ` (archived on ${asset.archivedOn})`;
+  if (asset.sensorsRemovedOn) return ` (sensors removed on ${asset.sensorsRemovedOn})`;
+  return "";
+}
+
 /**
  * Coverage note for a retired or sensorless space:
  * "No sensors assigned (archived on <date>). Recorded history runs up to <day>."
- * The archive part is dropped for an active space; the history part is
- * dropped when the probe failed. An archived space that still has sensors
- * says so instead of "No sensors assigned". When no probe ran, the note
- * points at the timeseries tool for whatever history exists.
+ * The parenthetical names the archive (or sensor removal) date when there is
+ * one; the history part is dropped when the probe failed. In current
+ * occupancy, a note without a history end points at the timeseries tool.
  */
-export function sensorlessCoverageNote(asset: AssetContext, probe: HistoryProbe): string {
-  const archived = asset.archivedOn ? ` (archived on ${asset.archivedOn})` : "";
-  const lead =
-    asset.attributedSensorCount > 0 && asset.archivedOn
-      ? `Archived on ${asset.archivedOn}, but ${sensorsPhrase(asset.attributedSensorCount)} still attributed to it (a data-integrity issue); it is treated as retired and not read live.`
-      : `No sensors assigned${archived}.`;
+export function sensorlessCoverageNote(
+  asset: AssetContext,
+  probe: HistoryProbe,
+  tool: "timeseries" | "current"
+): string {
+  const lead = `No sensors assigned${retiredParenthetical(asset)}.`;
+  // Current occupancy has no history of its own, so without a history end
+  // (no probe, or a failed one) it points at the timeseries tool.
   const tail =
-    probe.status === "skipped"
-      ? "Use butlr_get_occupancy_timeseries for any history it recorded."
-      : historyClause(probe);
+    probe.status === "ok"
+      ? historyClause(probe)
+      : tool === "current"
+        ? "Use butlr_get_occupancy_timeseries for any history it recorded."
+        : "";
   return [lead, tail].filter(Boolean).join(" ");
 }
 
@@ -519,26 +534,25 @@ export function buildSpaceLifecycle(
   if (probe.status === "ok" && probe.endDay) lifecycle.history_end = probe.endDay;
   const warning = historyProbeWarning(asset, probe);
   if (warning) lifecycle.history_warning = warning;
+  if (asset.archivedAt) lifecycle.archived_at = asset.archivedAt;
 
-  if (asset.archivedAt && asset.archivedOn) {
-    lifecycle.archived_at = asset.archivedAt;
-    const stillAttributed =
-      asset.attributedSensorCount > 0
-        ? ` It still has ${sensorsPhrase(asset.attributedSensorCount)} attributed (a data-integrity issue) but is treated as retired.`
-        : "";
-    const history = historyClause(probe);
+  const retired = isRetiredSpace(asset);
+  if (retired) {
+    const what = asset.archivedOn
+      ? `This ${kind} was archived on ${asset.archivedOn}`
+      : `This ${kind}'s sensors were removed on ${asset.sensorsRemovedOn}`;
     notes.push(
-      tool === "timeseries"
-        ? [`This ${kind} was archived on ${asset.archivedOn}.${stillAttributed}`, history]
-            .filter(Boolean)
-            .join(" ")
-        : [
-            `This ${kind} was archived on ${asset.archivedOn}; archived spaces have no live data.${stillAttributed}`,
-            history,
-            "Use butlr_get_occupancy_timeseries for its history.",
-          ]
-            .filter(Boolean)
-            .join(" ")
+      [
+        tool === "timeseries" ? `${what}.` : `${what}; it has no live data.`,
+        historyClause(probe),
+        tool === "current" ? "Use butlr_get_occupancy_timeseries for its history." : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+  } else if (asset.archivedOn && asset.attributedSensorCount > 0) {
+    notes.push(
+      `This ${kind} was archived on ${asset.archivedOn} but still has ${sensorsPhrase(asset.attributedSensorCount)} attributed (a data-integrity issue), so it is read like an active ${kind}.`
     );
   }
 
@@ -590,11 +604,7 @@ export function sensorlessRecommendationReason(
   const foundHistory = probe.status === "ok" && probe.endDay !== null;
   if (!retired && !foundHistory) return undefined;
 
-  const archived = asset.archivedOn ? ` (archived on ${asset.archivedOn})` : "";
-  const state =
-    asset.attributedSensorCount > 0 && asset.archivedOn
-      ? `This ${asset.assetType} was archived on ${asset.archivedOn} and is treated as retired (it still has ${sensorsPhrase(asset.attributedSensorCount)} attributed)`
-      : `This ${asset.assetType} has no sensors assigned${archived}`;
+  const state = `This ${asset.assetType} has no sensors assigned${retiredParenthetical(asset)}`;
   const parts = [
     tool === "timeseries"
       ? `No readings in the requested time range. ${state}.`
@@ -604,14 +614,14 @@ export function sensorlessRecommendationReason(
     if (probe.endDay) {
       parts.push(
         tool === "timeseries"
-          ? `Its recorded history runs up to ${probe.endDay}.`
-          : `Its recorded history runs up to ${probe.endDay}; use butlr_get_occupancy_timeseries for it.`
+          ? `Its recorded history runs up to ${historyEndPhrase(probe)}.`
+          : `Its recorded history runs up to ${historyEndPhrase(probe)}; use butlr_get_occupancy_timeseries for it.`
       );
     } else {
       parts.push(
         tool === "timeseries"
-          ? `It has no recorded history in ${LOOKBACK_PHRASE}; query an older range to check for earlier history.`
-          : `It has no recorded history in ${LOOKBACK_PHRASE}; use butlr_get_occupancy_timeseries to check older ranges.`
+          ? `It has no recorded history since ${probe.windowStart}; query an older range to check for earlier history.`
+          : `It has no recorded history since ${probe.windowStart}; use butlr_get_occupancy_timeseries to check older ranges.`
       );
     }
   }

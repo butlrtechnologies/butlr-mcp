@@ -85,12 +85,29 @@ export function isValidTimezone(timezone: string): boolean {
  * RangeError for an unrecognized timezone.
  */
 export function formatLocalDate(date: Date | number, timezone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
+  return localDateFormatter(timezone).format(date);
+}
+
+const localDateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * A cached "YYYY-MM-DD" formatter per timezone: building an
+ * Intl.DateTimeFormat is far slower than using one, and the local-midnight
+ * search formats a few dozen instants per call. Throws a RangeError for an
+ * unrecognized timezone (and caches nothing then).
+ */
+function localDateFormatter(timezone: string): Intl.DateTimeFormat {
+  let formatter = localDateFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    localDateFormatters.set(timezone, formatter);
+  }
+  return formatter;
 }
 
 /**
@@ -215,31 +232,7 @@ export function getCurrentLocalTime(timezone: string): string {
  */
 export function getLocalMidnight(date: Date, timezone: string): Date {
   try {
-    const formatter = new Intl.DateTimeFormat("en-CA", {
-      timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-    // "YYYY-MM-DD" in the target timezone; compares chronologically as a string.
-    const target = formatter.format(date);
-    const [year, month, day] = target.split("-").map(Number);
-
-    // The local day starts somewhere between UTC midnight - 15h (UTC+14 is the
-    // furthest ahead) and UTC midnight + 13h (UTC-12 is the furthest behind).
-    // The local date never goes backwards as time moves forward, so binary
-    // search for the first second whose local date has reached `target`.
-    // Searching whole dates (not hour/minute arithmetic) is what makes this
-    // correct across month and year ends and when DST skips midnight.
-    const utcMidnight = Date.UTC(year, month - 1, day);
-    let lo = (utcMidnight - 15 * 3600 * 1000) / 1000; // local date < target
-    let hi = (utcMidnight + 13 * 3600 * 1000) / 1000; // local date >= target
-    while (hi - lo > 1) {
-      const mid = Math.floor((lo + hi) / 2);
-      if (formatter.format(new Date(mid * 1000)) >= target) hi = mid;
-      else lo = mid;
-    }
-    return new Date(hi * 1000);
+    return localDayStart(formatLocalDate(date, timezone), timezone);
   } catch (error) {
     debug("timezone-helpers", `Failed to calculate local midnight for ${timezone}:`, error);
     // Fallback to UTC midnight
@@ -247,6 +240,38 @@ export function getLocalMidnight(date: Date, timezone: string): Date {
     utcMidnight.setUTCHours(0, 0, 0, 0);
     return utcMidnight;
   }
+}
+
+/**
+ * First instant of local calendar day `ymd` (YYYY-MM-DD) in `timezone`; see
+ * getLocalMidnight. Throws a RangeError for an unrecognized timezone.
+ */
+export function localDayStart(ymd: string, timezone: string): Date {
+  const formatter = localDateFormatter(timezone);
+  const [year, month, day] = ymd.split("-").map(Number);
+
+  // The local day starts somewhere between UTC midnight - 15h (UTC+14 is the
+  // furthest ahead) and UTC midnight + 13h (UTC-12 is the furthest behind).
+  // The local date never goes backwards as time moves forward, so binary
+  // search for the first second whose local date ("YYYY-MM-DD", which
+  // compares chronologically as a string) has reached `ymd`. Searching whole
+  // dates (not hour/minute arithmetic) is what makes this correct across
+  // month and year ends and when DST skips midnight.
+  const utcMidnight = Date.UTC(year, month - 1, day);
+  let lo = (utcMidnight - 15 * 3600 * 1000) / 1000; // local date < ymd
+  let hi = (utcMidnight + 13 * 3600 * 1000) / 1000; // local date >= ymd
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (formatter.format(new Date(mid * 1000)) >= ymd) hi = mid;
+    else lo = mid;
+  }
+  return new Date(hi * 1000);
+}
+
+/** The calendar date `days` after (or before, if negative) YYYY-MM-DD `ymd`. */
+export function shiftDay(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
 /**

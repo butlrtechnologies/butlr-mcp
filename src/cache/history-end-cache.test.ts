@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { parseHistoryEndTtlSeconds } from "./history-end-cache.js";
 
+const END = { endDay: "2026-10-20", windowStart: "2026-04-29" };
+
 describe("MCP_CACHE_HISTORY_END_TTL", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -13,9 +15,26 @@ describe("MCP_CACHE_HISTORY_END_TTL", () => {
     expect(parseHistoryEndTtlSeconds("  ")).toBe(600);
   });
 
-  it("accepts a non-negative number of seconds, 0 included", () => {
+  it("accepts whole non-negative seconds, 0 included", () => {
     expect(parseHistoryEndTtlSeconds("30")).toBe(30);
     expect(parseHistoryEndTtlSeconds("0")).toBe(0);
+  });
+
+  it("rejects fractions, which lru-cache would refuse at import", () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    for (const raw of ["16.1", "2.01", "0.0001", "1e306"]) {
+      expect(parseHistoryEndTtlSeconds(raw)).toBe(600);
+    }
+    expect(warn).toHaveBeenCalledTimes(4);
+  });
+
+  it("starts with a fractional TTL in the environment instead of throwing at import", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.stubEnv("MCP_CACHE_HISTORY_END_TTL", "16.1");
+    vi.resetModules();
+    const cache = await import("./history-end-cache.js");
+    cache.setCachedHistoryEnd("room_1", "UTC|", END);
+    expect(cache.getCachedHistoryEnd("room_1", "UTC|")).toEqual(END);
   });
 
   it("falls back to the default with a warning for a value that is not a number", () => {
@@ -31,14 +50,14 @@ describe("MCP_CACHE_HISTORY_END_TTL", () => {
     vi.stubEnv("MCP_CACHE_HISTORY_END_TTL", "0");
     vi.resetModules();
     const cache = await import("./history-end-cache.js");
-    cache.setCachedHistoryEnd("room_1", "UTC|", "2026-10-20");
+    cache.setCachedHistoryEnd("room_1", "UTC|", END);
     expect(cache.getCachedHistoryEnd("room_1", "UTC|")).toBeUndefined();
   });
 
   it("caches by default", async () => {
     vi.resetModules();
     const cache = await import("./history-end-cache.js");
-    cache.setCachedHistoryEnd("room_1", "UTC|", "2026-10-20");
-    expect(cache.getCachedHistoryEnd("room_1", "UTC|")).toEqual({ endDay: "2026-10-20" });
+    cache.setCachedHistoryEnd("room_1", "UTC|", END);
+    expect(cache.getCachedHistoryEnd("room_1", "UTC|")).toEqual(END);
   });
 });

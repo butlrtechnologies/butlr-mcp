@@ -200,6 +200,41 @@ describe("butlr_traffic_flow - Integration", () => {
       expect(Array.isArray(result.hourly_breakdown)).toBe(true);
     });
 
+    it("explains that a retired room has no live traffic", async () => {
+      const topology = structuredClone(MOCK_TOPOLOGY) as any;
+      topology.sites.data[0].buildings[0].floors[0].rooms[2].archivedAt = "2026-10-22T20:00:00Z";
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetRoomSensors")) {
+          return Promise.resolve({
+            data: {
+              room: {
+                id: "room_meeting",
+                name: "Meeting Room",
+                floorID: "floor_test",
+                floor: {
+                  id: "floor_test",
+                  name: "Test Floor",
+                  building: { id: "building_test", name: "Test Building" },
+                },
+              },
+            },
+          } as any);
+        }
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: topology } as any);
+        }
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve({ data: { sensors: { data: [] } } } as any);
+        }
+        return Promise.reject(new Error("Unknown query"));
+      });
+
+      await expect(executeTrafficFlow({ space_id_or_name: "room_meeting" })).rejects.toThrow(
+        'Room "Meeting Room" was archived on 2026-10-22 and has no sensors, so it has no live traffic.'
+      );
+    });
+
     it("validates room has traffic sensors", async () => {
       // Mock room WITHOUT traffic sensors (only presence)
       vi.mocked(apolloClient.query).mockImplementation((options: any) => {

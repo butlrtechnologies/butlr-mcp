@@ -22,9 +22,26 @@ export interface SpaceRef {
   archived_at?: string;
 }
 
-/** Whether a room or zone is archived. Absent/null `archivedAt` = active. */
-export function isArchived(space: ArchivableSpace | null | undefined): boolean {
-  return Boolean(space?.archivedAt);
+/**
+ * Whether a room or zone is RETIRED: no sensors attributed (of any kind) AND
+ * archived or with its sensors removed (`sensorsRemovedAt`, API #3038).
+ * A retired space is never read live and gets a history view. Sensors
+ * present means live, whatever a stale `archivedAt`/`sensorsRemovedAt`
+ * says (contract Addendum 3, E4). Every tool decides with this one rule.
+ *
+ * `attributedSensorCount` counts every attributed sensor row, test/mirror
+ * and MAC-less ones included. Pass `undefined` when the caller could not
+ * count them; that is treated as "has sensors" (live).
+ */
+export function isRetired(
+  space: ArchivableSpace | null | undefined,
+  attributedSensorCount: number | undefined
+): boolean {
+  return (
+    Boolean(space) &&
+    attributedSensorCount === 0 &&
+    (Boolean(space?.archivedAt) || Boolean(space?.sensorsRemovedAt))
+  );
 }
 
 /**

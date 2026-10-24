@@ -66,8 +66,10 @@ export interface SpaceLifecycle {
   /** Spaces that replaced this one. */
   replaced_by?: SpaceRef[];
   /**
-   * Last full local day (YYYY-MM-DD) of recorded history for a sensorless or
-   * archived room/zone: the day before its final, partial recorded day.
+   * Last full local day (YYYY-MM-DD) of recorded history for a retired or
+   * sensorless room/zone: the recorded day before its newest (always
+   * partial) day, and no later than the day before its sensor removal or
+   * archive date. See src/utils/history-end.ts.
    */
   history_end?: string;
   /** Set when the lookup for `history_end` failed; the end is unknown. */

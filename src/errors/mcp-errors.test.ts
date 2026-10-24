@@ -158,3 +158,25 @@ describe("createValidationError", () => {
     }
   });
 });
+
+describe("withToolErrorHandling: reporting HTTP statuses", () => {
+  it("maps an ApiError's status to an MCP code instead of INTERNAL_ERROR", async () => {
+    const { withToolErrorHandling } = await import("./mcp-errors.js");
+    const { ApiError } = await import("../clients/reporting-client.js");
+    const cases: Array<[number, string]> = [
+      [400, "VALIDATION_FAILED"],
+      [401, "AUTH_EXPIRED"],
+      [404, "NOT_FOUND"],
+      [429, "RATE_LIMITED"],
+      [503, "NETWORK_ERROR"],
+    ];
+    for (const [status, code] of cases) {
+      const handler = withToolErrorHandling(async () => {
+        throw new ApiError(status, "Invalid request parameters. Check your filter configuration.");
+      });
+      const result = await handler({});
+      expect(result.isError).toBe(true);
+      expect((result.content[0] as { text: string }).text).toMatch(new RegExp(`^\\[${code}\\] `));
+    }
+  });
+});

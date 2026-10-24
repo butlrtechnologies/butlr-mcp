@@ -4,16 +4,13 @@ import { z } from "zod";
 import { GET_ALL_HIVES, GET_ALL_SENSORS, GET_FULL_TOPOLOGY } from "../clients/queries/topology.js";
 import { queryWithArchiveFallback } from "../clients/archive-fallback.js";
 import type { Hive, Sensor, Site, SitesResponse } from "../clients/types.js";
-import {
-  getCachedTopology,
-  setCachedTopology,
-  generateTopologyCacheKey,
-} from "../cache/topology-cache.js";
+import { cacheMergedTopology, floorsOf, getCachedMergedTopology } from "../cache/topology-cache.js";
 import { flattenTopology, type FlattenedAsset } from "../utils/asset-flattener.js";
 import { searchAssets, type SearchableAsset } from "../utils/fuzzy-match.js";
 import { buildAssetPath } from "../utils/path-builder.js";
 import {
   archivedDisplayName,
+  findSpace,
   indexReplacements,
   toSpaceRef,
   type SpaceRef,
@@ -110,8 +107,8 @@ const SEARCH_ASSETS_DESCRIPTION =
   "- Want to browse full organizational hierarchy → use butlr_list_topology instead\n" +
   "- Need to analyze occupancy or sensor data → use this tool first to find IDs, then use data tools\n\n" +
   'Archived spaces: archived rooms and zones are still matched by name. Their `path` ends in "(archived YYYY-MM-DD)" and they carry `archived_at` ' +
-  "(no live data). The archive date is not where their history ends; butlr_get_occupancy_timeseries and butlr_get_current_occupancy return the last recorded day as `history_end`. " +
-  "`replaces_id` and `replaced_by` (`{ id, name }` objects, `archived_at` set on an archived successor) link a re-drawn space to the one it superseded.\n\n" +
+  "(no live data). The last full day of recorded history comes back as `history_end` from butlr_get_occupancy_timeseries and butlr_get_current_occupancy; it is no later than the day before the archive date, and can be much earlier. " +
+  "`replaces` and `replaced_by` (`{ id, name }` objects, `archived_at` set on an archived one) link a re-drawn space to the one it superseded.\n\n" +
   "Search Features: Fuzzy matching (handles typos), multi-field search (name, MAC, serial), score threshold (≥70), type filtering, result limiting (default 20, max 100)\n\n" +
   "Example Workflow: butlr_search_assets(query: 'café') → get room_cafe_123 → butlr_space_busyness(space_id_or_name: 'room_cafe_123')\n\n" +
   "See Also: butlr_get_asset_details, butlr_list_topology, butlr_fetch_entity_details";
@@ -138,7 +135,7 @@ export interface SearchResult {
   room_id?: string;
   // Room/zone lifecycle. Omitted for an active space that replaces nothing.
   archived_at?: string;
-  replaces_id?: string;
+  replaces?: SpaceRef;
   replaced_by?: SpaceRef[];
 }
 
@@ -155,7 +152,7 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
       ` (max: ${maxResults})`
   );
 
-  // `devicesMerged: true`: sensors and hives are merged onto their floors
+  // The merged-topology cache entry: sensors and hives are merged onto their floors
   // before flattening, because `flattenTopology` reads devices from
   // `floor.sensors`/`floor.hives` and `GET_FULL_TOPOLOGY` selects neither.
   // Without the merge this tool's corpus holds zero sensors and zero hives,
@@ -164,21 +161,12 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
   //
   // This is the same key `butlr_list_topology` writes, deliberately: both now
   // hold the merged shape, so either can prime the other.
-  const cacheKey = generateTopologyCacheKey(
-    process.env.BUTLR_ORG_ID || "default",
-    true, // include devices for comprehensive search
-    true, // include zones
-    true, // devicesMerged: devices are nested onto their floors before flattening
-    undefined
-  );
-
-  // Try to get cached topology
   let sites: Site[] = [];
-  const cached = getCachedTopology(cacheKey);
+  const cachedSites = getCachedMergedTopology();
 
-  if (cached && cached.data && cached.data.sites) {
+  if (cachedSites) {
     debug("search-assets", "Using cached topology for search");
-    sites = cached.data.sites as Site[];
+    sites = cachedSites;
   } else {
     // Fetch fresh topology
     debug("search-assets", "Fetching fresh topology for search");
@@ -253,20 +241,14 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
         `Merged ${allSensors.length} sensors and ${allHives.length} hives into topology`
       );
 
-      // Only cache complete topology data — partial results should be re-fetched.
-      // A tree fetched without some optional space fields (an API that
-      // predates them) is not cached either: the cache renews on every hit,
-      // so it would keep hiding archive state after the API deploys.
-      if (!partialData && result.omittedFields.length === 0) {
-        setCachedTopology(cacheKey, { sites });
+      // Only complete topology is cached (see cacheMergedTopology); the key
+      // records which optional space fields this fetch left out.
+      if (
+        cacheMergedTopology(sites, { partial: partialData, omittedFields: result.omittedFields })
+      ) {
         debug("search-assets", `Cached topology with ${sites.length} sites`);
       } else {
-        debug(
-          "search-assets",
-          partialData
-            ? "Skipping cache — topology data is partial"
-            : `Skipping cache — API lacks ${result.omittedFields.join(", ")}`
-        );
+        debug("search-assets", "Skipping cache — topology data is partial");
       }
     } catch (error: unknown) {
       rethrowIfGraphQLError(error);
@@ -307,9 +289,8 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
   // Replacements are looked up over the whole topology (not just the
   // matches), so an archived room found by its old name points at its
   // replacement even when the replacement's name did not match the query.
-  const replacementIndex = indexReplacements(
-    sites.flatMap((site) => (site.buildings ?? []).flatMap((b) => b.floors ?? []))
-  );
+  const floors = floorsOf(sites);
+  const replacementIndex = indexReplacements(floors);
 
   // Format results with minimal fields. Archived rooms/zones stay searchable
   // by their plain name (users ask for old rooms by name); the label goes on
@@ -337,7 +318,14 @@ export async function executeSearchAssets(args: SearchAssetsArgs) {
       floor_id: asset.floor_id as string | undefined,
       room_id: asset.room_id as string | undefined,
       ...(asset.archived_at ? { archived_at: asset.archived_at } : {}),
-      ...(asset.replaces_id ? { replaces_id: asset.replaces_id } : {}),
+      ...(asset.replaces_id && (asset.type === "room" || asset.type === "zone")
+        ? {
+            replaces: toSpaceRef(
+              asset.replaces_id,
+              findSpace(floors, asset.type, asset.replaces_id)
+            ),
+          }
+        : {}),
       ...(successors.length > 0 ? { replaced_by: successors } : {}),
     };
   });

@@ -11,6 +11,8 @@ import {
   getTrafficCoverageNote,
   buildRecommendation,
   buildSpaceLifecycle,
+  isRetiredSpace,
+  isTransientReportingError,
   needsHistoryProbe,
   probeHistory,
   sensorlessCoverageNote,
@@ -19,6 +21,7 @@ import {
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
+import { formatLocalDate } from "../utils/timezone-helpers.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   OccupancyTimeseriesResponse,
@@ -31,9 +34,10 @@ const GET_OCCUPANCY_TIMESERIES_DESCRIPTION =
   "Get occupancy timeseries data for floors, rooms, or zones. Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete occupancy picture without guessing measurement types.\n\n" +
-  "Archived, sensorless and replaced spaces: an archived room or zone (`archived_at`), one whose sensors were removed, or a room with no sensors still returns the history it recorded. " +
-  "For those, `history_end` is the last full day of recorded history: the day before its sensors were removed, else the day before it was archived, else derived from the data. " +
-  "A zone that is not archived is treated like any other zone, even with no attributed sensors (zone occupancy can come from overlapping floor sensors), so an empty range just means no data. " +
+  "Retired, sensorless and replaced spaces: a retired room or zone (no sensors, and archived (`archived_at`) or with its sensors removed) or a room with no sensors still returns the history it recorded. " +
+  "For those, `history_end` is the last full day of recorded history: the recorded day before its newest (always partial) day, and no later than the day before its sensor removal or archive date. " +
+  "Points after `history_end` for a retired space are dropped (a parked space can keep receiving 0-valued rows). " +
+  "A zone that is not retired is treated like any other zone, even with no attributed sensors (zone occupancy can come from overlapping floor sensors), so an empty range just means no data. An archived space that still has sensors is read like an active one. " +
   "A space that replaced another carries `replaces`, and `history_note` names the predecessor's ID: series are not merged, " +
   "so query the predecessor separately for history before the switch-over.\n\n" +
   "When NOT to Use:\n" +
@@ -104,12 +108,14 @@ async function buildPresenceData(
   // sensors today can still hold history from sensors that were moved
   // elsewhere (e.g. a room superseded by a re-mapped "_V2" copy).
   const sensorCount = asset.presenceSensors.length;
-  // A retired space (archived, or sensors removed) or a sensorless room gets
-  // a history-end probe in parallel with the range query, and its coverage
-  // note says where its recorded history ends (see needsHistoryProbe). A
-  // zone that is not retired is never probed, whatever its attributed-sensor
-  // count or however empty its range: zone occupancy can come from
-  // overlapping floor sensors, so an empty range on it just means no data.
+  let droppedNote = "";
+  // A retired space (no sensors, and archived or with sensors removed) or a
+  // sensorless room gets a history-end probe in parallel with the range
+  // query, and its coverage note says where its recorded history ends (see
+  // needsHistoryProbe). A zone that is not retired is never probed, whatever
+  // its attributed-sensor count or however empty its range: zone occupancy
+  // can come from overlapping floor sensors, so an empty range on it just
+  // means no data.
   const probed = needsHistoryProbe(asset, "timeseries");
   // A 0-presence floor, a room whose only sensors are traffic-mode, or a
   // room ID that did not resolve keeps the 0.6.2 speculative note.
@@ -144,12 +150,14 @@ async function buildPresenceData(
   } catch (error: unknown) {
     debug("occupancy-timeseries", "Presence query failed:", error);
     // On a best-effort lookup only a transient failure (429, 5xx, or a
-    // non-HTTP error such as a timeout) is reported on this asset alone.
-    // Auth and other 4xx errors are not asset-specific luck: they still fail
-    // the call.
-    const transient =
-      !(error instanceof ApiError) || error.statusCode === 429 || error.statusCode >= 500;
-    if (error instanceof ApiError && error.statusCode >= 400 && (!bestEffort || !transient)) {
+    // non-HTTP error such as a timeout) is reported on this asset alone;
+    // the history lookup uses the same classifier. Auth and other 4xx errors
+    // are not asset-specific luck: they still fail the call.
+    if (
+      error instanceof ApiError &&
+      error.statusCode >= 400 &&
+      (!bestEffort || !isTransientReportingError(error))
+    ) {
       throw error;
     }
     presenceData.warning =
@@ -158,12 +166,28 @@ async function buildPresenceData(
 
   const probe: HistoryProbe = early ? await early : { status: "skipped" };
 
+  // A retired space can keep receiving 0-valued rows after its sensors left
+  // (the algo still evaluates its geometry). Points after its history end
+  // are not history: drop them, and say how many.
+  if (isRetiredSpace(asset) && probe.status === "ok" && probe.endDay) {
+    const end = probe.endDay;
+    const kept = presenceData.timeseries.filter(
+      // Buckets are labelled with their end, so step back 1 ms for the day.
+      (p) => formatLocalDate(Date.parse(p.timestamp) - 1, asset.timezone) <= end
+    );
+    const dropped = presenceData.timeseries.length - kept.length;
+    presenceData.timeseries = kept;
+    if (dropped > 0) {
+      droppedNote = ` Dropped ${dropped} point${dropped === 1 ? "" : "s"} after ${end}, recorded after its sensors left.`;
+    }
+  }
+
   if (bestEffort && presenceData.timeseries.length > 0) {
     presenceData.available = true;
   }
 
   if (probe.status !== "skipped") {
-    presenceData.coverage_note = sensorlessCoverageNote(asset, probe);
+    presenceData.coverage_note = sensorlessCoverageNote(asset, probe, "timeseries") + droppedNote;
     if (presenceData.warning && presenceData.timeseries.length === 0) {
       // Don't let "no data" stand when the range lookup itself failed.
       presenceData.coverage_note +=

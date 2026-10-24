@@ -13,13 +13,9 @@
  * which checks the schema and strips whichever of these fields the API
  * lacks before sending.
  */
-export const SPACE_ARCHIVE_FIELDS = `
-  archivedAt
-  replacesID
-  sensorsRemovedAt
-`;
 
-/** Field names in SPACE_ARCHIVE_FIELDS. */
+/** Field names of the optional Room/Zone fields. */
 export const SPACE_ARCHIVE_FIELD_NAMES = ["archivedAt", "replacesID", "sensorsRemovedAt"] as const;
 
-export type SpaceArchiveFieldName = (typeof SPACE_ARCHIVE_FIELD_NAMES)[number];
+/** The same fields as a selection to interpolate into a query. */
+export const SPACE_ARCHIVE_FIELDS = SPACE_ARCHIVE_FIELD_NAMES.join("\n");

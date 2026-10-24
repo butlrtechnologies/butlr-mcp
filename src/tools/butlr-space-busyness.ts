@@ -5,15 +5,17 @@ import { SPACE_ARCHIVE_FIELDS } from "../clients/queries/archive-fields.js";
 import { fetchTopology } from "../utils/occupancy-helpers.js";
 import {
   describeSpaceRef,
+  findSpace,
   formatArchiveDate,
   indexReplacements,
+  isRetired,
   toSpaceRef,
   type SpaceRef,
 } from "../utils/archived-spaces.js";
 import { resolveTimezone } from "../utils/timezone-helpers.js";
-import { generateTopologyCacheKey, getCachedTopology } from "../cache/topology-cache.js";
+import { floorsOf, getCachedMergedTopology } from "../cache/topology-cache.js";
 import { z } from "zod";
-import type { Room, Zone, Floor, Site } from "../clients/types.js";
+import type { Room, Zone, Floor } from "../clients/types.js";
 import { getCurrentOccupancy, ApiError } from "../clients/reporting-client.js";
 import { getSingleAssetStats } from "../clients/stats-client.js";
 import { executeSearchAssets } from "./butlr-search-assets.js";
@@ -101,7 +103,7 @@ const SPACE_BUSYNESS_DESCRIPTION =
   "- Entry/exit traffic counts (lobby, building entrance) → use butlr_traffic_flow instead\n" +
   "- Searching for a space first → use butlr_search_assets to find room/zone ID by name\n\n" +
   "Qualitative Labels: Quiet (<30% utilized), Moderate (30-70%), Busy (>=70%)\n\n" +
-  "Archived spaces: an archived room or zone has no live busyness. If it has exactly one replacement that is not archived, the tool reports the replacement and says so in `warning`; otherwise it returns the archived space with `space.archived_at`, `current: null`, any successors in `space.replaced_by`, and a `history_note` pointing at `history_end` from the occupancy tools.\n\n" +
+  "Retired spaces: a room or zone with no sensors that is archived (or had its sensors removed) has no live busyness. If it has exactly one replacement that is not retired, the tool reports the replacement and says so in `warning`; otherwise it returns the retired space with `current: null`, `space.archived_at` when archived, any successors in `space.replaced_by`, and a `history_note` pointing at `history_end` from the occupancy tools. An archived space that still has sensors is read live, with a warning.\n\n" +
   "See Also: butlr_get_current_occupancy, butlr_traffic_flow, butlr_search_assets, butlr_get_occupancy_timeseries";
 
 export type SpaceBusynessArgs = z.output<typeof SpaceBusynessArgsSchema>;
@@ -119,6 +121,9 @@ const GET_ROOM = gql`
       floorID
       roomType
       ${SPACE_ARCHIVE_FIELDS}
+      sensors {
+        id
+      }
       capacity {
         max
         mid
@@ -148,6 +153,9 @@ const GET_ZONE = gql`
       name
       floorID
       ${SPACE_ARCHIVE_FIELDS}
+      sensors {
+        id
+      }
       capacity {
         max
         mid
@@ -178,8 +186,8 @@ interface FetchedSpace {
 }
 
 /**
- * Fetch a room or zone by ID, including its archive fields (stripped and
- * retried on an API that predates them, see archive-fallback.ts).
+ * Fetch a room or zone by ID, with its archive fields (stripped when the
+ * API lacks them, see archive-fallback.ts) and its attributed sensor IDs.
  */
 async function fetchSpace(spaceType: "room" | "zone", spaceId: string): Promise<FetchedSpace> {
   let space: RoomWithFloor | ZoneWithFloor | undefined;
@@ -215,50 +223,72 @@ async function fetchSpace(spaceType: "room" | "zone", spaceId: string): Promise<
   };
 }
 
-/**
- * Successors of an archived space. The name path already has them from the
- * search result. Otherwise they come from the cached topology, or a fresh
- * fetch on a cache miss; if that fails, `known` is false and the caller
- * still answers (an archived response without successors beats an error).
- */
-async function findSuccessors(
-  spaceId: string,
-  fromSearch: SpaceRef[] | undefined
-): Promise<{ refs: SpaceRef[]; known: boolean }> {
-  if (fromSearch) return { refs: fromSearch, known: true };
-  let floors: Floor[];
-  const cached = getCachedTopology(
-    generateTopologyCacheKey(process.env.BUTLR_ORG_ID || "default", true, true, true, undefined)
-  );
-  const cachedSites = cached?.data?.sites as Site[] | undefined;
-  if (cachedSites) {
-    floors = cachedSites.flatMap((site) => (site.buildings ?? []).flatMap((b) => b.floors ?? []));
-  } else {
-    try {
-      floors = (await fetchTopology()).floors;
-    } catch (error: unknown) {
-      debug("space-busyness", "Could not load the topology to find replacements:", error);
-      return { refs: [], known: false };
-    }
-  }
-  const successors = indexReplacements(floors).get(spaceId) ?? [];
-  return { refs: successors.map((s) => toSpaceRef(s.id, s)), known: true };
+/** Every sensor attributed to the fetched space (`sensors { id }`). */
+function attributedCount(space: RoomWithFloor | ZoneWithFloor): number {
+  return (space.sensors ?? []).length;
 }
 
 /**
- * Response for an archived space that was not redirected to a replacement:
- * no live busyness (`current: null`), flagged as archived, pointing at the
- * occupancy tools for its history and listing any successors.
+ * Successors of a retired space. Search results and the cached topology are
+ * trusted only when that same source already had the space archived with at
+ * least one successor: a source that predates the re-draw would otherwise
+ * turn "no successor info yet" into "no successor". Otherwise the topology
+ * is fetched; if that fails, `known` is false and the caller still answers
+ * (a retired response without successors beats an error).
  */
-function buildArchivedResponse(
+async function findSuccessors(
+  spaceId: string,
+  fromSearch: { archived_at?: string; replaced_by?: SpaceRef[] } | undefined
+): Promise<{ refs: SpaceRef[]; known: boolean }> {
+  if (fromSearch?.archived_at && fromSearch.replaced_by?.length) {
+    return { refs: fromSearch.replaced_by, known: true };
+  }
+  const cachedSites = getCachedMergedTopology();
+  if (cachedSites) {
+    const floors = floorsOf(cachedSites);
+    const cachedSpace = findSpace(floors, "room", spaceId) ?? findSpace(floors, "zone", spaceId);
+    const successors = indexReplacements(floors).get(spaceId) ?? [];
+    if (cachedSpace?.archivedAt && successors.length > 0) {
+      return { refs: successors.map((s) => toSpaceRef(s.id, s)), known: true };
+    }
+  }
+  try {
+    const floors = (await fetchTopology()).floors;
+    const successors = indexReplacements(floors).get(spaceId) ?? [];
+    return { refs: successors.map((s) => toSpaceRef(s.id, s)), known: true };
+  } catch (error: unknown) {
+    debug("space-busyness", "Could not load the topology to find replacements:", error);
+    return { refs: [], known: false };
+  }
+}
+
+/** Error text for a warning: the MCP-formatted message, e.g. "[RATE_LIMITED] ...". */
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Response for a retired space (no sensors, and archived or with its
+ * sensors removed) that was not redirected to a replacement: no live
+ * busyness (`current: null`), pointing at the occupancy tools for its
+ * history and listing any successors.
+ */
+function buildRetiredResponse(
   fetched: FetchedSpace,
   spaceType: "room" | "zone",
   successors: SpaceRef[],
   warnings: string[]
 ): SpaceBusynessResponse {
   const { space } = fetched;
-  const archivedAt = space.archivedAt as string;
-  const archivedOn = formatArchiveDate(archivedAt, fetched.timezone);
+  const archivedOn = space.archivedAt
+    ? formatArchiveDate(space.archivedAt, fetched.timezone)
+    : undefined;
+  const removedOn = space.sensorsRemovedAt
+    ? formatArchiveDate(space.sensorsRemovedAt, fetched.timezone)
+    : undefined;
+  const when = archivedOn
+    ? `was archived on ${archivedOn}`
+    : `had its sensors removed on ${removedOn}`;
   const successorText =
     successors.length > 0
       ? ` It was replaced by ${successors.map(describeSpaceRef).join(", ")}; query ${successors.length === 1 ? "that space" : "one of those"} for live busyness.`
@@ -269,15 +299,16 @@ function buildArchivedResponse(
       name: space.name,
       type: spaceType,
       path: fetched.path,
-      archived_at: archivedAt,
+      ...(space.archivedAt ? { archived_at: space.archivedAt } : {}),
       ...(successors.length > 0 ? { replaced_by: successors } : {}),
     },
     current: null,
-    recommendation: `This ${spaceType} was archived on ${archivedOn} and has no live busyness.${successorText}`,
+    recommendation: `This ${spaceType} ${when}, has no sensors assigned and has no live busyness.${successorText}`,
     history_note:
-      `Archived on ${archivedOn}. Its recorded history can end earlier than that: ` +
-      `butlr_get_occupancy_timeseries and butlr_get_current_occupancy return the last recorded day as history_end for ${space.id}.`,
-    summary: `${space.name} is archived (since ${archivedOn}) and has no live occupancy.`,
+      `No live data. The last full day of its recorded history comes back as history_end from ` +
+      `butlr_get_occupancy_timeseries and butlr_get_current_occupancy for ${space.id}; it is no later than ` +
+      `the day before ${archivedOn ? "the archive date" : "its sensors were removed"}, and can be much earlier.`,
+    summary: `${space.name} ${archivedOn ? `is archived (since ${archivedOn})` : `has had no sensors since ${removedOn}`} and has no live occupancy.`,
     timestamp: new Date().toISOString(),
   };
   if (warnings.length > 0) response.warning = warnings.join(" ");
@@ -293,8 +324,8 @@ export async function executeSpaceBusyness(
   let spaceId = args.space_id_or_name;
   let spaceType: "room" | "zone" = "room";
   const warnings: string[] = [];
-  // Successors of the best name match, from the search result.
-  let searchSuccessors: SpaceRef[] | undefined;
+  // The best name match as the search saw it (archive state, successors).
+  let searchMatch: { archived_at?: string; replaced_by?: SpaceRef[] } | undefined;
 
   // If not an ID, search for the space
   if (!spaceId.match(/^(room|zone)_/)) {
@@ -318,7 +349,7 @@ export async function executeSpaceBusyness(
     const bestMatch = searchResults.matches[0];
     spaceId = bestMatch.id;
     spaceType = bestMatch.type as "room" | "zone";
-    searchSuccessors = bestMatch.replaced_by ?? [];
+    searchMatch = bestMatch;
 
     debug("space-busyness", `Using best match: ${bestMatch.name} (${spaceId})`);
   } else {
@@ -328,14 +359,15 @@ export async function executeSpaceBusyness(
 
   let fetched = await fetchSpace(spaceType, spaceId);
 
-  // An archived space is retired: no live busyness, whether or not sensors
-  // are still attributed. Follow its replacement only when that is
-  // unambiguous: exactly one successor, itself not archived. A split
-  // (several successors) or an archived successor returns the archived space
-  // itself, flagged, with its successors listed.
-  if (fetched.space.archivedAt) {
-    const archived = fetched;
-    const { refs, known } = await findSuccessors(spaceId, searchSuccessors);
+  // A retired space (no sensors attributed, and archived or with its sensors
+  // removed; shared rule `isRetired`) has no live busyness. Follow its
+  // replacement only when that is unambiguous: exactly one successor, and
+  // that successor is not retired itself. A split, a retired successor, or
+  // one that cannot be loaded returns the retired space, with successors
+  // listed. An archived space that still has sensors is read live.
+  if (isRetired(fetched.space, attributedCount(fetched.space))) {
+    const retired = fetched;
+    const { refs, known } = await findSuccessors(spaceId, searchMatch);
     if (!known) {
       warnings.push("Could not look up this space's replacements; it may have been replaced.");
     }
@@ -345,27 +377,38 @@ export async function executeSpaceBusyness(
         successor = await fetchSpace(spaceType, refs[0].id);
       } catch (error: unknown) {
         debug("space-busyness", "Could not load the replacement:", error);
+        warnings.push(
+          `Could not load its replacement ${describeSpaceRef(refs[0])}: ${errorText(error)}`
+        );
       }
-      if (successor && !successor.space.archivedAt) {
+      if (successor && !isRetired(successor.space, attributedCount(successor.space))) {
         fetched = successor;
         spaceId = successor.space.id;
         warnings.push(
-          `"${archived.space.name}" (${archived.space.id}) is archived; showing its replacement ${describeSpaceRef(toSpaceRef(successor.space.id, successor.space))}.`
+          `"${retired.space.name}" (${retired.space.id}) is ${retired.space.archivedAt ? "archived" : "retired"}; showing its replacement ${describeSpaceRef(toSpaceRef(successor.space.id, successor.space))}.`
         );
-      } else if (successor?.space.archivedAt) {
-        // The topology said the successor was active, but it is archived
-        // now: list it as an archived successor, don't follow it.
-        refs[0] = { ...refs[0], archived_at: successor.space.archivedAt };
+      } else if (successor) {
+        // The search/topology said the successor was active, but it is
+        // retired now: list it as such, don't follow it.
+        refs[0] = {
+          ...refs[0],
+          ...(successor.space.archivedAt ? { archived_at: successor.space.archivedAt } : {}),
+        };
       }
     }
-    if (fetched === archived) {
-      if (archived.timezoneFallback) {
+    if (fetched === retired) {
+      if (retired.timezoneFallback) {
         warnings.push(
-          `Could not determine site timezone for this space. Using ${archived.timezone} as fallback for the archive date.`
+          `Could not determine site timezone for this space. Using ${retired.timezone} as fallback for dates.`
         );
       }
-      return buildArchivedResponse(archived, spaceType, refs, warnings);
+      return buildRetiredResponse(retired, spaceType, refs, warnings);
     }
+  } else if (fetched.space.archivedAt) {
+    const n = attributedCount(fetched.space);
+    warnings.push(
+      `"${fetched.space.name}" was archived on ${formatArchiveDate(fetched.space.archivedAt, fetched.timezone)} but still has ${n} sensor${n === 1 ? "" : "s"} attributed (a data-integrity issue), so it is read live.`
+    );
   }
 
   const space = fetched.space;

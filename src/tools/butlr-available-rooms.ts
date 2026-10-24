@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { apolloClient } from "../clients/graphql-client.js";
 import { queryWithArchiveFallback } from "../clients/archive-fallback.js";
 import { SPACE_ARCHIVE_FIELDS } from "../clients/queries/archive-fields.js";
-import { isArchived } from "../utils/archived-spaces.js";
+import { isRetired } from "../utils/archived-spaces.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
 import type { Room, Building, Floor } from "../clients/types.js";
@@ -147,6 +147,9 @@ const GET_ROOMS_BY_FLOOR = gql`
         coordinates
         customID
         ${SPACE_ARCHIVE_FIELDS}
+        sensors {
+          id
+        }
       }
       building {
         id
@@ -183,6 +186,9 @@ const GET_ROOMS_BY_BUILDING = gql`
           coordinates
           customID
           ${SPACE_ARCHIVE_FIELDS}
+          sensors {
+            id
+          }
         }
       }
     }
@@ -208,6 +214,9 @@ export const GET_ROOMS_BY_TAG = gql`
         coordinates
         customID
         ${SPACE_ARCHIVE_FIELDS}
+        sensors {
+          id
+        }
         floor {
           id
           name
@@ -253,6 +262,9 @@ const GET_ALL_ROOMS = gql`
               coordinates
               customID
               ${SPACE_ARCHIVE_FIELDS}
+              sensors {
+                id
+              }
             }
           }
         }
@@ -471,10 +483,12 @@ export async function executeAvailableRooms(
     throw error;
   }
 
-  // Archived rooms are retired: never "available", and out of the room
-  // counts below (building_context.total_rooms / occupancy_percent), where
-  // their missing live reading would otherwise count them as occupied.
-  rooms = rooms.filter((r) => !isArchived(r));
+  // Retired rooms (no sensors attributed, and archived or with their
+  // sensors removed; shared rule `isRetired`) are never "available", and
+  // stay out of the room counts below (building_context.total_rooms /
+  // occupancy_percent), where their missing live reading would otherwise
+  // count them as occupied. An archived room that still has sensors is live.
+  rooms = rooms.filter((r) => !isRetired(r, (r.sensors ?? []).length));
 
   debug("available-rooms", `Found ${rooms.length} rooms before filtering`);
 

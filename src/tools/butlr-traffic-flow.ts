@@ -26,6 +26,7 @@ import {
 } from "../utils/occupancy-helpers.js";
 import { detectAssetType } from "../utils/asset-helpers.js";
 import { debug } from "../utils/debug.js";
+import { findSpace, formatArchiveDate, isRetired } from "../utils/archived-spaces.js";
 import type { TrafficFlowResponse } from "../types/responses.js";
 
 const timeStringSchema = z.string().refine(
@@ -308,6 +309,20 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     timezone = resolved.timezone;
     timezoneFallback = resolved.isFallback;
     tzMetadata = buildTimezoneMetadata(timezone);
+
+    // A retired room (no sensors attributed, and archived or with its
+    // sensors removed; shared rule `isRetired`) has no live traffic. Say so
+    // rather than "does not have traffic-mode sensors". An archived room that
+    // still has sensors is read live like any other.
+    const topologyRoom = findSpace(topology.floors, "room", spaceId);
+    if (isRetired(topologyRoom, roomSensorRows.length)) {
+      const when = topologyRoom?.archivedAt
+        ? `was archived on ${formatArchiveDate(topologyRoom.archivedAt, timezone)}`
+        : `had its sensors removed on ${formatArchiveDate(topologyRoom?.sensorsRemovedAt ?? "", timezone)}`;
+      throw new Error(
+        `Room "${room.name}" ${when} and has no sensors, so it has no live traffic. Use butlr_get_occupancy_timeseries for its recorded history.`
+      );
+    }
 
     const roomSensors = roomSensorRows.filter((s) => !isKnownTestSensor(s));
     // Room-level traffic counts every traffic-mode sensor bound to the room.

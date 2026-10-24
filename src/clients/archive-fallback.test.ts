@@ -1,25 +1,31 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { gql } from "@apollo/client";
 import { print } from "graphql";
-import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import { CombinedGraphQLErrors, ServerError } from "@apollo/client/errors";
 import { apolloClient } from "./graphql-client.js";
 import {
-  SPACE_FIELD_RECHECK_MS,
   SPACE_FIELD_SCHEMA_QUERY,
   checkSpaceFieldSupport,
-  primeSpaceFieldSupport,
+  isValidationFailure,
   queryWithArchiveFallback,
-  resetSpaceFieldSupport,
-  stripArchiveFields,
   stripFields,
 } from "./archive-fallback.js";
-import { SPACE_FIELD_FAILURE_RECHECK_MS } from "./space-field-support.js";
+import {
+  freshSpaceFieldSupport,
+  primeSpaceFieldSupport,
+  resetSpaceFieldSupport,
+} from "./space-field-support.js";
+import { SPACE_ARCHIVE_FIELD_NAMES } from "./queries/archive-fields.js";
 
 vi.mock("./graphql-client.js", () => ({
   apolloClient: {
     query: vi.fn(),
   },
 }));
+
+const HOUR_MS = 60 * 60 * 1000;
+const FIVE_MIN_MS = 5 * 60 * 1000;
+const ALL = ["archivedAt", "replacesID", "sensorsRemovedAt"];
 
 const QUERY = gql`
   query Rooms {
@@ -42,12 +48,32 @@ function schema(roomFields: string[], zoneFields: string[] = roomFields) {
   return { data: { room: { fields: fields(roomFields) }, zone: { fields: fields(zoneFields) } } };
 }
 
-/** apolloClient.query answers the schema check with `check`, everything else with OK. */
-function mockApi(check: unknown) {
+/** What the API answers a document that selects a field its schema lacks. */
+function validationError() {
+  return new CombinedGraphQLErrors({
+    errors: [
+      {
+        message: 'Cannot query field "archivedAt" on type "Room".',
+        extensions: { code: "GRAPHQL_VALIDATION_FAILED" },
+      },
+    ],
+  });
+}
+
+/**
+ * apolloClient.query answers the schema check with `check`, a query that
+ * still selects optional fields with `full`, and anything else with OK.
+ */
+function mockApi(check: unknown, full: unknown = OK) {
   vi.mocked(apolloClient.query).mockImplementation((async (opts: { query: unknown }) => {
     if (opts.query === SPACE_FIELD_SCHEMA_QUERY) {
       if (check instanceof Error) throw check;
       return check;
+    }
+    const body = print(opts.query as never);
+    if (/archivedAt|replacesID|sensorsRemovedAt/.test(body)) {
+      if (full instanceof Error) throw full;
+      return full;
     }
     return OK;
   }) as never);
@@ -67,7 +93,12 @@ function schemaChecks(): number {
     .mock.calls.filter((c) => c[0].query === SPACE_FIELD_SCHEMA_QUERY).length;
 }
 
-describe("stripFields / stripArchiveFields", () => {
+/** Let background (stale-while-revalidate) checks settle. */
+async function flush() {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+}
+
+describe("stripFields", () => {
   it("removes the named fields at every depth and keeps everything else", () => {
     const doc = gql`
       query Topo($id: ID!) {
@@ -90,8 +121,7 @@ describe("stripFields / stripArchiveFields", () => {
         }
       }
     `;
-    const printed = print(stripArchiveFields(doc));
-    expect(printed).not.toMatch(/archivedAt|replacesID|sensorsRemovedAt/);
+    const printed = print(stripFields(doc, SPACE_ARCHIVE_FIELD_NAMES));
     expect(printed).toBe(
       print(gql`
         query Topo($id: ID!) {
@@ -111,7 +141,6 @@ describe("stripFields / stripArchiveFields", () => {
         }
       `)
     );
-    // Only the named field goes.
     const onlyRemoval = print(stripFields(doc, ["sensorsRemovedAt"]));
     expect(onlyRemoval).toMatch(/archivedAt/);
     expect(onlyRemoval).not.toMatch(/sensorsRemovedAt/);
@@ -120,7 +149,7 @@ describe("stripFields / stripArchiveFields", () => {
   });
 
   it("is memoized per document and field set, and a no-op for no fields", () => {
-    expect(stripArchiveFields(QUERY)).toBe(stripArchiveFields(QUERY));
+    expect(stripFields(QUERY, ALL)).toBe(stripFields(QUERY, ALL));
     expect(stripFields(QUERY, ["replacesID", "archivedAt"])).toBe(
       stripFields(QUERY, ["archivedAt", "replacesID"])
     );
@@ -128,9 +157,32 @@ describe("stripFields / stripArchiveFields", () => {
   });
 });
 
+describe("isValidationFailure", () => {
+  it("keys on GRAPHQL_VALIDATION_FAILED, parsed or in a raw body", () => {
+    expect(isValidationFailure(validationError())).toBe(true);
+    const body = JSON.stringify({
+      errors: [{ message: "x", extensions: { code: "GRAPHQL_VALIDATION_FAILED" } }],
+    });
+    expect(
+      isValidationFailure(
+        new ServerError("Response not successful: Received status code 422", {
+          response: new Response(body, { status: 422 }),
+          bodyText: body,
+        })
+      )
+    ).toBe(true);
+    expect(
+      isValidationFailure(new CombinedGraphQLErrors({ errors: [{ message: "Internal error" }] }))
+    ).toBe(false);
+    expect(isValidationFailure(new Error("Network timeout"))).toBe(false);
+  });
+});
+
 describe("schema check", () => {
   beforeEach(() => {
     resetSpaceFieldSupport();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-23T12:00:00Z"));
   });
 
   afterEach(() => {
@@ -138,7 +190,7 @@ describe("schema check", () => {
   });
 
   it("keeps a field only when both Room and Zone have it", async () => {
-    mockApi(schema(["archivedAt", "replacesID", "sensorsRemovedAt"], ["archivedAt", "replacesID"]));
+    mockApi(schema(ALL, ["archivedAt", "replacesID"]));
 
     const result = await queryWithArchiveFallback(QUERY);
 
@@ -150,7 +202,7 @@ describe("schema check", () => {
   });
 
   it("sends the query as written when the API has every field", async () => {
-    mockApi(schema(["archivedAt", "replacesID", "sensorsRemovedAt"]));
+    mockApi(schema(ALL));
 
     const result = await queryWithArchiveFallback(QUERY, { id: "x" });
 
@@ -164,40 +216,69 @@ describe("schema check", () => {
 
     const result = await queryWithArchiveFallback(QUERY);
 
-    expect(result.omittedFields).toEqual(["archivedAt", "replacesID", "sensorsRemovedAt"]);
+    expect(result.omittedFields).toEqual(ALL);
     expect(sentQueries()[0]).not.toMatch(/archivedAt|replacesID|sensorsRemovedAt/);
   });
 
-  it("checks the schema once, shares an in-flight check, and re-checks hourly", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-10-23T12:00:00Z"));
+  it("checks once, shares an in-flight check, and re-checks after an hour in the background", async () => {
     mockApi(schema([]));
 
     await Promise.all([queryWithArchiveFallback(QUERY), queryWithArchiveFallback(QUERY)]);
     await queryWithArchiveFallback(QUERY);
     expect(schemaChecks()).toBe(1);
 
-    // The API deploys; an hour later the check runs again and sees it.
-    mockApi(schema(["archivedAt", "replacesID", "sensorsRemovedAt"]));
-    vi.setSystemTime(new Date(Date.now() + SPACE_FIELD_RECHECK_MS + 1));
-    const later = await queryWithArchiveFallback(QUERY);
+    // 59 minutes later the answer is still fresh.
+    vi.setSystemTime(new Date(Date.now() + HOUR_MS - 60_000));
+    await queryWithArchiveFallback(QUERY);
+    expect(schemaChecks()).toBe(1);
 
+    // The API deploys. Past the hour, the stale answer still serves this
+    // call while the re-check runs; the next call sees the new fields.
+    mockApi(schema(ALL));
+    vi.setSystemTime(new Date(Date.now() + 2 * 60_000));
+    const during = await queryWithArchiveFallback(QUERY);
+    expect(during.omittedFields).toEqual(ALL);
+    await flush();
     expect(schemaChecks()).toBe(2);
-    expect(later.omittedFields).toEqual([]);
+    const after = await queryWithArchiveFallback(QUERY);
+    expect(after.omittedFields).toEqual([]);
   });
 
-  it("strips everything when the check fails, and retries the check after a few minutes", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-10-23T12:00:00Z"));
-    mockApi(new Error("introspection disabled"));
+  it("with no good answer yet, a failed check strips everything and retries in 5 minutes", async () => {
+    mockApi(new Error("introspection unavailable"));
 
     const first = await queryWithArchiveFallback(QUERY);
-    expect(first.omittedFields).toHaveLength(3);
+    expect(first.omittedFields).toEqual(ALL);
 
-    mockApi(schema(["archivedAt", "replacesID", "sensorsRemovedAt"]));
-    vi.setSystemTime(new Date(Date.now() + SPACE_FIELD_FAILURE_RECHECK_MS + 1));
+    mockApi(schema(ALL));
+    vi.setSystemTime(new Date(Date.now() + FIVE_MIN_MS + 1));
+    // No confirmed answer to serve stale, so this call waits for the check.
     const second = await queryWithArchiveFallback(QUERY);
     expect(second.omittedFields).toEqual([]);
+  });
+
+  it("a failed re-check keeps the last good answer instead of switching archive handling off", async () => {
+    mockApi(schema(ALL));
+    await queryWithArchiveFallback(QUERY);
+
+    mockApi(new Error("503 Service Unavailable"));
+    vi.setSystemTime(new Date(Date.now() + HOUR_MS + 1));
+    await checkSpaceFieldSupport();
+
+    expect(freshSpaceFieldSupport()).toEqual(new Set(ALL));
+    const result = await queryWithArchiveFallback(QUERY);
+    expect(result.omittedFields).toEqual([]);
+  });
+
+  it("gives the check its own timeout", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.mocked(apolloClient.query).mockImplementation((() => new Promise(() => undefined)) as never);
+
+    const check = checkSpaceFieldSupport();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(check).resolves.toEqual(new Set());
   });
 
   it("treats a check answered with GraphQL errors as a failure", async () => {
@@ -208,18 +289,54 @@ describe("schema check", () => {
 
     await expect(checkSpaceFieldSupport()).resolves.toEqual(new Set());
   });
+});
 
-  it("returns errors from the main query unchanged", async () => {
+describe("validation-failure retry", () => {
+  it("drops a cached 'supported' answer and retries once stripped when the API rejects the fields", async () => {
+    // The check said yes (a new task), but this query lands on an old task.
+    primeSpaceFieldSupport();
+    mockApi(schema(ALL), { data: undefined, error: validationError() });
+
+    const result = await queryWithArchiveFallback(QUERY);
+
+    expect(result.error).toBeUndefined();
+    expect(result.data).toEqual(OK.data);
+    expect(result.omittedFields).toEqual(ALL);
+    const sent = sentQueries();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).not.toMatch(/archivedAt|replacesID|sensorsRemovedAt/);
+    // The answer was dropped, so the next query re-checks the schema.
+    expect(freshSpaceFieldSupport()).toBeUndefined();
+  });
+
+  it("also retries when the rejection is thrown", async () => {
+    primeSpaceFieldSupport();
+    mockApi(schema(ALL), validationError());
+
+    const result = await queryWithArchiveFallback(QUERY);
+    expect(result.omittedFields).toEqual(ALL);
+  });
+
+  it("does not retry when nothing optional was selected, or for other errors", async () => {
+    primeSpaceFieldSupport([]);
+    vi.mocked(apolloClient.query).mockResolvedValue({
+      data: undefined,
+      error: validationError(),
+    } as never);
+    const stripped = await queryWithArchiveFallback(QUERY);
+    expect(stripped.error).toBeDefined();
+    expect(sentQueries()).toHaveLength(1);
+
+    vi.mocked(apolloClient.query).mockClear();
     primeSpaceFieldSupport();
     const partial = {
       data: undefined,
       error: new CombinedGraphQLErrors({ errors: [{ message: "boom" }] }),
     };
     vi.mocked(apolloClient.query).mockResolvedValue(partial as never);
-
     const result = await queryWithArchiveFallback(QUERY);
     expect(result.error).toBe(partial.error);
-    expect(result.omittedFields).toEqual([]);
+    expect(sentQueries()).toHaveLength(1);
 
     vi.mocked(apolloClient.query).mockRejectedValue(new Error("Network timeout"));
     await expect(queryWithArchiveFallback(QUERY)).rejects.toThrow("Network timeout");

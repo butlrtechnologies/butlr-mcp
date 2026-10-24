@@ -5,7 +5,7 @@ import { executeAvailableRooms, GET_ROOMS_BY_TAG } from "../../butlr-available-r
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
 import { loadGraphQLFixture } from "../../../__mocks__/apollo-client.js";
-import { primeSpaceFieldSupport } from "../../../clients/archive-fallback.js";
+import { primeSpaceFieldSupport } from "../../../clients/space-field-support.js";
 
 // Mock the clients
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -635,9 +635,7 @@ describe("butlr_available_rooms - Integration", () => {
   });
 
   describe("archived rooms", () => {
-    beforeEach(() => {
-      primeSpaceFieldSupport();
-    });
+    beforeEach(() => {});
 
     function buildingWithArchivedRoom(opts?: { withArchiveFields?: boolean }) {
       const withArchiveFields = opts?.withArchiveFields ?? true;
@@ -677,6 +675,39 @@ describe("butlr_available_rooms - Integration", () => {
         },
       };
     }
+
+    it("keeps an archived room that still has sensors (live, per E4) in the listing and counts", async () => {
+      const building = buildingWithArchivedRoom();
+      (building.building.floors[0].rooms[2] as any).sensors = [{ id: "sensor_1" }];
+      vi.mocked(apolloClient.query).mockResolvedValue({ data: building } as any);
+      vi.mocked(reportingClient.getCurrentOccupancy).mockImplementation(async (_type, ids) =>
+        ids.map((id) => ({
+          start: "2026-10-23T00:00:00Z",
+          measurement: "room_occupancy",
+          value: 0,
+          asset_id: id,
+        }))
+      );
+
+      const result = await executeAvailableRooms({ building_id: "building_arch" });
+
+      expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toHaveLength(3);
+      expect(result.building_context?.total_rooms).toBe(3);
+    });
+
+    it("leaves out a room retired by sensorsRemovedAt alone", async () => {
+      const building = buildingWithArchivedRoom({ withArchiveFields: false });
+      (building.building.floors[0].rooms[2] as any).sensorsRemovedAt = "2026-10-21T01:30:00Z";
+      vi.mocked(apolloClient.query).mockResolvedValue({ data: building } as any);
+      vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([]);
+
+      await executeAvailableRooms({ building_id: "building_arch" });
+
+      expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toEqual([
+        "room_arch_free",
+        "room_arch_busy",
+      ]);
+    });
 
     it("never lists an archived room and leaves it out of the building's room count", async () => {
       vi.mocked(apolloClient.query).mockResolvedValue({ data: buildingWithArchivedRoom() } as any);

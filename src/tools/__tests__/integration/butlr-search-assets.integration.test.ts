@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeSearchAssets } from "../../butlr-search-assets.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
-import { topologyCache } from "../../../cache/topology-cache.js";
-import { GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY } from "../../../clients/queries/topology.js";
-import { primeSpaceFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
+import {
+  getCachedTopology,
+  mergedTopologyCacheKey,
+  topologyCache,
+} from "../../../cache/topology-cache.js";
+import { GET_FULL_TOPOLOGY } from "../../../clients/queries/topology.js";
+import { stripFields } from "../../../clients/archive-fallback.js";
+import { primeSpaceFieldSupport } from "../../../clients/space-field-support.js";
+import { SPACE_ARCHIVE_FIELD_NAMES } from "../../../clients/queries/archive-fields.js";
 
 // What the fallback sends to an API without the archive fields.
-const GET_FULL_TOPOLOGY_LEGACY = stripArchiveFields(GET_FULL_TOPOLOGY);
+const GET_FULL_TOPOLOGY_LEGACY = stripFields(GET_FULL_TOPOLOGY, SPACE_ARCHIVE_FIELD_NAMES);
 
 vi.mock("../../../clients/graphql-client.js", () => ({
   apolloClient: {
@@ -336,7 +342,6 @@ describe("butlr_search_assets - archived spaces", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     topologyCache.clear();
-    primeSpaceFieldSupport();
   });
 
   it("finds an archived room by its old name and labels it", async () => {
@@ -364,12 +369,16 @@ describe("butlr_search_assets - archived spaces", () => {
 
     const v2 = await executeSearchAssets({ query: "Huddle_V2", max_results: 5 });
     const match = v2.matches.find((m) => m.id === "room_v2");
-    expect(match?.replaces_id).toBe("room_old");
+    expect(match?.replaces).toEqual({
+      id: "room_old",
+      name: "Pilot - Drop In",
+      archived_at: "2026-10-21T01:30:00Z",
+    });
     expect(match?.path).not.toMatch(/archived/);
     expect(match).not.toHaveProperty("archived_at");
   });
 
-  it("strips the fields when the API lacks them, and does not cache that tree", async () => {
+  it("strips the fields when the API lacks them, and caches that tree under its own key", async () => {
     mockFloor7({ apiHasArchiveFields: false });
 
     const result = await executeSearchAssets({ query: "Pilot - Drop In", max_results: 5 });
@@ -379,6 +388,9 @@ describe("butlr_search_assets - archived spaces", () => {
     const match = result.matches.find((m) => m.id === "room_old");
     expect(match?.path).toBe("Indy / Tower / Floor 07 / Pilot - Drop In");
     expect(match).not.toHaveProperty("archived_at");
-    expect(topologyCache.size).toBe(0);
+    // Cached under the stripped field set's own key, never served once the
+    // API has the fields.
+    expect(getCachedTopology(mergedTopologyCacheKey([]))).toBeUndefined();
+    expect(getCachedTopology(mergedTopologyCacheKey(SPACE_ARCHIVE_FIELD_NAMES))).toBeDefined();
   });
 });
