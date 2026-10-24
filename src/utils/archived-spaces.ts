@@ -22,9 +22,26 @@ export interface SpaceRef {
   archived_at?: string;
 }
 
-/** Whether a room or zone is archived. Absent/null `archivedAt` = active. */
-export function isArchived(space: ArchivableSpace | null | undefined): boolean {
-  return Boolean(space?.archivedAt);
+/**
+ * Whether a room or zone is RETIRED: no sensors attributed (of any kind) AND
+ * archived or with its sensors removed (`sensorsRemovedAt`, API #3038).
+ * A retired space is never read live and gets a history view. Sensors
+ * present means live, whatever a stale `archivedAt`/`sensorsRemovedAt`
+ * says (contract Addendum 3, E4). Every tool decides with this one rule.
+ *
+ * `attributedSensorCount` counts every attributed sensor row, test/mirror
+ * and MAC-less ones included. Pass `undefined` when the caller could not
+ * count them; that is treated as "has sensors" (live).
+ */
+export function isRetired(
+  space: ArchivableSpace | null | undefined,
+  attributedSensorCount: number | undefined
+): boolean {
+  return (
+    Boolean(space) &&
+    attributedSensorCount === 0 &&
+    (Boolean(space?.archivedAt) || Boolean(space?.sensorsRemovedAt))
+  );
 }
 
 /**
@@ -66,26 +83,17 @@ export function findSpace(
   return undefined;
 }
 
-/** Spaces of the same kind whose `replacesID` points at `id` (a split yields several). */
-export function findReplacements(
-  floors: Floor[],
-  kind: "room" | "zone",
-  id: string
-): Array<Room | Zone> {
-  const out: Array<Room | Zone> = [];
-  for (const floor of floors) {
-    const list: Array<Room | Zone> = (kind === "room" ? floor.rooms : floor.zones) ?? [];
-    for (const s of list) if (s.replacesID === id) out.push(s);
-  }
-  return out;
-}
+const replacementIndexCache = new WeakMap<Floor[], Map<string, Array<Room | Zone>>>();
 
 /**
  * Every room and zone that replaced another, keyed by the replaced space's
- * ID (`replacesID`). Build it once when many spaces need their successors;
- * room and zone IDs carry their kind as a prefix, so one map serves both.
+ * ID (`replacesID`); a split yields several. Room and zone IDs carry their
+ * kind as a prefix, so one map serves both. Memoized per `floors` array, so
+ * callers can look successors up per space without re-walking the topology.
  */
 export function indexReplacements(floors: Floor[]): Map<string, Array<Room | Zone>> {
+  const cached = replacementIndexCache.get(floors);
+  if (cached) return cached;
   const index = new Map<string, Array<Room | Zone>>();
   for (const floor of floors) {
     for (const s of [...(floor.rooms ?? []), ...(floor.zones ?? [])]) {
@@ -95,6 +103,7 @@ export function indexReplacements(floors: Floor[]): Map<string, Array<Room | Zon
       index.set(s.replacesID, list);
     }
   }
+  replacementIndexCache.set(floors, index);
   return index;
 }
 

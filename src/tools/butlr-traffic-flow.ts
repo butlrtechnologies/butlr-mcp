@@ -3,7 +3,7 @@ import { apolloClient } from "../clients/graphql-client.js";
 import { gql } from "@apollo/client";
 import { z } from "zod";
 import type { Room, Sensor } from "../clients/types.js";
-import { ReportingRequestBuilder } from "../clients/reporting-client.js";
+import { ApiError, ReportingRequestBuilder } from "../clients/reporting-client.js";
 import { executeSearchAssets } from "./butlr-search-assets.js";
 import {
   getTimezoneForAsset,
@@ -26,6 +26,7 @@ import {
 } from "../utils/occupancy-helpers.js";
 import { detectAssetType } from "../utils/asset-helpers.js";
 import { debug } from "../utils/debug.js";
+import { findSpace, formatArchiveDate, isRetired } from "../utils/archived-spaces.js";
 import type { TrafficFlowResponse } from "../types/responses.js";
 
 const timeStringSchema = z.string().refine(
@@ -309,6 +310,20 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     timezoneFallback = resolved.isFallback;
     tzMetadata = buildTimezoneMetadata(timezone);
 
+    // A retired room (no sensors attributed, and archived or with its
+    // sensors removed; shared rule `isRetired`) has no live traffic. Say so
+    // rather than "does not have traffic-mode sensors". An archived room that
+    // still has sensors is read live like any other.
+    const topologyRoom = findSpace(topology.floors, "room", spaceId);
+    if (isRetired(topologyRoom, roomSensorRows.length)) {
+      const when = topologyRoom?.archivedAt
+        ? `was archived on ${formatArchiveDate(topologyRoom.archivedAt, timezone)}`
+        : `had its sensors removed on ${formatArchiveDate(topologyRoom?.sensorsRemovedAt ?? "", timezone)}`;
+      throw new Error(
+        `Room "${room.name}" ${when} and has no sensors, so it has no live traffic. Use butlr_get_occupancy_timeseries for its recorded history.`
+      );
+    }
+
     const roomSensors = roomSensorRows.filter((s) => !isKnownTestSensor(s));
     // Room-level traffic counts every traffic-mode sensor bound to the room.
     // See `resolveAssetContext` in occupancy-helpers.ts for the canonical
@@ -378,8 +393,11 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
   // Resolve relative forms ("-20m", "now") to absolute timestamps: the
   // ETL-backed reporting API requires RFC3339, and the response period
   // metadata should carry real timestamps rather than relative strings.
-  start = resolveTimeToIso(start);
-  stop = resolveTimeToIso(stop);
+  // One clock read for both ends, so "-2h".."now" is exactly two hours and
+  // picks the 1m window, not 1h because of a tick between two reads.
+  const resolvedAt = new Date();
+  start = resolveTimeToIso(start, resolvedAt);
+  stop = resolveTimeToIso(stop, resolvedAt);
 
   // Pick window granularity from the range length. The ETL backend only
   // returns fully-closed, end-labeled buckets that fit inside [start, stop]:
@@ -469,6 +487,12 @@ export async function executeTrafficFlow(args: TrafficFlowArgs) {
     rethrowIfGraphQLError(error);
     debug("traffic-flow", "Failed to get traffic data:", error);
     const msg = error instanceof Error ? error.message : String(error);
+    // Keep the reporting status, so a 401/429/400 reaches the caller as
+    // AUTH_EXPIRED / RATE_LIMITED / VALIDATION_FAILED (see
+    // withToolErrorHandling) rather than INTERNAL_ERROR.
+    if (error instanceof ApiError) {
+      throw new ApiError(error.statusCode, `Failed to get traffic data for ${displayName}. ${msg}`);
+    }
     throw new Error(`Failed to get traffic data for ${displayName}. ${msg}`);
   }
 

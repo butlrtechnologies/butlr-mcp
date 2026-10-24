@@ -1,5 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { debug } from "../utils/debug.js";
+import { ApiError } from "../clients/reporting-client.js";
 
 /**
  * Wraps a tool handler to catch errors and return them as MCP tool errors
@@ -23,19 +24,51 @@ export function withToolErrorHandling(
       const stack = error instanceof Error ? error.stack : undefined;
       debug("tool-error", rawMessage, stack ?? error);
       // Already-translated errors carry the `[CODE]` prefix; preserve them.
+      // A reporting ApiError carries an HTTP status: map it, so a 400 reaches
+      // the caller as VALIDATION_FAILED rather than INTERNAL_ERROR.
       const text = /^\[[A-Z_]+\]/.test(rawMessage)
         ? rawMessage
-        : formatMCPError({
-            code: MCPErrorCode.INTERNAL_ERROR,
-            message: rawMessage || "Unknown internal error",
-            retryable: false,
-          });
+        : formatMCPError(
+            error instanceof ApiError
+              ? mcpErrorForStatus(error.statusCode, rawMessage)
+              : {
+                  code: MCPErrorCode.INTERNAL_ERROR,
+                  message: rawMessage || "Unknown internal error",
+                  retryable: false,
+                }
+          );
       return {
         content: [{ type: "text" as const, text }],
         isError: true,
       };
     }
   };
+}
+
+/**
+ * MCP error for an HTTP status from a REST client (reporting, stats).
+ */
+export function mcpErrorForStatus(statusCode: number, message: string): MCPError {
+  if (statusCode === 401 || statusCode === 403) {
+    return { code: MCPErrorCode.AUTH_EXPIRED, message, retryable: false };
+  }
+  if (statusCode === 429) {
+    return { code: MCPErrorCode.RATE_LIMITED, message, retryable: true };
+  }
+  if (statusCode === 408) {
+    // Request timeout: transient, worth a retry.
+    return { code: MCPErrorCode.NETWORK_ERROR, message, retryable: true };
+  }
+  if (statusCode === 404) {
+    return { code: MCPErrorCode.NOT_FOUND, message, retryable: false };
+  }
+  if (statusCode >= 400 && statusCode < 500) {
+    return { code: MCPErrorCode.VALIDATION_FAILED, message, retryable: false };
+  }
+  if (statusCode >= 500) {
+    return { code: MCPErrorCode.NETWORK_ERROR, message, retryable: true };
+  }
+  return { code: MCPErrorCode.INTERNAL_ERROR, message, retryable: false };
 }
 
 /**

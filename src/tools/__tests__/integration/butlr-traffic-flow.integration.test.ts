@@ -200,6 +200,80 @@ describe("butlr_traffic_flow - Integration", () => {
       expect(Array.isArray(result.hourly_breakdown)).toBe(true);
     });
 
+    it("keeps the reporting status when the traffic query fails (401 -> AUTH_EXPIRED)", async () => {
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: MOCK_TOPOLOGY } as any);
+        }
+        if (queryString.includes("GetSensorsByIds")) {
+          return Promise.resolve({
+            data: {
+              sensors: {
+                data: [
+                  {
+                    id: "sensor_direct",
+                    name: "N. Elevator",
+                    mac_address: "aa:bb:cc:dd:ee:01",
+                    mode: "traffic",
+                    room_id: "room_test",
+                    floor_id: "floor_test",
+                  },
+                ],
+              },
+            },
+          } as any);
+        }
+        return Promise.reject(new Error("Unknown query"));
+      });
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockRejectedValue(
+        new reportingClient.ApiError(401, "Authentication failed.")
+      );
+
+      const error = await executeTrafficFlow({
+        space_id_or_name: "sensor_direct",
+        time_window: "1h",
+      }).catch((e) => e);
+      expect(error).toBeInstanceOf(reportingClient.ApiError);
+      expect(error.statusCode).toBe(401);
+      expect(error.message).toMatch(/Failed to get traffic data for N\. Elevator/);
+    });
+
+    it("explains that a retired room has no live traffic", async () => {
+      const topology = structuredClone(MOCK_TOPOLOGY) as any;
+      topology.sites.data[0].buildings[0].floors[0].rooms[2].archivedAt = "2026-10-22T20:00:00Z";
+      vi.mocked(apolloClient.query).mockImplementation((options: any) => {
+        const queryString = options.query.loc?.source?.body || "";
+        if (queryString.includes("GetRoomSensors")) {
+          return Promise.resolve({
+            data: {
+              room: {
+                id: "room_meeting",
+                name: "Meeting Room",
+                floorID: "floor_test",
+                floor: {
+                  id: "floor_test",
+                  name: "Test Floor",
+                  building: { id: "building_test", name: "Test Building" },
+                },
+              },
+            },
+          } as any);
+        }
+        if (queryString.includes("GetFullTopology")) {
+          return Promise.resolve({ data: topology } as any);
+        }
+        if (queryString.includes("GetSensorsByRoomIds")) {
+          return Promise.resolve({ data: { sensors: { data: [] } } } as any);
+        }
+        return Promise.reject(new Error("Unknown query"));
+      });
+
+      await expect(executeTrafficFlow({ space_id_or_name: "room_meeting" })).rejects.toThrow(
+        'Room "Meeting Room" was archived on 2026-10-22 and has no sensors, so it has no live traffic.'
+      );
+    });
+
     it("validates room has traffic sensors", async () => {
       // Mock room WITHOUT traffic sensors (only presence)
       vi.mocked(apolloClient.query).mockImplementation((options: any) => {
@@ -759,6 +833,49 @@ describe("butlr_traffic_flow - Integration", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("resolves a custom range from one clock read, so exactly 2h uses 1m buckets", async () => {
+      mockGraphQLTopologyAndSensors([
+        {
+          id: "sensor_direct",
+          name: "N. Elevator",
+          mac_address: "aa:bb:cc:dd:ee:01",
+          mode: "traffic",
+          room_id: "room_test",
+          floor_id: "floor_test",
+        },
+      ]);
+      const windowSpy = vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "window");
+      vi.spyOn(reportingClient.ReportingRequestBuilder.prototype, "execute").mockResolvedValue({
+        data: [],
+      });
+      // A clock that ticks 1 ms on every read: separate reads for start and
+      // stop would make "-2h".."now" a millisecond over two hours.
+      const RealDate = Date;
+      let t = RealDate.parse("2026-10-23T12:00:00Z");
+      class TickingDate extends RealDate {
+        constructor(...args: ConstructorParameters<typeof Date>) {
+          if (args.length === 0) super(t++);
+          else super(...args);
+        }
+        static now() {
+          return t++;
+        }
+      }
+      vi.stubGlobal("Date", TickingDate);
+      try {
+        await executeTrafficFlow({
+          space_id_or_name: "sensor_direct",
+          time_window: "custom",
+          custom_start: "-2h",
+          custom_stop: "now",
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+
+      expect(windowSpy.mock.calls[0][0]).toBe("1m");
     });
 
     it("works for a traffic sensor with no room assigned", async () => {

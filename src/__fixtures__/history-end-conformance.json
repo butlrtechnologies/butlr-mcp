@@ -1,0 +1,139 @@
+{
+  "description": "Shared conformance cases for where a retired or sensorless space's recorded history ends (contract Addendum 3, E1-E4). The MCP (src/utils/__tests__/history-end.test.ts) and the dashboard (useSensorlessHistory) both run these; keep the copies identical. Rows are reporting v3 daily-max buckets labelled with their END time; a bucket labelled with `now` is today's partial bucket from the current-day composer.",
+  "historyEnd": [
+    {
+      "name": "archived room whose data stopped months before the archive",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": { "archivedAt": "2026-10-22T15:00:00Z" },
+      "rows": [
+        { "time": "2026-05-01T04:00:00Z", "value": 4 },
+        { "time": "2026-05-13T04:00:00Z", "value": 2 },
+        { "time": "2026-05-14T04:00:00Z", "value": 0 },
+        { "time": "2026-05-15T04:00:00Z", "value": 1 }
+      ],
+      "expected": { "endDay": "2026-05-13", "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "Indy Floor 7: 13 on Oct 19, 0 on Oct 20, 0 on the move day Oct 21, nothing declared",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": {},
+      "rows": [
+        { "time": "2026-10-20T04:00:00Z", "value": 13 },
+        { "time": "2026-10-21T04:00:00Z", "value": 0 },
+        { "time": "2026-10-22T04:00:00Z", "value": 0 }
+      ],
+      "expected": { "endDay": "2026-10-20", "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "archived zone that keeps receiving 0-rows (and today's partial bucket) after its move",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": { "archivedAt": "2026-10-16T20:00:00Z" },
+      "rows": [
+        { "time": "2026-10-15T04:00:00Z", "value": 6 },
+        { "time": "2026-10-16T04:00:00Z", "value": 0 },
+        { "time": "2026-10-20T04:00:00Z", "value": 0 },
+        { "time": "2026-10-23T04:00:00Z", "value": 0 },
+        { "time": "2026-10-23T16:00:00Z", "value": 0 }
+      ],
+      "expected": { "endDay": "2026-10-15", "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "sensorsRemovedAt Oct 21 on the Indy rows",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": { "sensorsRemovedAt": "2026-10-21T15:00:00Z", "archivedAt": "2026-10-23T14:00:00Z" },
+      "rows": [
+        { "time": "2026-10-20T04:00:00Z", "value": 13 },
+        { "time": "2026-10-21T04:00:00Z", "value": 0 },
+        { "time": "2026-10-22T04:00:00Z", "value": 0 }
+      ],
+      "expected": { "endDay": "2026-10-20", "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "archived today, still recording until then",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": { "archivedAt": "2026-10-23T14:00:00Z" },
+      "rows": [
+        { "time": "2026-10-22T04:00:00Z", "value": 3 },
+        { "time": "2026-10-23T04:00:00Z", "value": 2 },
+        { "time": "2026-10-23T16:00:00Z", "value": 1 }
+      ],
+      "expected": { "endDay": "2026-10-22", "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "sensorsRemovedAt Oct 21 but the rows stop Aug 31 (Aug 31 is the partial move day)",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": { "sensorsRemovedAt": "2026-10-21T15:00:00Z" },
+      "rows": [
+        { "time": "2026-08-30T04:00:00Z", "value": 5 },
+        { "time": "2026-08-31T04:00:00Z", "value": 4 },
+        { "time": "2026-09-01T04:00:00Z", "value": 0 }
+      ],
+      "expected": { "endDay": "2026-08-30", "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "archived 2025-01-10, older than the lookup window: declared end, flagged, no query",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": { "archivedAt": "2025-01-10T15:00:00Z" },
+      "rows": null,
+      "expected": { "endDay": "2025-01-09", "windowStart": "2026-04-29", "outsideWindow": true }
+    },
+    {
+      "name": "declared end but no row on or before it: no history",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": { "archivedAt": "2026-10-10T15:00:00Z" },
+      "rows": [
+        { "time": "2026-10-16T04:00:00Z", "value": 0 },
+        { "time": "2026-10-17T04:00:00Z", "value": 0 }
+      ],
+      "expected": { "endDay": null, "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "still-recording sensorless room: today's composed partial bucket makes yesterday the end",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": {},
+      "rows": [
+        { "time": "2026-10-22T04:00:00Z", "value": 2 },
+        { "time": "2026-10-23T04:00:00Z", "value": 3 },
+        { "time": "2026-10-23T16:00:00Z", "value": 1 }
+      ],
+      "expected": { "endDay": "2026-10-22", "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "sensors moved yesterday, asked today: yesterday is the partial move day",
+      "timezone": "America/Indiana/Indianapolis",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": {},
+      "rows": [
+        { "time": "2026-10-21T04:00:00Z", "value": 13 },
+        { "time": "2026-10-22T04:00:00Z", "value": 0 },
+        { "time": "2026-10-23T04:00:00Z", "value": 0 }
+      ],
+      "expected": { "endDay": "2026-10-21", "windowStart": "2026-04-29" }
+    },
+    {
+      "name": "a single recorded day ends on that day",
+      "timezone": "UTC",
+      "now": "2026-10-23T16:00:00Z",
+      "declared": {},
+      "rows": [{ "time": "2026-10-20T00:00:00Z", "value": 0 }],
+      "expected": { "endDay": "2026-10-19", "windowStart": "2026-04-29" }
+    }
+  ],
+  "retired": [
+    { "name": "zone with 2 linked sensors, sensorsRemovedAt Sep 1 (stale)", "attributedSensors": 2, "sensorsRemovedAt": "2026-09-01T12:00:00Z", "expected": false },
+    { "name": "zone with 1 linked sensor, archived Oct 1", "attributedSensors": 1, "archivedAt": "2026-10-01T12:00:00Z", "expected": false },
+    { "name": "room with 2 sensors, sensorsRemovedAt Sep 1 (stale)", "attributedSensors": 2, "sensorsRemovedAt": "2026-09-01T12:00:00Z", "expected": false },
+    { "name": "room with no sensors, archived", "attributedSensors": 0, "archivedAt": "2026-10-01T12:00:00Z", "expected": true },
+    { "name": "zone with no sensors, sensorsRemovedAt set", "attributedSensors": 0, "sensorsRemovedAt": "2026-09-01T12:00:00Z", "expected": true },
+    { "name": "room with no sensors, neither date", "attributedSensors": 0, "expected": false }
+  ]
+}

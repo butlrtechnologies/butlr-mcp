@@ -103,6 +103,7 @@ Users need edit access to Butlr Studio to create tokens. If they don't have edit
 - `BUTLR_BASE_URL` — API base URL (default: https://api.butlr.io)
 - `BUTLR_TIMEZONE` — Default timezone (default: UTC)
 - `MCP_CACHE_TOPO_TTL` — Topology cache TTL in seconds (default: 600)
+- `MCP_CACHE_HISTORY_END_TTL` — History-end probe cache TTL in whole seconds (default: 600; 0 disables)
 - `DEBUG` — Set to `butlr-mcp` for verbose logging
 
 ## Available Tools

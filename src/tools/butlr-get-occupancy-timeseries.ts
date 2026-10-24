@@ -11,14 +11,17 @@ import {
   getTrafficCoverageNote,
   buildRecommendation,
   buildSpaceLifecycle,
+  isRetiredSpace,
+  isTransientReportingError,
   isSensorlessSpace,
-  probeSensorlessHistory,
+  probeHistory,
   sensorlessCoverageNote,
   sensorlessRecommendationReason,
   type HistoryProbe,
 } from "../utils/occupancy-helpers.js";
 import { debug } from "../utils/debug.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
+import { formatLocalDate, localDayStart } from "../utils/timezone-helpers.js";
 import { withToolErrorHandling } from "../errors/mcp-errors.js";
 import type {
   OccupancyTimeseriesResponse,
@@ -31,8 +34,11 @@ const GET_OCCUPANCY_TIMESERIES_DESCRIPTION =
   "Get occupancy timeseries data for floors, rooms, or zones. Automatically queries both traffic and presence measurements, " +
   "analyzes which are available based on sensor configuration, and returns structured data with timezone context. " +
   "Single tool call provides complete occupancy picture without guessing measurement types.\n\n" +
-  "Sensorless, archived and replaced spaces: a room or zone with no sensors (archived or not; see `archived_at`) still returns the history it recorded; " +
-  "`history_end` is the last full day of that history (the day before its final, partial recorded day), which can be well before the archive date. " +
+  "Retired, sensorless and replaced spaces: a retired room or zone (no sensors, and archived (`archived_at`) or with its sensors removed) or a room with no sensors still returns the history it recorded. " +
+  "For those, `history_end` is the last full day of recorded history: the recorded day before its newest (always partial) day, and no later than the day before its sensor removal or archive date. " +
+  "When that removal or archive date is older than the 177-day lookup window, `history_end` is the day before it, not checked against the data, and `history_end_unverified` is true. " +
+  "For a retired space, points from buckets that start at or after its sensor removal (else archive) instant are dropped, since a parked space can keep receiving 0-valued rows; the removal day's earlier readings are kept. " +
+  "A zone that is not retired is treated like any other zone, even with no attributed sensors (zone occupancy can come from overlapping floor sensors), so an empty range just means no data. An archived space that still has sensors is read like an active one. " +
   "A space that replaced another carries `replaces`, and `history_note` names the predecessor's ID: series are not merged, " +
   "so query the predecessor separately for history before the switch-over.\n\n" +
   "When NOT to Use:\n" +
@@ -94,6 +100,35 @@ async function queryTimeseries(
   );
 }
 
+/** The removal instant of a retired space: `sensorsRemovedAt`, else `archivedAt`. */
+function retiredCutoff(
+  asset: ReturnType<typeof resolveAssetContext>
+): { ms: number; iso: string; what: string } | undefined {
+  const candidates: Array<[string | undefined, string]> = [
+    [asset.sensorsRemovedAt, "its sensors were removed"],
+    [asset.archivedAt, "it was archived"],
+  ];
+  for (const [at, what] of candidates) {
+    if (!at) continue;
+    const ms = Date.parse(at);
+    if (!Number.isNaN(ms)) return { ms, iso: new Date(ms).toISOString(), what };
+  }
+  return undefined;
+}
+
+/**
+ * Start of the bucket a reporting point covers. Points are labelled with
+ * their bucket's END, so a daily bucket's local day is read 1 ms before the
+ * label, and its start is that day's local midnight; hourly and minute
+ * buckets start one interval before the label.
+ */
+function bucketStartMs(timestamp: string, interval: string, timezone: string): number {
+  const end = Date.parse(timestamp);
+  if (interval === "1d")
+    return localDayStart(formatLocalDate(end - 1, timezone), timezone).getTime();
+  return end - (interval === "1h" ? 3_600_000 : 60_000);
+}
+
 async function buildPresenceData(
   asset: ReturnType<typeof resolveAssetContext>,
   assetId: string,
@@ -103,21 +138,23 @@ async function buildPresenceData(
   // sensors today can still hold history from sensors that were moved
   // elsewhere (e.g. a room superseded by a re-mapped "_V2" copy).
   const sensorCount = asset.presenceSensors.length;
-  // A sensorless space (a room with no sensors of any mode, or an ARCHIVED
-  // zone with none; see isSensorlessSpace) gets a history-end probe in
-  // parallel with the range query, and its coverage note says where its
-  // recorded history ends. A non-archived zone is never sensorless, whatever
+  let droppedNote = "";
+  // A retired space (no sensors, and archived or with sensors removed) or a
+  // sensorless room gets a history-end probe in parallel with the range
+  // query, and its coverage note says where its recorded history ends (see
+  // isRetiredSpace / isSensorlessSpace). A zone that is not retired is never probed, whatever
   // its attributed-sensor count or however empty its range: zone occupancy
-  // can come from overlapping floor sensors, so an empty range on a live
-  // zone just means no data in range.
-  const sensorless = isSensorlessSpace(asset);
+  // can come from overlapping floor sensors, so an empty range on it just
+  // means no data.
+  const probed = isRetiredSpace(asset) || isSensorlessSpace(asset);
   // A 0-presence floor, a room whose only sensors are traffic-mode, or a
   // room ID that did not resolve keeps the 0.6.2 speculative note.
-  const speculative = !sensorless && asset.assetType !== "zone" && sensorCount === 0;
-  // These lookups may well find nothing, and their failure must not take
-  // down the rest of the batch. Non-archived zones still fail the call on a
-  // 4xx as before.
-  const bestEffort = speculative || sensorless;
+  const speculative = !probed && asset.assetType !== "zone" && sensorCount === 0;
+  // These lookups may well find nothing, and a transient failure (429, 5xx,
+  // timeout) must not take down the rest of the batch. Any other 4xx is a
+  // bad request and still fails the call (VALIDATION_FAILED), as do auth
+  // errors and every error on a space with sensors.
+  const bestEffort = speculative || probed;
   const presenceData: TimeseriesMeasurementData = {
     available: !bestEffort,
     sensor_count: sensorCount,
@@ -125,7 +162,7 @@ async function buildPresenceData(
     timeseries: [],
   };
 
-  const early = sensorless ? probeSensorlessHistory(asset, assetId) : undefined;
+  const early = probed ? probeHistory(asset, assetId) : undefined;
   // Keep an auth rejection from going unhandled while the range query is in
   // flight; it is rethrown by the await below.
   early?.catch(() => undefined);
@@ -142,12 +179,15 @@ async function buildPresenceData(
     );
   } catch (error: unknown) {
     debug("occupancy-timeseries", "Presence query failed:", error);
-    // Auth failures are not asset-specific, so they still fail the call.
-    // Anything else on a best-effort lookup (429, 5xx, timeout) is reported
-    // on this asset only.
-    const isAuthError =
-      error instanceof ApiError && (error.statusCode === 401 || error.statusCode === 403);
-    if (error instanceof ApiError && error.statusCode >= 400 && (!bestEffort || isAuthError)) {
+    // On a best-effort lookup only a transient failure (429, 5xx, or a
+    // non-HTTP error such as a timeout) is reported on this asset alone;
+    // the history lookup uses the same classifier. Auth and other 4xx errors
+    // are not asset-specific luck: they still fail the call.
+    if (
+      error instanceof ApiError &&
+      error.statusCode >= 400 &&
+      (!bestEffort || !isTransientReportingError(error))
+    ) {
       throw error;
     }
     presenceData.warning =
@@ -156,12 +196,36 @@ async function buildPresenceData(
 
   const probe: HistoryProbe = early ? await early : { status: "skipped" };
 
+  // A parked space can keep receiving 0-valued rows after its sensors left
+  // (the algo still evaluates its geometry). For a retired space, drop the
+  // points from buckets that START at or after the removal instant
+  // (`sensorsRemovedAt`, else `archivedAt`): those hold no readings from
+  // while the sensors were there. A bucket that straddles the instant keeps
+  // its pre-removal readings. This uses the declared instant, not
+  // `history_end` (the last FULL day, which would also drop real readings
+  // from the partial removal day), so it applies whatever the history
+  // lookup returned, including no end or a failed lookup. A space that is
+  // not retired is never cut; a data-derived end is not a removal time.
+  if (isRetiredSpace(asset)) {
+    const cut = retiredCutoff(asset);
+    if (cut) {
+      const kept = presenceData.timeseries.filter(
+        (p) => bucketStartMs(p.timestamp, args.interval, asset.timezone) < cut.ms
+      );
+      const dropped = presenceData.timeseries.length - kept.length;
+      presenceData.timeseries = kept;
+      if (dropped > 0) {
+        droppedNote = ` Dropped ${dropped} point${dropped === 1 ? "" : "s"} from after ${cut.what} (${cut.iso}); a parked space can keep receiving 0-valued rows.`;
+      }
+    }
+  }
+
   if (bestEffort && presenceData.timeseries.length > 0) {
     presenceData.available = true;
   }
 
   if (probe.status !== "skipped") {
-    presenceData.coverage_note = sensorlessCoverageNote(asset, probe);
+    presenceData.coverage_note = sensorlessCoverageNote(asset, probe, "timeseries") + droppedNote;
     if (presenceData.warning && presenceData.timeseries.length === 0) {
       // Don't let "no data" stand when the range lookup itself failed.
       presenceData.coverage_note +=

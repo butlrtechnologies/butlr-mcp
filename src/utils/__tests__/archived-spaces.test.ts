@@ -2,10 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   archivedDisplayName,
   describeSpaceRef,
-  findReplacements,
+  indexReplacements,
   findSpace,
   formatArchiveDate,
-  isArchived,
+  isRetired,
   toSpaceRef,
 } from "../archived-spaces.js";
 import type { Floor } from "../../clients/types.js";
@@ -25,11 +25,16 @@ const floors = [
 ] as unknown as Floor[];
 
 describe("archived-spaces", () => {
-  it("treats null and absent archivedAt as active", () => {
-    expect(isArchived({ archivedAt: null })).toBe(false);
-    expect(isArchived({})).toBe(false);
-    expect(isArchived(undefined)).toBe(false);
-    expect(isArchived({ archivedAt: "2026-10-21T01:30:00Z" })).toBe(true);
+  it("retires only a space with no sensors that is archived or had its sensors removed", () => {
+    expect(isRetired({ archivedAt: null }, 0)).toBe(false);
+    expect(isRetired({}, 0)).toBe(false);
+    expect(isRetired(undefined, 0)).toBe(false);
+    expect(isRetired({ archivedAt: "2026-10-21T01:30:00Z" }, 0)).toBe(true);
+    expect(isRetired({ sensorsRemovedAt: "2026-10-21T01:30:00Z" }, 0)).toBe(true);
+    // Sensors present means live, whatever the dates say.
+    expect(isRetired({ archivedAt: "2026-10-21T01:30:00Z" }, 1)).toBe(false);
+    // Unknown sensor count is treated as live.
+    expect(isRetired({ archivedAt: "2026-10-21T01:30:00Z" }, undefined)).toBe(false);
   });
 
   it("dates the archive in the site's timezone, not UTC", () => {
@@ -55,11 +60,11 @@ describe("archived-spaces", () => {
   it("finds spaces and their replacements by kind", () => {
     expect(findSpace(floors, "room", "room_old")?.name).toBe("Pilot - Drop In");
     expect(findSpace(floors, "zone", "room_old")).toBeUndefined();
-    expect(findReplacements(floors, "room", "room_old").map((r) => r.id)).toEqual([
-      "room_v2a",
-      "room_v2b",
-    ]);
-    expect(findReplacements(floors, "zone", "room_old")).toEqual([]);
+    const index = indexReplacements(floors);
+    expect((index.get("room_old") ?? []).map((r) => r.id)).toEqual(["room_v2a", "room_v2b"]);
+    expect(index.get("zone_old")).toBeUndefined();
+    // Memoized per floors array.
+    expect(indexReplacements(floors)).toBe(index);
   });
 
   it("projects refs, keeping a bare ID when the space is not in the topology", () => {

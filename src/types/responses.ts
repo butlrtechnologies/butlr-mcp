@@ -66,10 +66,18 @@ export interface SpaceLifecycle {
   /** Spaces that replaced this one. */
   replaced_by?: SpaceRef[];
   /**
-   * Last full local day (YYYY-MM-DD) of recorded history for a sensorless or
-   * archived room/zone: the day before its final, partial recorded day.
+   * Last full local day (YYYY-MM-DD) of recorded history for a retired or
+   * sensorless room/zone: the recorded day before its newest (always
+   * partial) day, and no later than the day before its sensor removal or
+   * archive date. See src/utils/history-end.ts.
    */
   history_end?: string;
+  /**
+   * Set (true) when `history_end` is a declared end (the day before the
+   * sensor removal or archive date) older than the lookup window, returned
+   * without being checked against the data.
+   */
+  history_end_unverified?: boolean;
   /** Set when the lookup for `history_end` failed; the end is unknown. */
   history_warning?: string;
   /** Plain-language guidance on where the rest of this space's history lives. */
@@ -89,6 +97,8 @@ export interface AvailableRoom {
   tags?: string[];
   /** The query window in minutes (NOT how long the room has been empty) */
   data_window_minutes: number;
+  /** Set when the room is archived but still has sensors attributed (read live). */
+  archived_at?: string;
 }
 
 export interface BuildingContext {

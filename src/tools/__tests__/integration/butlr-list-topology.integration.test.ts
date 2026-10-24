@@ -1,18 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { executeListTopology } from "../../butlr-list-topology.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
-import { CombinedGraphQLErrors } from "@apollo/client/errors";
-import { GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY } from "../../../clients/queries/topology.js";
-import { resetArchiveFieldSupport, stripArchiveFields } from "../../../clients/archive-fallback.js";
+import { GET_FULL_TOPOLOGY } from "../../../clients/queries/topology.js";
+import { stripFields } from "../../../clients/archive-fallback.js";
+import { primeSpaceFieldSupport } from "../../../clients/space-field-support.js";
+import { SPACE_ARCHIVE_FIELD_NAMES } from "../../../clients/queries/archive-fields.js";
 import {
   clearTopologyCache,
   generateTopologyCacheKey,
+  getCachedTopology,
+  mergedTopologyCacheKey,
   setCachedTopology,
+  topologyCache,
 } from "../../../cache/topology-cache.js";
 
 // Mock the GraphQL client
 // What the fallback sends to an API without the archive fields.
-const GET_FULL_TOPOLOGY_LEGACY = stripArchiveFields(GET_FULL_TOPOLOGY);
+const GET_FULL_TOPOLOGY_LEGACY = stripFields(GET_FULL_TOPOLOGY, SPACE_ARCHIVE_FIELD_NAMES);
 
 vi.mock("../../../clients/graphql-client.js", () => ({
   apolloClient: {
@@ -1992,9 +1996,7 @@ describe("butlr_list_topology - Integration", () => {
   });
 
   describe("archived spaces", () => {
-    beforeEach(() => {
-      resetArchiveFieldSupport();
-    });
+    beforeEach(() => {});
 
     function archivedFixture() {
       const topo = buildTopologyFixture();
@@ -2022,23 +2024,37 @@ describe("butlr_list_topology - Integration", () => {
       );
     });
 
-    it("falls back to the legacy query when the API lacks the archive fields", async () => {
-      const legacyTopo = buildTopologyFixture();
-      vi.mocked(apolloClient.query).mockResolvedValueOnce({
-        data: undefined,
-        error: new CombinedGraphQLErrors({
-          errors: [{ message: 'Cannot query field "replacesID" on type "Room".' }],
-        }),
-      } as any);
-      setupFullTopologyMocks(legacyTopo);
+    it("caches a tree fetched without the archive fields under its own key", async () => {
+      primeSpaceFieldSupport([]);
+      setupFullTopologyMocks(buildTopologyFixture());
 
       const result = await executeListTopology({ starting_depth: 3, traversal_depth: 0 });
 
       const sent = vi.mocked(apolloClient.query).mock.calls.map((c) => c[0].query);
-      expect(sent.slice(0, 2)).toEqual([GET_FULL_TOPOLOGY, GET_FULL_TOPOLOGY_LEGACY]);
+      expect(sent[0]).toBe(GET_FULL_TOPOLOGY_LEGACY);
       expect(result.tree).toEqual(expect.arrayContaining([["room_002", "Conf B"]]));
-      // The fallback is a complete answer, not a partial one.
       expect(result.warnings ?? []).not.toContainEqual({ kind: "partial_topology" });
+      // Cached (no refetch per call while the API lacks the fields)...
+      expect(getCachedTopology(mergedTopologyCacheKey(SPACE_ARCHIVE_FIELD_NAMES))).toBeDefined();
+      vi.mocked(apolloClient.query).mockClear();
+      await executeListTopology({ starting_depth: 3, traversal_depth: 0 });
+      expect(apolloClient.query).not.toHaveBeenCalled();
+
+      // ...but never served once the API has the fields: the key differs.
+      primeSpaceFieldSupport();
+      setupFullTopologyMocks(archivedFixture());
+      const after = await executeListTopology({ starting_depth: 3, traversal_depth: 0 });
+      expect(after.tree).toEqual(
+        expect.arrayContaining([["room_002", "Conf B (archived 2026-10-20)"]])
+      );
+      expect(getCachedTopology(mergedTopologyCacheKey([]))).toBeDefined();
+    });
+
+    it("does not renew a cache entry on read", () => {
+      // lru-cache keeps its own clock, so assert the option itself: an entry
+      // must expire TTL after its fetch however often it is read, or a tree
+      // fetched before the API gained a field could live on indefinitely.
+      expect(topologyCache.updateAgeOnGet).toBe(false);
     });
   });
 });

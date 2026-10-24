@@ -20,11 +20,7 @@ import type {
   Hive,
 } from "../clients/types.js";
 import { z } from "zod";
-import {
-  getCachedTopology,
-  setCachedTopology,
-  generateTopologyCacheKey,
-} from "../cache/topology-cache.js";
+import { cacheMergedTopology, getCachedMergedTopology } from "../cache/topology-cache.js";
 import { formatTopologyTree } from "../utils/tree-formatter.js";
 import { mergeSensorsAndHivesIntoTopology } from "../utils/topology-merge.js";
 import {
@@ -46,7 +42,7 @@ const LIST_TOPOLOGY_DESCRIPTION =
   "- Pass tag_names (case-insensitive) to scope the tree to subtrees containing rooms, zones, or floors with those tags. Combines AND-style with asset_ids when both are supplied.\n" +
   "- tag_match defaults to 'any' (entity is in any tagged subtree). 'all' intersects per-tag SUBTREES — e.g. a tag on Floor 1 AND a tag on a room inside Floor 1 yields the room (it's in both subtrees), not the empty set. Note this 'any' default differs from butlr_available_rooms, which defaults to 'all' because it filters a single entity type.\n" +
   "- Use butlr_list_tags to discover what tag vocabulary exists in this org.\n\n" +
-  'Archived spaces: archived rooms and zones stay in the tree (findable by name) with an "(archived YYYY-MM-DD)" suffix on their display name. They have no live data. The archive date is not where their history ends (recording stops when the sensors move, which can be days earlier): butlr_get_occupancy_timeseries and butlr_get_current_occupancy return the last recorded day as `history_end`.\n\n' +
+  'Archived spaces: archived rooms and zones stay in the tree (findable by name) with an "(archived YYYY-MM-DD)" suffix on their display name. Those with no sensors have no live data (an archived space that still has sensors, which is bad data, is read live like any other). The last full day of recorded history comes back as `history_end` from butlr_get_occupancy_timeseries and butlr_get_current_occupancy; it is no later than the day before the archive date, and can be much earlier.\n\n' +
   "Diagnostics:\n" +
   "- The response includes a `warning` field when a filter input doesn't fully resolve — typo'd asset_ids, unknown tag_names, asset_ids and tag_names scoping disjoint subtrees, or tag associations pointing at deleted entities. Read it before retrying.\n" +
   "- `unknown_tags` lists any tag names that didn't resolve, for the caller to surface or correct.\n\n" +
@@ -429,10 +425,7 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
         if (!orgId) {
           diagnostics.push({ kind: "asset_ids_unverified" });
         } else {
-          const cached = getCachedTopology(
-            generateTopologyCacheKey(orgId, true, true, true, undefined)
-          );
-          const cachedSites = cached?.data?.sites as Site[] | undefined;
+          const cachedSites = getCachedMergedTopology();
           if (cachedSites) {
             if (expandToSubtreeClosure(cachedSites, assetIds).size === 0) {
               diagnostics.push({ kind: "asset_scope_empty", asset_ids: assetIds });
@@ -498,26 +491,17 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
   // tree. Do not extend this key with filter inputs without first
   // separating the cache layers.
   //
-  // `devicesMerged: true` because this read path requires every floor to
-  // carry its `sensors`/`hives` arrays (post-mergeSensorsAndHivesIntoTopology).
+  // The merged-topology entry (mergedTopologyCacheKey) has every floor
+  // carrying its `sensors`/`hives` arrays (post-mergeSensorsAndHivesIntoTopology).
   // `butlr_search_assets` writes the same merged shape under the same key,
   // so either tool can prime the cache for the other.
-  const cacheKey = generateTopologyCacheKey(
-    process.env.BUTLR_ORG_ID || "default",
-    true, // include devices
-    true, // include zones
-    true, // devicesMerged: list-topology requires merged sensors/hives
-    undefined
-  );
-
-  // Try to get cached topology
   let sites: Site[] = [];
   let partialData = false;
-  const cached = getCachedTopology(cacheKey);
+  const cachedSites = getCachedMergedTopology();
 
-  if (cached && cached.data && cached.data.sites) {
+  if (cachedSites) {
     debug("butlr-list-topology", "Using cached topology");
-    sites = cached.data.sites as Site[];
+    sites = cachedSites;
   } else {
     // Fetch fresh topology
     debug("butlr-list-topology", "Fetching fresh topology");
@@ -592,9 +576,11 @@ export async function executeListTopology(args: ListTopologyArgs): Promise<ListT
       // Merge sensors and hives into topology by floor_id
       sites = mergeSensorsAndHivesIntoTopology(sites, allSensors, allHives);
 
-      // Only cache complete topology data — partial results should be re-fetched
-      if (!partialData) {
-        setCachedTopology(cacheKey, { sites });
+      // Only complete topology is cached (see cacheMergedTopology); the key
+      // records which optional space fields this fetch left out.
+      if (
+        cacheMergedTopology(sites, { partial: partialData, omittedFields: result.omittedFields })
+      ) {
         debug("butlr-list-topology", `Cached topology with ${sites.length} sites`);
       } else {
         debug("butlr-list-topology", "Skipping cache — topology data is partial");

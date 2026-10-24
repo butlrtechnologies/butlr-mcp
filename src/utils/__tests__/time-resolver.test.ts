@@ -61,4 +61,29 @@ describe("time-resolver", () => {
       expect(span).toBe(5 * 60 * 1000);
     });
   });
+
+  describe("validateTimeRange", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("resolves both ends from one clock read, so exactly 1h passes the 1m limit", async () => {
+      const { validateTimeRange } = await import("../time-range-validator.js");
+      // A clock that ticks 1 ms on every read: two separate reads would make
+      // "-1h".."now" one millisecond longer than an hour.
+      const RealDate = Date;
+      let t = RealDate.parse("2026-10-23T12:00:00Z");
+      class TickingDate extends RealDate {
+        constructor(...args: ConstructorParameters<typeof Date>) {
+          if (args.length === 0) super(t++);
+          else super(...args);
+        }
+        static now() {
+          return t++;
+        }
+      }
+      vi.stubGlobal("Date", TickingDate);
+      expect(() => validateTimeRange("1m", "-1h", "now")).not.toThrow();
+    });
+  });
 });

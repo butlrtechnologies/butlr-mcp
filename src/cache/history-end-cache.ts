@@ -1,50 +1,60 @@
 import { LRUCache } from "lru-cache";
 import { debug } from "../utils/debug.js";
+import type { HistoryEnd } from "../utils/history-end.js";
+import { parseTtlSeconds } from "./ttl.js";
 
 /**
  * Cache for the history-end probe (src/utils/history-end.ts).
  *
- * The probe reads six months of daily buckets for one sensorless space, and
- * its answer only moves when a new day lands, so repeat lookups within a few
- * minutes (an agent re-asking about the same retired room, or a batch that
- * names it twice) reuse it. Only successful answers are cached, "no history"
- * included; failures are retried on the next call.
+ * The probe reads 177 days of daily buckets for one space, and its
+ * answer only moves when a new day lands, so a repeat lookup within a few
+ * minutes (an agent re-asking about the same retired room) reuses it. Only
+ * successful answers are cached, "no history" included; failures are
+ * retried on the next call.
  *
- * TTL: 10 minutes (MCP_CACHE_HISTORY_END_TTL, seconds).
+ * TTL: 10 minutes by default. MCP_CACHE_HISTORY_END_TTL (whole seconds)
+ * overrides it; 0 turns the cache off. Anything else (a fraction, a negative
+ * or non-numeric value) falls back to the default with a warning: lru-cache
+ * requires a positive integer TTL in milliseconds and throws at import
+ * otherwise, and treats 0 as "never expires".
  */
-const CACHE_TTL_MS = parseInt(process.env.MCP_CACHE_HISTORY_END_TTL || "600", 10) * 1000;
+const DEFAULT_TTL_SECONDS = 600;
 const MAX_CACHE_ENTRIES = 500;
 
-interface HistoryEndCacheEntry {
-  endDay: string | null;
-}
+const TTL_MS =
+  parseTtlSeconds(
+    "MCP_CACHE_HISTORY_END_TTL",
+    process.env.MCP_CACHE_HISTORY_END_TTL,
+    DEFAULT_TTL_SECONDS
+  ) * 1000;
+const CACHE_ENABLED = TTL_MS > 0;
 
-const historyEndCache = new LRUCache<string, HistoryEndCacheEntry>({
+const historyEndCache = new LRUCache<string, HistoryEnd>({
   max: MAX_CACHE_ENTRIES,
-  ttl: CACHE_TTL_MS,
+  // Never handed a 0 TTL (lru-cache reads that as "never expires"); when
+  // caching is off nothing is stored, so this value is unused then.
+  ttl: CACHE_ENABLED ? TTL_MS : DEFAULT_TTL_SECONDS * 1000,
   updateAgeOnGet: false, // the answer ages with the calendar, not with use
 });
 
-/** Key on the timezone too: the local day boundaries depend on it. */
-function key(assetId: string, timezone: string): string {
-  return `history-end:${assetId}:${timezone}`;
+/**
+ * `variant` carries whatever else the answer depends on: the timezone (local
+ * day boundaries) and the declared end from sensorsRemovedAt/archivedAt.
+ */
+function key(assetId: string, variant: string): string {
+  return `history-end:${assetId}:${variant}`;
 }
 
-export function getCachedHistoryEnd(
-  assetId: string,
-  timezone: string
-): HistoryEndCacheEntry | undefined {
-  const hit = historyEndCache.get(key(assetId, timezone));
+export function getCachedHistoryEnd(assetId: string, variant: string): HistoryEnd | undefined {
+  if (!CACHE_ENABLED) return undefined;
+  const hit = historyEndCache.get(key(assetId, variant));
   debug("history-end-cache", `${hit ? "HIT" : "MISS"} ${assetId}`);
   return hit;
 }
 
-export function setCachedHistoryEnd(
-  assetId: string,
-  timezone: string,
-  endDay: string | null
-): void {
-  historyEndCache.set(key(assetId, timezone), { endDay });
+export function setCachedHistoryEnd(assetId: string, variant: string, end: HistoryEnd): void {
+  if (!CACHE_ENABLED) return;
+  historyEndCache.set(key(assetId, variant), end);
 }
 
 /** Clear all cached history ends (tests, or after a known data change). */

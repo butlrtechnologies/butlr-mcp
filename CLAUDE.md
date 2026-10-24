@@ -69,6 +69,7 @@ npm run format       # Prettier
 | `BUTLR_TIMEZONE` | No | Default timezone (default: `UTC`) |
 | `MCP_CACHE_TOPO_TTL` | No | Topology cache TTL in whole seconds (default: 600; `0` disables) |
 | `MCP_CACHE_OCCUPANCY_TTL` | No | Current-occupancy cache TTL in whole seconds (default: 60; `0` disables) |
+| `MCP_CACHE_HISTORY_END_TTL` | No | History-end probe cache TTL in whole seconds (default: 600; `0` disables; anything else falls back to the default with a warning) |
 | `DEBUG` | No | Set to `butlr-mcp` for verbose logging |
 
 ## Testing

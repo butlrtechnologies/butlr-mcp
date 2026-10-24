@@ -1,8 +1,12 @@
 import { beforeEach, vi } from "vitest";
+import { primeSpaceFieldSupport } from "../clients/space-field-support.js";
 
-// Reset all mocks before each test
+// Reset all mocks before each test, and treat the API as supporting every
+// optional Room/Zone field (archive-fields.ts) so no test has to mock the
+// schema check. Tests of the check itself reset this.
 beforeEach(() => {
   vi.clearAllMocks();
+  primeSpaceFieldSupport();
 });
 
 // Mock environment variables for tests

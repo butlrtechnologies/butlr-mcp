@@ -68,10 +68,9 @@ export const GET_SITE_STRUCTURE = gql`
  * Still use GET_ALL_SENSORS and GET_ALL_HIVES for full device detail (model,
  * battery, heartbeat, ...), merged by floor_id/room_id.
  *
- * Rooms and zones select `archivedAt`/`replacesID` (see archive-fields.ts).
- * An API that predates those fields rejects the whole query, so fetch this
- * through `queryWithArchiveFallback`, which retries once with those fields
- * stripped (see archive-fallback.ts).
+ * Rooms and zones select the optional archive fields (archive-fields.ts).
+ * Send this through `queryWithArchiveFallback`, which strips whichever of
+ * them the API's schema lacks (see archive-fallback.ts).
  */
 export const GET_FULL_TOPOLOGY = gql`
   query GetFullTopology {

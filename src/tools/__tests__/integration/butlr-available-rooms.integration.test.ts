@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { CombinedGraphQLErrors } from "@apollo/client/errors";
+import { print } from "graphql";
 import { executeAvailableRooms, GET_ROOMS_BY_TAG } from "../../butlr-available-rooms.js";
 import { apolloClient } from "../../../clients/graphql-client.js";
 import * as reportingClient from "../../../clients/reporting-client.js";
 import { loadGraphQLFixture } from "../../../__mocks__/apollo-client.js";
-import { resetArchiveFieldSupport } from "../../../clients/archive-fallback.js";
+import { primeSpaceFieldSupport } from "../../../clients/space-field-support.js";
 
 // Mock the clients
 vi.mock("../../../clients/graphql-client.js", () => ({
@@ -634,9 +635,7 @@ describe("butlr_available_rooms - Integration", () => {
   });
 
   describe("archived rooms", () => {
-    beforeEach(() => {
-      resetArchiveFieldSupport();
-    });
+    beforeEach(() => {});
 
     function buildingWithArchivedRoom(opts?: { withArchiveFields?: boolean }) {
       const withArchiveFields = opts?.withArchiveFields ?? true;
@@ -677,6 +676,59 @@ describe("butlr_available_rooms - Integration", () => {
       };
     }
 
+    it("keeps an archived room that still has sensors (live, per E4) in the listing and counts", async () => {
+      const building = buildingWithArchivedRoom();
+      (building.building.floors[0].rooms[2] as any).sensors = [{ id: "sensor_1" }];
+      vi.mocked(apolloClient.query).mockResolvedValue({ data: building } as any);
+      vi.mocked(reportingClient.getCurrentOccupancy).mockImplementation(async (_type, ids) =>
+        ids.map((id) => ({
+          start: "2026-10-23T00:00:00Z",
+          measurement: "room_occupancy",
+          value: 0,
+          asset_id: id,
+        }))
+      );
+
+      const result = await executeAvailableRooms({ building_id: "building_arch" });
+
+      expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toHaveLength(3);
+      expect(result.building_context?.total_rooms).toBe(3);
+      // Listed, but marked: archived with sensors still attributed.
+      const archived = result.available_rooms.find((r) => r.id === "room_arch_old");
+      expect(archived?.archived_at).toBe("2026-10-21T01:30:00Z");
+      expect(result.warning).toMatch(
+        /1 listed room\(s\) are archived but still have sensors attributed/
+      );
+    });
+
+    it("leaves out a room retired by sensorsRemovedAt alone", async () => {
+      const building = buildingWithArchivedRoom({ withArchiveFields: false });
+      (building.building.floors[0].rooms[2] as any).sensorsRemovedAt = "2026-10-21T01:30:00Z";
+      vi.mocked(apolloClient.query).mockResolvedValue({ data: building } as any);
+      vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([]);
+
+      await executeAvailableRooms({ building_id: "building_arch" });
+
+      expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toEqual([
+        "room_arch_free",
+        "room_arch_busy",
+      ]);
+    });
+
+    it("fails with the reporting status on a 401/429 instead of degrading to a warning", async () => {
+      vi.mocked(apolloClient.query).mockResolvedValue({ data: buildingWithArchivedRoom() } as any);
+      for (const status of [401, 429]) {
+        vi.mocked(reportingClient.getCurrentOccupancy).mockRejectedValueOnce(
+          new reportingClient.ApiError(status, "nope")
+        );
+        await expect(executeAvailableRooms({ building_id: "building_arch" })).rejects.toMatchObject(
+          {
+            statusCode: status,
+          }
+        );
+      }
+    });
+
     it("never lists an archived room and leaves it out of the building's room count", async () => {
       vi.mocked(apolloClient.query).mockResolvedValue({ data: buildingWithArchivedRoom() } as any);
       vi.mocked(reportingClient.getCurrentOccupancy).mockImplementation(async (_type, ids) =>
@@ -702,25 +754,20 @@ describe("butlr_available_rooms - Integration", () => {
       });
     });
 
-    it("falls back to the legacy query when the API lacks the archive fields", async () => {
-      vi.mocked(apolloClient.query)
-        .mockResolvedValueOnce({
-          data: undefined,
-          error: new CombinedGraphQLErrors({
-            errors: [{ message: 'Cannot query field "archivedAt" on type "Room".' }],
-          }),
-        } as any)
-        .mockResolvedValueOnce({
-          data: buildingWithArchivedRoom({ withArchiveFields: false }),
-        } as any);
+    it("strips the archive fields when the API lacks them", async () => {
+      // The schema check found none of the optional fields.
+      primeSpaceFieldSupport([]);
+      vi.mocked(apolloClient.query).mockResolvedValueOnce({
+        data: buildingWithArchivedRoom({ withArchiveFields: false }),
+      } as any);
       vi.mocked(reportingClient.getCurrentOccupancy).mockResolvedValue([]);
 
       await executeAvailableRooms({ building_id: "building_arch" });
 
       const calls = vi.mocked(apolloClient.query).mock.calls;
-      expect(calls).toHaveLength(2);
-      expect(calls[1][0].query).not.toBe(calls[0][0].query);
-      expect(calls[1][0].variables).toEqual({ buildingId: "building_arch" });
+      expect(calls).toHaveLength(1);
+      expect(print(calls[0][0].query)).not.toMatch(/archivedAt|replacesID|sensorsRemovedAt/);
+      expect(calls[0][0].variables).toEqual({ buildingId: "building_arch" });
       // Without the fields nothing is known to be archived, so all 3 rooms count.
       expect(vi.mocked(reportingClient.getCurrentOccupancy).mock.calls[0][1]).toHaveLength(3);
     });

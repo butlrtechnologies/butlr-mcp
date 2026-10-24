@@ -1,44 +1,74 @@
 /**
- * Where a sensorless room's or zone's recorded history ends.
+ * Where a retired or sensorless room's or zone's recorded history ends.
  *
- * Mirrors the dashboard's `historyEndDay` / `useSensorlessHistory`
- * (butlr-dashboard src/hooks/data/useSensorlessHistory.ts) so the two
- * products give the same date for the same space.
+ * The rule is shared with the dashboard (`useSensorlessHistory`); both
+ * suites run the conformance fixtures in
+ * src/__fixtures__/history-end-conformance.json. In short (contract
+ * Addendum 3, E2/E3):
  *
- * Reporting keeps room/zone occupancy under the space's own ID, whatever
- * sensors are assigned today. Recording stops when the sensors are moved
- * away, and that final recorded day is partial (the re-layout day), so the
- * history ends on the last full day before it. An archive can happen days
- * after the sensors moved, so the archive date is NOT the end of history.
+ * - Data-derived end: reporting returns today's partial daily bucket when
+ *   a space has rows today, and the day its sensors left is partial too, so
+ *   the newest returned day is always partial. The end is the recorded day
+ *   before the newest, or the only day when there is one.
+ * - Declared end: the day before the local date of `sensorsRemovedAt`, else
+ *   of `archivedAt`.
+ * - With a declared end, the answer is min(declared, data-derived end): the
+ *   data can stop long before an archive, and a parked space can keep
+ *   getting 0-valued rows after it. With no row on or before the declared
+ *   day, there is no history. A declared end older than the lookup window is
+ *   returned as is, flagged `outsideWindow`, without a query.
  */
 
 import { queryReporting, type ReportingRequest } from "../clients/reporting-client.js";
-import { formatLocalDate, getLocalMidnight } from "./timezone-helpers.js";
+import { formatLocalDate, localDayStart, shiftDay } from "./timezone-helpers.js";
 
 /**
- * How far back the probe looks. Reporting routes a request to one storage
- * tier by its start date (hot <= 3 months, warm <= 6 months, cold beyond);
- * starting a day inside 6 months keeps the probe on the warm tier and off
- * the slow cold (Trino) tier.
+ * How far back the probe looks, in days (contract Addendum 3, E1).
+ *
+ * Reporting routes each request to ONE storage tier by its start, and the
+ * cold tier is slow Trino. Tiered reporting widens a `1d` window's start by
+ * 24h, then compares it with `truncateToDay(now.AddDate(0, -6, 0))` in UTC,
+ * which is 181 to 184 days back. Starting at local midnight 177 days back
+ * leaves at least 46h of slack (the minimum, in zones such as
+ * Antarctica/Troll with any positive skew), so no timezone, month end or few
+ * seconds of clock skew between this server and the API's reaches the cold tier
+ * (tested against a port of the router with a separate server clock).
  */
-export const HISTORY_LOOKBACK_MONTHS = 6;
+export const HISTORY_LOOKBACK_DAYS = 177;
+
+/** Start of the probe window: local midnight of today minus HISTORY_LOOKBACK_DAYS. */
+export function historyProbeStart(now: Date, timezone: string): Date {
+  return localDayStart(shiftDay(formatLocalDate(now, timezone), -HISTORY_LOOKBACK_DAYS), timezone);
+}
 
 /**
- * The last full local day (YYYY-MM-DD in `timezone`) of a space's recorded
- * history, or null when it has none.
- *
- * Every day with a non-null value counts, zeros included: an empty day is
- * still history. The newest recorded day is the partial re-layout day, so
- * the answer is the second-newest day, or the only day when there is one.
- *
- * Daily buckets are labelled with their END time (the row for Oct 20 carries
- * Oct 21 00:00 local), so each label is stepped back 1 ms before its day is
- * read.
+ * Declared end of history: the day before the local date of
+ * `sensorsRemovedAt`, else of `archivedAt`. Undefined when neither is set
+ * (or parses).
  */
-export function historyEndDay(
-  points: ReadonlyArray<{ time?: string; value?: number | null }>,
+export function declaredHistoryEnd(
+  space: { sensorsRemovedAt?: string | null; archivedAt?: string | null },
   timezone: string
-): string | null {
+): string | undefined {
+  for (const at of [space.sensorsRemovedAt, space.archivedAt]) {
+    if (!at) continue;
+    const ms = Date.parse(at);
+    if (Number.isNaN(ms)) continue;
+    return shiftDay(formatLocalDate(ms, timezone), -1);
+  }
+  return undefined;
+}
+
+type ReportingRow = { time?: string; value?: number | null };
+
+/**
+ * Local days (YYYY-MM-DD, ascending) that have a non-null value. Zero days
+ * count: an empty day is still history. Daily buckets are labelled with
+ * their END time (the row for Oct 20 carries Oct 21 00:00 local; today's
+ * partial bucket carries the query's stop), so each label is stepped back
+ * 1 ms before its day is read.
+ */
+function recordedDays(points: ReadonlyArray<ReportingRow>, timezone: string): string[] {
   const days = new Set<string>();
   for (const p of points) {
     if (p?.value == null || !p.time) continue;
@@ -47,51 +77,72 @@ export function historyEndDay(
     days.add(formatLocalDate(ts - 1, timezone));
   }
   // YYYY-MM-DD sorts chronologically as a string.
-  const sorted = Array.from(days).sort();
-  if (sorted.length === 0) return null;
-  return sorted.length > 1 ? sorted[sorted.length - 2] : sorted[0];
+  return Array.from(days).sort();
 }
 
 /**
- * Start of the probe window: HISTORY_LOOKBACK_MONTHS before today, plus one
- * day, at local midnight in `timezone` (dayjs semantics: a month step clamps
- * to the last day of a shorter month).
+ * Data-derived end of history: the recorded day before the newest (the
+ * newest is always partial), or the only day; null when there is none.
  */
-export function historyProbeStart(now: Date, timezone: string): Date {
-  const [y, m, d] = formatLocalDate(now.getTime(), timezone).split("-").map(Number);
-  const monthIndex = m - 1 - HISTORY_LOOKBACK_MONTHS;
-  const lastDay = new Date(Date.UTC(y, monthIndex + 1, 0)).getUTCDate();
-  const target = new Date(Date.UTC(y, monthIndex, Math.min(d, lastDay) + 1));
-  const want = target.toISOString().slice(0, 10);
+export function historyEndDay(
+  points: ReadonlyArray<ReportingRow>,
+  timezone: string
+): string | null {
+  const days = recordedDays(points, timezone);
+  if (days.length === 0) return null;
+  return days.length > 1 ? days[days.length - 2] : days[0];
+}
 
-  // Pick an instant whose local date is `want`, then take its local midnight.
-  // No single UTC hour lands on the same local date across UTC-12..UTC+14,
-  // so start at noon UTC and step half a day toward the target if needed.
-  let probe = new Date(`${want}T12:00:00Z`);
-  const got = formatLocalDate(probe.getTime(), timezone);
-  if (got > want) probe = new Date(probe.getTime() - 12 * 3600 * 1000);
-  else if (got < want) probe = new Date(probe.getTime() + 12 * 3600 * 1000);
-  return getLocalMidnight(probe, timezone);
+export interface HistoryEnd {
+  /** Last full local day of recorded history, or null when there is none. */
+  endDay: string | null;
+  /** First local day of the lookup window (YYYY-MM-DD). */
+  windowStart: string;
+  /** The declared end is older than the window, so it was not checked against data. */
+  outsideWindow?: boolean;
 }
 
 /**
- * Build the one reporting query the probe sends: daily max of the space's
- * occupancy over the lookback window, zeros included, raw rows.
+ * Combine the declared end (if any) with the rows of the lookup window.
+ * Pure; `fetchHistoryEnd` supplies the rows. The conformance fixtures run
+ * against this.
+ */
+export function resolveHistoryEnd(
+  points: ReadonlyArray<ReportingRow>,
+  declaredEnd: string | undefined,
+  timezone: string,
+  windowStart: string
+): HistoryEnd {
+  if (declaredEnd && declaredEnd < windowStart) {
+    return { endDay: declaredEnd, windowStart, outsideWindow: true };
+  }
+  const dataEnd = historyEndDay(points, timezone);
+  if (!declaredEnd || dataEnd === null) return { endDay: dataEnd, windowStart };
+  const days = recordedDays(points, timezone);
+  if (!days.some((day) => day <= declaredEnd)) return { endDay: null, windowStart };
+  return { endDay: dataEnd < declaredEnd ? dataEnd : declaredEnd, windowStart };
+}
+
+/**
+ * The one reporting query the probe sends: daily max of the space's
+ * occupancy over [start, stop], zeros included, raw rows.
  */
 export function buildHistoryProbeRequest(
   assetType: "room" | "zone",
   assetId: string,
   timezone: string,
-  now: Date = new Date()
+  start: Date,
+  stop: Date
 ): ReportingRequest {
   return {
     group_by: { raw: true },
     window: { every: "1d", function: "max", timezone },
     filter: {
       measurements: [assetType === "zone" ? "zone_occupancy" : "room_occupancy"],
-      start: historyProbeStart(now, timezone).toISOString(),
-      // The ETL-backed API returns nothing when stop is omitted.
-      stop: now.toISOString(),
+      start: start.toISOString(),
+      // Sent explicitly, like every reporting query here (see
+      // ReportingRequestBuilder.timeRange).
+      stop: stop.toISOString(),
       ...(assetType === "zone" ? { zones: { eq: [assetId] } } : { rooms: { eq: [assetId] } }),
       value: { gte: 0 },
     },
@@ -100,20 +151,26 @@ export function buildHistoryProbeRequest(
 }
 
 /**
- * Query reporting for a sensorless room or zone and return the last full day
- * of its recorded history (see historyEndDay), or null when it has none.
- * Errors propagate; the caller decides which ones are fatal.
+ * Where a space's recorded history ends (see the module comment). Sends one
+ * reporting query over the lookup window, unless the declared end is older
+ * than the window. Errors propagate; the caller decides which are fatal.
  */
-export async function fetchHistoryEndDay(
+export async function fetchHistoryEnd(
   assetType: "room" | "zone",
   assetId: string,
   timezone: string,
+  declaredEnd?: string,
   now: Date = new Date()
-): Promise<string | null> {
+): Promise<HistoryEnd> {
+  const start = historyProbeStart(now, timezone);
+  const windowStart = formatLocalDate(start, timezone);
+  if (declaredEnd && declaredEnd < windowStart) {
+    return { endDay: declaredEnd, windowStart, outsideWindow: true };
+  }
   const response = await queryReporting(
-    buildHistoryProbeRequest(assetType, assetId, timezone, now)
+    buildHistoryProbeRequest(assetType, assetId, timezone, start, now)
   );
   // An empty grouped response can come back as `{}` rather than `[]`.
   const data = Array.isArray(response?.data) ? response.data : [];
-  return historyEndDay(data, timezone);
+  return resolveHistoryEnd(data, declaredEnd, timezone, windowStart);
 }
